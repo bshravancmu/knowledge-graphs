@@ -1,0 +1,6 @@
+{
+  "num-triples-per-batch" : 40000,
+  "ascii-prefixes-only": false,
+  "languages-internal": [""],
+  "prefixes-external": [""]
+}

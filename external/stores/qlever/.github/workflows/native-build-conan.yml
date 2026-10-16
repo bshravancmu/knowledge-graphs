@@ -1,0 +1,72 @@
+name: Native build with conan
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+    # Also run when a label is applied, so that applying the `run-ci` or
+    # `run-full-ci` label triggers the checks, see `README.md`.
+    types: [ opened, synchronize, reopened, labeled ]
+  merge_group:
+
+concurrency:
+  group: '${{ github.workflow }} @ ${{ github.event.pull_request.head.label || github.head_ref || github.ref }}'
+  cancel-in-progress: true
+
+# The default GITHUB_TOKEN only needs to read the repository here.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Only run for PRs with the `run-full-ci` label, see `README.md`.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'run-full-ci')
+    # The CMake configure and build commands are platform-agnostic and should work equally
+    # well on Windows or Mac.  You can convert this to a matrix build if you need
+    # cross-platform coverage.
+    # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        warnings: [  "-Wall -Wextra"  ]
+        build-type: [Release]
+    runs-on: ubuntu-22.04
+
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        submodules: 'recursive'
+
+    - name: Install dependencies
+      uses: ./.github/workflows/install-dependencies-ubuntu
+      with:
+        install-third-party-libraries: "false"
+
+    - name: Create build directory
+      run: mkdir ${{github.workspace}}/build
+    - name: Install and run conan
+      working-directory: ${{github.workspace}}/build
+      run: >
+        sudo pip3 install conan;
+        conan profile detect;
+        conan install .. -pr:b=default -of=. --build=missing ;
+    - name: Configure, build, and test
+      uses: ./.github/workflows/build-and-test
+      with:
+        build-type: ${{matrix.build-type}}
+        cmake-args: >-
+          -DLOGLEVEL=DEBUG
+          -DCMAKE_TOOLCHAIN_FILE="$(pwd)/build/conan_toolchain.cmake"
+          -DADDITIONAL_COMPILER_FLAGS="${{matrix.warnings}}"
+          -DRUN_EXPENSIVE_TESTS=false
+          -DENABLE_EXPENSIVE_CHECKS=true
+        # The libraries that Conan has built live outside the default search
+        # paths, so everything that runs a binary has to source this script.
+        setup-command: "source ${{github.workspace}}/build/conanrun.sh"
+        # Explicitly specify the binary directory for the E2E script via the
+        # `-d` option, to also test that this works.
+        e2e-args: "-d build"

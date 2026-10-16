@@ -1,0 +1,94 @@
+//   Copyright 2024, University of Freiburg,
+//   Chair of Algorithms and Data Structures.
+//   Author: Robin Textor-Falconi <textorr@informatik.uni-freiburg.de>
+//
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
+
+#include "engine/sparqlExpressions/SparqlExpressionTypes.h"
+
+namespace sparqlExpression {
+
+// _____________________________________________________________________________
+void PrintTo(const IdOrLocalVocabEntry& var, std::ostream* os) {
+  ad_utility::visitIf(
+      var, [os](const ValueId& s) { *os << s; },
+      [os](const auto& s) { *os << s.toStringRepresentation(); });
+}
+
+// _____________________________________________________________________________
+EvaluationContext::EvaluationContext(
+    const QueryExecutionContext& qec,
+    const VariableToColumnMap& variableToColumnMap, IdTableView<0> inputTable,
+    const ad_utility::AllocatorWithLimit<Id>& allocator, LocalVocab& localVocab,
+    ad_utility::SharedCancellationHandle cancellationHandle, TimePoint deadline)
+    : _qec{qec},
+      _variableToColumnMap{variableToColumnMap},
+      _inputTable{std::move(inputTable)},
+      _columnsByWhichResultIsSorted{allocator},
+      _allocator{allocator},
+      _localVocab{localVocab},
+      cancellationHandle_{std::move(cancellationHandle)},
+      deadline_{deadline} {
+  AD_CONTRACT_CHECK(cancellationHandle_);
+}
+
+// _____________________________________________________________________________
+bool EvaluationContext::isResultSortedBy(const Variable& variable) {
+  if (_columnsByWhichResultIsSorted.empty()) {
+    return false;
+  }
+  if (!_variableToColumnMap.contains(variable)) {
+    return false;
+  }
+
+  return getColumnIndexForVariable(variable) ==
+         _columnsByWhichResultIsSorted[0];
+}
+
+// _____________________________________________________________________________
+[[nodiscard]] size_t EvaluationContext::size() const {
+  return _endIndex - _beginIndex;
+}
+
+// _____________________________________________________________________________
+[[nodiscard]] std::optional<ColumnIndex>
+EvaluationContext::getColumnIndexForVariable(const Variable& var) const {
+  const auto& map = _variableToColumnMap;
+  if (!map.contains(var)) {
+    return std::nullopt;
+  }
+  return map.at(var).columnIndex_;
+}
+
+// _____________________________________________________________________________
+std::optional<ExpressionResult>
+EvaluationContext::getResultFromPreviousAggregate(const Variable& var) const {
+  const auto& map = _variableToColumnMapPreviousResults;
+  if (!map.contains(var)) {
+    return std::nullopt;
+  }
+  ColumnIndex idx = map.at(var).columnIndex_;
+  AD_CONTRACT_CHECK(idx < _previousResultsFromSameGroup.size());
+
+  return copyExpressionResult(_previousResultsFromSameGroup.at(idx));
+}
+
+// _____________________________________________________________________________
+const LocalVocabContext& EvaluationContext::getLocalVocabContext() const {
+  return _qec.getLocalVocabContext();
+}
+
+}  // namespace sparqlExpression
+
+namespace sparqlExpression::detail {
+
+// _____________________________________________________________________________
+bool isConstantExpressionResult(const ExpressionResult& res) {
+  return std::visit(
+      [](const auto& el) {
+        return isConstantResult<std::decay_t<decltype(el)>>;
+      },
+      res);
+}
+
+}  // namespace sparqlExpression::detail

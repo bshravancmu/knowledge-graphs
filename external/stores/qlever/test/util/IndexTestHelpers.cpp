@@ -1,0 +1,484 @@
+//  Copyright 2023, University of Freiburg,
+//                  Chair of Algorithms and Data Structures.
+//  Author: Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
+
+#include "IndexTestHelpers.h"
+
+#include <absl/base/no_destructor.h>
+#include <absl/strings/str_cat.h>
+
+#include <array>
+#include <boost/asio/thread_pool.hpp>
+#include <memory>
+#include <utility>
+
+#include "./GTestHelpers.h"
+#include "./TripleComponentTestHelpers.h"
+#include "backports/StartsWithAndEndsWith.h"
+#include "backports/algorithm.h"
+#include "backports/filesystem.h"
+#include "engine/MaterializedViews.h"
+#include "engine/NamedResultCache.h"
+#include "global/FileSuffixConstants.h"
+#include "global/SpecialIds.h"
+#include "index/IndexImpl.h"
+#include "index/TextIndexBuilder.h"
+#include "index/TripleComponentConversions.h"
+#include "index/vocabulary/SecondaryVocabulary.h"
+#include "index/vocabulary/VocabularyType.h"
+#include "util/FilesystemHelpers.h"
+#include "util/ProgressBar.h"
+
+using qlever::TextScoringMetric;
+namespace ad_utility::testing {
+
+// ______________________________________________________________
+qlever::Executor singleThreadExecutor() {
+  // Deliberately never destroyed (like the global thread pool, see
+  // `util/GlobalExecutor.h`), such that it outlives the static
+  // `QueryExecutionContext`s of `getQec` that refer to it.
+  static absl::NoDestructor<boost::asio::thread_pool> pool{1};
+  return pool->get_executor();
+}
+
+// ______________________________________________________________
+qlever::Executor multiThreadExecutor() {
+  // Deliberately never destroyed, see `singleThreadExecutor` above.
+  static absl::NoDestructor<boost::asio::thread_pool> pool{4};
+  return pool->get_executor();
+}
+
+// ______________________________________________________________
+Index makeIndexWithTestSettings(ad_utility::MemorySize parserBufferSize) {
+  Index index{ad_utility::makeUnlimitedAllocator<Id>()};
+  index.setNumTriplesPerBatch(2);
+  index.memoryLimitIndexBuilding() = 50_MB;
+  index.parserBufferSize() =
+      parserBufferSize;  // Note that the default value remains unchanged, but
+                         // some tests (i.e. polygon testing in Spatial Joins)
+                         // require a larger buffer size
+  // By default, don't add ql:has-word triples in test indices.
+  index.addHasWordTriples() = false;
+  return index;
+}
+
+std::vector<std::string> getAllIndexFilenames(
+    const std::string& indexBasename) {
+  return {indexBasename + ".ttl",
+          indexBasename + ".index.pos",
+          indexBasename + ".index.pos.meta",
+          indexBasename + ".index.pso",
+          indexBasename + ".index.pso.meta",
+          indexBasename + ".index.sop",
+          indexBasename + ".index.sop.meta",
+          indexBasename + ".index.spo",
+          indexBasename + ".index.spo.meta",
+          indexBasename + ".index.ops",
+          indexBasename + ".index.ops.meta",
+          indexBasename + ".index.osp",
+          indexBasename + ".index.osp.meta",
+          indexBasename + ".index.patterns",
+          indexBasename + ".meta-data.json",
+          indexBasename + ".prefixes",
+          indexBasename + ".vocabulary.internal",
+          indexBasename + ".vocabulary.external",
+          indexBasename + ".vocabulary.external.offsets",
+          indexBasename + ".wordsfile",
+          indexBasename + ".docsfile",
+          indexBasename + ".text.index",
+          indexBasename + ".text.vocabulary",
+          indexBasename + ".text.docsDB"};
+}
+
+namespace {
+// Check that the patterns as stored in the `ql:has-pattern` relation in the PSO
+// and POS permutations have exactly the same contents as the patterns that are
+// folded into the permutations as additional columns.
+void checkConsistencyBetweenPatternPredicateAndAdditionalColumn(
+    const Index& index) {
+  const auto& indexImpl = index.getImpl();
+  const DeltaTriplesManager& deltaTriplesManager{index.deltaTriplesManager()};
+  auto sharedLocatedTriplesSnapshot =
+      deltaTriplesManager.getCurrentLocatedTriplesSharedState();
+  const auto& locatedTriplesSnapshot = *sharedLocatedTriplesSnapshot;
+  static constexpr size_t col0IdTag = 43;
+  auto cancellationDummy = std::make_shared<ad_utility::CancellationHandle<>>();
+  auto iriOfHasPattern =
+      TripleComponent::Iri::fromIriref(HAS_PATTERN_PREDICATE);
+  auto checkSingleElement = [&cancellationDummy, &iriOfHasPattern,
+                             &locatedTriplesSnapshot,
+                             &indexImpl](size_t patternIdx, Id id) {
+    const auto& permutation =
+        indexImpl.getPermutation(Permutation::Enum::PSO).internalPermutation();
+    auto scanResultHasPattern = permutation.scan(
+        permutation.getScanSpecAndBlocks(
+            ScanSpecificationAsTripleComponent{iriOfHasPattern, id,
+                                               std::nullopt}
+                .toScanSpecification(indexImpl),
+            locatedTriplesSnapshot),
+        {}, cancellationDummy, locatedTriplesSnapshot, singleThreadExecutor());
+    // Each ID has at most one pattern, it can have none if it doesn't
+    // appear as a subject in the knowledge graph.
+    AD_CORRECTNESS_CHECK(scanResultHasPattern.numRows() <= 1);
+    if (scanResultHasPattern.numRows() == 0) {
+      EXPECT_EQ(patternIdx, Pattern::NoPattern)
+          << id << ' ' << Pattern::NoPattern;
+    } else {
+      auto actualPattern = scanResultHasPattern(0, 0).getInt();
+      EXPECT_EQ(patternIdx, actualPattern) << id << ' ' << actualPattern;
+    }
+  };
+
+  auto checkConsistencyForCol0IdAndPermutation =
+      [&](Id col0Id, const Permutation& permutation, size_t subjectColIdx,
+          size_t objectColIdx) {
+        auto scanResult = permutation.scan(
+            permutation.getScanSpecAndBlocks(
+                ScanSpecification{col0Id, std::nullopt, std::nullopt},
+                locatedTriplesSnapshot),
+            std::array{ColumnIndex{ADDITIONAL_COLUMN_INDEX_SUBJECT_PATTERN},
+                       ColumnIndex{ADDITIONAL_COLUMN_INDEX_OBJECT_PATTERN}},
+            cancellationDummy, locatedTriplesSnapshot, singleThreadExecutor());
+        ASSERT_EQ(scanResult.numColumns(), 4u);
+        for (const auto& row : scanResult) {
+          auto patternIdx = row[2].getInt();
+          Id subjectId = row[subjectColIdx];
+          checkSingleElement(patternIdx, subjectId);
+          Id objectId = objectColIdx == col0IdTag ? col0Id : row[objectColIdx];
+          auto patternIdxObject = row[3].getInt();
+          checkSingleElement(patternIdxObject, objectId);
+        }
+      };
+
+  auto checkConsistencyForPredicate = [&](Id predicateId) {
+    checkConsistencyForCol0IdAndPermutation(
+        predicateId, indexImpl.getPermutation(Permutation::Enum::PSO), 0, 1);
+    checkConsistencyForCol0IdAndPermutation(
+        predicateId, indexImpl.getPermutation(Permutation::Enum::POS), 1, 0);
+  };
+  auto checkConsistencyForObject = [&](Id objectId) {
+    checkConsistencyForCol0IdAndPermutation(
+        objectId, indexImpl.getPermutation(Permutation::Enum::OPS), 1,
+        col0IdTag);
+    checkConsistencyForCol0IdAndPermutation(
+        objectId, indexImpl.getPermutation(Permutation::Enum::OSP), 0,
+        col0IdTag);
+  };
+
+  auto predicates = index.getImpl().PSO().getDistinctCol0IdsAndCounts(
+      cancellationDummy, locatedTriplesSnapshot, {});
+  for (const auto& predicate : predicates.getColumn(0)) {
+    checkConsistencyForPredicate(predicate);
+  }
+  auto objects = index.getImpl().OSP().getDistinctCol0IdsAndCounts(
+      cancellationDummy, locatedTriplesSnapshot, {});
+  for (const auto& object : objects.getColumn(0)) {
+    checkConsistencyForObject(object);
+  }
+  // NOTE: The SPO and SOP permutations currently don't have patterns stored.
+  // with them.
+}
+
+// Set the global settings that make the index building of the very small test
+// indices exercise the same code paths as that of large indices, and return a
+// cleanup that restores the previous values of these settings when it is
+// destroyed.
+//
+// NOTE: The settings are global, so setting them without such a cleanup would
+// make every test that runs afterwards silently depend on them.
+[[nodiscard]] auto setGlobalIndexBuildingSettingsForTesting() {
+  bool previousIgnoreMemoryLimit =
+      EXTERNAL_ID_TABLE_SORTER_IGNORE_MEMORY_LIMIT_FOR_TESTING.exchange(true);
+  // Decrease various default batch sizes such that there are multiple batches
+  // also for the very small test indices (important for test coverage).
+  size_t previousProgressBarBatchSize =
+      std::exchange(DEFAULT_PROGRESS_BAR_BATCH_SIZE, 2);
+  return absl::Cleanup{
+      [previousIgnoreMemoryLimit, previousProgressBarBatchSize] {
+        EXTERNAL_ID_TABLE_SORTER_IGNORE_MEMORY_LIMIT_FOR_TESTING =
+            previousIgnoreMemoryLimit;
+        DEFAULT_PROGRESS_BAR_BATCH_SIZE = previousProgressBarBatchSize;
+      }};
+}
+}  // namespace
+
+// _____________________________________________________________________________
+Index makeTestIndex(const std::string& indexBasename, TestIndexConfig c) {
+  // Ignore the (irrelevant) log output of the index building and loading during
+  // these tests. The returned cleanup restores the previously active logging
+  // stream when it goes out of scope at the end of this function.
+  std::ostringstream ignoreLogStream;
+  auto logCleanup = setGlobalLoggingStreamForTesting(&ignoreLogStream);
+  // The returned cleanup likewise restores the previous global settings for the
+  // index building at the end of this function.
+  auto settingsCleanup = setGlobalIndexBuildingSettingsForTesting();
+  // Remove previous index files. This is necessary because if we previously
+  // built the same index without patterns or all 6 permutations, we wouldn't
+  // overwrite the patterns or the missing permutations. This would lead to a
+  // false positive when we later check that the patterns or the missing
+  // permutations are not present, because they would actually be present from
+  // the previous index build.
+  namespace fs = ql::filesystem;
+  static constexpr std::array<std::string_view, 6> suffixes{
+      VOCAB_SUFFIX,       ".index",          ".internal.index",
+      CONFIGURATION_FILE, ".update-triples", ".allocated-graphs-state"};
+  qlever::util::deleteFilesInDirectory(
+      fs::current_path(), [&indexBasename](const auto& path) {
+        std::string name = path.filename().string();
+        return ql::ranges::any_of(suffixes, [&](std::string_view suffix) {
+          return ql::starts_with(name, absl::StrCat(indexBasename, suffix));
+        });
+      });
+  std::string inputFilename = indexBasename + ".ttl";
+  if (!c.turtleInput.has_value()) {
+    c.turtleInput =
+        "<x> <label> \"alpha\" . <x> <label> \"älpha\" . <x> <label> \"A\" . "
+        "<x> "
+        "<label> \"Beta\". <x> <is-a> <y>. <y> <is-a> <x>. <z> <label> "
+        "\"zz\"@en . <zz> <label> <zz> .";
+  }
+
+  BUFFER_SIZE_JOIN_PATTERNS_WITH_OSP() = 2;
+  {
+    std::fstream f(inputFilename, std::ios_base::out);
+    f << c.turtleInput.value();
+    f.close();
+  }
+  {
+    std::fstream settingsFile(inputFilename + ".settings.json",
+                              std::ios_base::out);
+    nlohmann::json settingsJson;
+    if (!c.createTextIndex) {
+      settingsJson["prefixes-external"] = std::vector<std::string>{""};
+      settingsJson["languages-internal"] = std::vector<std::string>{""};
+    }
+    for (const auto& [key, value] : c.additionalSettings) {
+      settingsJson[key] = nlohmann::json::parse(value);
+    }
+    settingsFile << settingsJson.dump();
+  }
+  {
+    Index index = makeIndexWithTestSettings(c.parserBufferSize);
+    // By default 2 triples per block. This is deliberately chosen as a small
+    // value, s.t. the tiny knowledge graphs from unit tests also contain
+    // multiple blocks. Should this value ever change, then some unit tests
+    // might have to be adapted.
+    index.rowsPerBlock() = c.rowsPerBlock;
+    index.setOnDiskBase(indexBasename);
+    index.usePatterns() = c.usePatterns;
+    index.setSettingsFile(inputFilename + ".settings.json");
+    index.loadAllPermutations() = c.loadAllPermutations;
+    index.addHasWordTriples() = c.addHasWordTriples;
+    qlever::InputFileSpecification spec{inputFilename, c.indexType,
+                                        std::nullopt};
+    if (c.parseInParallel.has_value()) {
+      spec.parseInParallel_ = c.parseInParallel.value();
+      spec.parseInParallelSetExplicitly_ = true;
+    }
+    // Use the explicitly configured vocabulary type, or a random one
+    // otherwise.
+    index.getImpl().setVocabularyTypeForIndexBuilding(
+        c.vocabularyType.has_value()
+            ? c.vocabularyType.value()
+            : VocabularyType::randomForIndexBuilding());
+    index.getImpl().setGeoPointEncodingForIndexBuilding(c.geoPointEncoding);
+    if (c.encodedPrefixesWithoutAngleBrackets.has_value() ||
+        !c.encodedIriPatterns.empty()) {
+      index.getImpl().setPrefixesForEncodedValues(
+          std::move(c.encodedPrefixesWithoutAngleBrackets)
+              .value_or(std::vector<std::string>{}),
+          std::move(c.encodedIriPatterns));
+    }
+    index.createFromFiles({spec}, c.numThreads);
+    if (c.createTextIndex) {
+#ifdef QLEVER_REDUCED_FEATURE_SET_FOR_CPP17
+      throw std::runtime_error("The text index is not available in C++17 mode");
+#else
+      TextIndexBuilder textIndexBuilder = TextIndexBuilder(
+          ad_utility::makeUnlimitedAllocator<Id>(), index.getOnDiskBase());
+      // First test the case of invalid b and k parameters for BM25, it should
+      // throw
+      AD_EXPECT_THROW_WITH_MESSAGE(
+          textIndexBuilder.buildTextIndexFile(
+              std::nullopt, true, TextScoringMetric::BM25, {2.0f, 0.5f}),
+          ::testing::HasSubstr("Invalid values"));
+      AD_EXPECT_THROW_WITH_MESSAGE(
+          textIndexBuilder.buildTextIndexFile(
+              std::nullopt, true, TextScoringMetric::BM25, {0.5f, -1.0f}),
+          ::testing::HasSubstr("Invalid values"));
+      c.scoringMetric = c.scoringMetric.value_or(TextScoringMetric::EXPLICIT);
+      c.bAndKParam = c.bAndKParam.value_or(std::pair{0.75f, 1.75f});
+
+      // The following tests that garbage values for b and k work if these
+      // parameters are unnecessary because we don't use `BM25`.
+      if (c.scoringMetric.value() != TextScoringMetric::BM25) {
+        c.bAndKParam = std::pair{-3.f, -3.f};
+      }
+      auto buildTextIndex = [&textIndexBuilder, &c](auto wordsAndDocsfile,
+                                                    bool addWordsFromLiterals) {
+        textIndexBuilder.buildTextIndexFile(
+            std::move(wordsAndDocsfile), addWordsFromLiterals,
+            c.scoringMetric.value(), c.bAndKParam.value());
+      };
+      if (c.contentsOfWordsFileAndDocsfile.has_value()) {
+        // Create and write to words- and docsfile to later build a full text
+        // index from them
+        ad_utility::File wordsFile(indexBasename + ".wordsfile", "w");
+        ad_utility::File docsFile(indexBasename + ".docsfile", "w");
+        wordsFile.write(c.contentsOfWordsFileAndDocsfile.value().first.c_str(),
+                        c.contentsOfWordsFileAndDocsfile.value().first.size());
+        docsFile.write(c.contentsOfWordsFileAndDocsfile.value().second.c_str(),
+                       c.contentsOfWordsFileAndDocsfile.value().second.size());
+        wordsFile.close();
+        docsFile.close();
+        textIndexBuilder.setKbName(indexBasename);
+        textIndexBuilder.setTextName(indexBasename);
+        textIndexBuilder.setOnDiskBase(indexBasename);
+        buildTextIndex(
+            std::pair<std::string, std::string>{indexBasename + ".wordsfile",
+                                                indexBasename + ".docsfile"},
+            c.addWordsFromLiterals);
+        textIndexBuilder.buildDocsDB(indexBasename + ".docsfile");
+      } else if (c.addWordsFromLiterals) {
+        buildTextIndex(std::nullopt, true);
+      }
+#endif
+    }
+  }
+  if (!c.usePatterns || !c.loadAllPermutations) {
+    // If we have no patterns, or only two permutations, then check the graceful
+    // fallback even if the options were not explicitly specified during the
+    // loading of the server.
+    Index index{ad_utility::makeUnlimitedAllocator<Id>()};
+    index.usePatterns() = true;
+    index.loadAllPermutations() = true;
+    EXPECT_NO_THROW(index.createFromOnDiskIndex(indexBasename, false));
+    EXPECT_EQ(index.loadAllPermutations(), c.loadAllPermutations);
+    EXPECT_EQ(index.usePatterns(), c.usePatterns);
+  }
+
+  Index index{ad_utility::makeUnlimitedAllocator<Id>()};
+  index.usePatterns() = c.usePatterns;
+  index.loadAllPermutations() = c.loadAllPermutations;
+  index.createFromOnDiskIndex(indexBasename, false);
+  if (c.createTextIndex) {
+    index.addTextFromOnDiskIndex();
+  }
+
+  if (c.secondaryVocabWords.has_value()) {
+    index.getImpl().setSecondaryVocab(
+        std::make_shared<SecondaryVocabulary>(c.secondaryVocabWords.value()));
+  }
+
+  if (c.usePatterns && c.loadAllPermutations) {
+    checkConsistencyBetweenPatternPredicateAndAdditionalColumn(index);
+  }
+  return index;
+}
+
+// _____________________________________________________________________________
+Index makeTestIndex(const std::string& indexBasename, std::string turtle) {
+  return makeTestIndex(indexBasename, TestIndexConfig{std::move(turtle)});
+}
+
+// ________________________________________________________________________________
+QueryExecutionContext* getQec(const std::string& indexBasenamePrefix,
+                              TestIndexConfig c) {
+  // Similar to `absl::Cleanup`. Calls the `callback_` in the destructor, but
+  // the callback is stored as a `std::function`, which allows to store
+  // different types of callbacks in the same wrapper type.
+  // TODO<joka921> RobinTF has a similar tool in the pipeline that can be used
+  // here.
+  struct TypeErasedCleanup {
+    std::function<void()> callback_;
+    ~TypeErasedCleanup() { callback_(); }
+    TypeErasedCleanup(std::function<void()> callback)
+        : callback_{std::move(callback)} {}
+    TypeErasedCleanup(const TypeErasedCleanup& rhs) = delete;
+    TypeErasedCleanup& operator=(const TypeErasedCleanup&) = delete;
+    // When being moved from, then the callback is disabled.
+    TypeErasedCleanup(TypeErasedCleanup&& rhs)
+        : callback_(std::exchange(rhs.callback_, [] {})) {}
+    TypeErasedCleanup& operator=(TypeErasedCleanup&& rhs) {
+      callback_ = std::exchange(rhs.callback_, [] {});
+      return *this;
+    }
+  };
+
+  // A `QueryExecutionContext` together with all data structures that it
+  // depends on. The members are stored as `unique_ptr`s so that the references
+  // inside the `QueryExecutionContext` remain stable even when moving the
+  // `Context`.
+  struct Context {
+    TypeErasedCleanup cleanup_;
+    std::shared_ptr<Index> index_;
+    std::unique_ptr<QueryResultCache> cache_;
+    std::unique_ptr<NamedResultCache> namedCache_;
+    std::shared_ptr<MaterializedViewsManager> materializedViewsManager_;
+    std::shared_ptr<QueryExecutionContext> qec_ =
+        std::make_unique<QueryExecutionContext>(
+            index_, cache_.get(), makeAllocator(MemorySize::megabytes(100)),
+            SortPerformanceEstimator{}, namedCache_.get(),
+            materializedViewsManager_, singleThreadExecutor());
+  };
+
+  static ad_utility::HashMap<std::pair<TestIndexConfig, std::string>, Context>
+      contextMap;
+
+  if (!contextMap.contains({c, indexBasenamePrefix})) {
+    // We have to pass `false` to `gtestCurrentTestName` to make this work for
+    // the benchmarking code (e.g. `benchmark/GroupByHashMapBenchmark.cpp`) that
+    // also calls `getQec()` outside a running gtest.
+    std::string testIndexBasename =
+        absl::StrCat(indexBasenamePrefix, gtestCurrentTestName(false), "_",
+                     contextMap.size());
+    contextMap.emplace(
+        std::pair<TestIndexConfig, std::string>{c, indexBasenamePrefix},
+        Context{TypeErasedCleanup{[testIndexBasename]() {
+                  for (const std::string& indexFilename :
+                       getAllIndexFilenames(testIndexBasename)) {
+                    // Don't log when a file can't be deleted,
+                    // because the logging might already be
+                    // destroyed.
+                    ad_utility::deleteFile(indexFilename, false);
+                  }
+                }},
+                std::make_shared<Index>(makeTestIndex(testIndexBasename, c)),
+                std::make_unique<QueryResultCache>(),
+                std::make_unique<NamedResultCache>(),
+                std::make_shared<MaterializedViewsManager>()});
+  }
+  return contextMap.at({c, indexBasenamePrefix}).qec_.get();
+}
+
+// ________________________________________________________________________________
+QueryExecutionContext* getQec(TestIndexConfig c) {
+  return getQec("_staticGlobalTestIndex", std::move(c));
+}
+
+// _____________________________________________________________________________
+QueryExecutionContext* getQec(std::optional<std::string> turtleInput,
+                              std::optional<VocabularyType> vocabularyType) {
+  TestIndexConfig config;
+  config.turtleInput = std::move(turtleInput);
+  config.vocabularyType = vocabularyType;
+  return getQec(std::move(config));
+}
+
+// ___________________________________________________________
+std::function<Id(const std::string&)> makeGetId(const Index& index) {
+  return [&index](const std::string& el) {
+    auto literalOrIri = [&el]() -> TripleComponent {
+      if (ql::starts_with(el, '<') || ql::starts_with(el, '@')) {
+        return TripleComponent::Iri::fromIriref(el);
+      } else {
+        AD_CONTRACT_CHECK(ql::starts_with(el, '\"'));
+        return TripleComponent::Literal::fromStringRepresentation(el);
+      }
+    }();
+    auto id = toValueId(literalOrIri, index);
+    AD_CONTRACT_CHECK(id.has_value());
+    return id.value();
+  };
+}
+}  // namespace ad_utility::testing

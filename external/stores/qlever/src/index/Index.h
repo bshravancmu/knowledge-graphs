@@ -1,0 +1,264 @@
+// Chair of Algorithms and Data Structures.
+// Author:
+//   2014-2017 Björn Buchhold (buchhold@informatik.uni-freiburg.de)
+//   2018-     Johannes Kalmbach (kalmbach@informatik.uni-freiburg.de)
+
+#ifndef QLEVER_SRC_INDEX_INDEX_H
+#define QLEVER_SRC_INDEX_INDEX_H
+
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "backports/three_way_comparison.h"
+#include "global/Id.h"
+#include "index/GraphNameManager.h"
+#include "index/InputFileSpecification.h"
+#include "index/Permutation.h"
+#include "index/TextScanMode.h"
+#include "index/TextScoringEnum.h"
+#include "index/vocabulary/EncodedIriManager.h"
+#include "index/vocabulary/StringSortComparator.h"
+#include "index/vocabulary/Vocabulary.h"
+#include "parser/TripleComponent.h"
+#include "util/CancellationHandle.h"
+#include "util/json.h"
+
+// Forward declarations.
+class IdTable;
+class TextBlockMetaData;
+class IndexImpl;
+class LocalVocabContext;
+struct LocatedTriplesState;
+class DeltaTriplesManager;
+
+class Index {
+ private:
+  // Pimpl to reduce compile times.
+  std::unique_ptr<IndexImpl> pimpl_;
+
+ public:
+  // Alongside the actual knowledge graph QLever stores additional triples
+  // for optimized query processing. This struct is used to report various
+  // statistics (number of triples, distinct number of subjects, etc.) for which
+  // the value differs when you also consider the added triples.
+  struct NumNormalAndInternal {
+    size_t normal{};
+    size_t internal{};
+
+    size_t normalAndInternal_() const { return normal + internal; }
+
+    QL_DEFINE_DEFAULTED_EQUALITY_OPERATOR_LOCAL(NumNormalAndInternal, normal,
+                                                internal)
+
+    static NumNormalAndInternal fromNormal(size_t normal) {
+      return {normal, 0};
+    }
+    // Note: The expansion of `NLOHMANN_DEFINE_TYPE_INTRUSIVE` ends in complete
+    // `friend` function definitions, so a trailing `;` would be an extra one,
+    // which is ill-formed (and rejected with `-pedantic-errors`).
+    NLOHMANN_DEFINE_TYPE_INTRUSIVE(NumNormalAndInternal, normal, internal)
+  };
+
+  // Store all information about possible search results from the text index in
+  // one place.
+  // Every vector is either empty or has the same size as the others.
+  struct WordEntityPostings {
+    // Stores the index of the TextRecord of each result.
+    std::vector<TextRecordIndex> cids_;
+    // For every instance should wids_.size() never be < 1.
+    // For prefix-queries stores for each term and result the index of
+    // the Word the prefixed-word was completed to.
+    std::vector<std::vector<WordIndex>> wids_ = {{}};
+    // Stores the index of the entity of each result.
+    std::vector<Id> eids_;
+    // Stores for each result how often an entity
+    // appears in its associated TextRecord. [[OLD DEFINITION]]
+    // Now scores BM25 scores for all words that are in the voacabulary
+    std::vector<Score> scores_;
+  };
+
+  using Filetype = qlever::Filetype;
+  using InputFileSpecification = qlever::InputFileSpecification;
+
+  /// Forbid copy and assignment.
+  Index& operator=(const Index&) = delete;
+  Index(const Index&) = delete;
+
+  /// Allow move construction, which is mostly used in unit tests.
+  Index(Index&&) noexcept;
+
+  explicit Index(ad_utility::AllocatorWithLimit<Id> allocator);
+  ~Index();
+
+  // Get underlying access to the Pimpl where necessary.
+  const IndexImpl& getPimpl() const { return *pimpl_; }
+
+  // Create an index from a file. Will write vocabulary and on-disk index data.
+  // `numThreads` is the number of threads used during the index build; it must
+  // be at least 1.
+  // NOTE: The index can not directly be used after this call, but has to be
+  // setup by `createFromOnDiskIndex` after this call.
+  void createFromFiles(const std::vector<InputFileSpecification>& files,
+                       size_t numThreads);
+
+  // Create an index object from an on-disk index that has previously been
+  // constructed using the `createFromFile` method which is typically called via
+  // `IndexBuilderMain`. Read necessary metadata into memory and open file
+  // handles.
+  void createFromOnDiskIndex(const std::string& onDiskBase,
+                             bool persistUpdatesOnDisk);
+
+  // Add text index from on-disk index that has previously been constructed.
+  // Read necessary metadata into memory and open file handles.
+  void addTextFromOnDiskIndex();
+
+  using Vocab = RdfsVocabulary;
+  const Vocab& getVocab() const;
+  const EncodedIriManager& encodedIriManager() const;
+  Vocab& getNonConstVocabForTesting();
+
+  using TextVocab = TextVocabulary;
+
+  // Get a (non-owning) pointer to the BlankNodeManager of this Index.
+  ad_utility::BlankNodeManager* getBlankNodeManager() const;
+
+  // Get a reference to the DeltaTriplesManager of this Index.
+  DeltaTriplesManager& deltaTriplesManager();
+  const DeltaTriplesManager& deltaTriplesManager() const;
+
+  // Get a reference to the GraphNameManager of this Index.
+  GraphNameManager& graphNameManager();
+  const GraphNameManager& graphNameManager() const;
+
+  // --------------------------------------------------------------------------
+  // RDF RETRIEVAL
+  // --------------------------------------------------------------------------
+  // TODO<joka921> Once we have an overview over the folding this logic should
+  // probably not be in the index class.
+  RdfsVocabulary::AccessReturnType indexToString(VocabIndex id) const;
+  TextVocabulary::AccessReturnType indexToString(WordVocabIndex id) const;
+
+  [[nodiscard]] Vocab::PrefixRanges prefixRanges(std::string_view prefix) const;
+
+  [[nodiscard]] const CompactVectorOfStrings<Id>& getPatterns() const;
+  /**
+   * @return The multiplicity of the entities column (0) of the full
+   * has-relation relation after unrolling the patterns.
+   */
+  [[nodiscard]] double getAvgNumDistinctPredicatesPerSubject() const;
+
+  /**
+   * @return The multiplicity of the predicates column (0) of the full
+   * has-relation relation after unrolling the patterns.
+   */
+  [[nodiscard]] double getAvgNumDistinctSubjectsPerPredicate() const;
+
+  /**
+   * @return The size of the full has-relation relation after unrolling the
+   *         patterns.
+   */
+  [[nodiscard]] size_t getNumDistinctSubjectPredicatePairs() const;
+
+  // --------------------------------------------------------------------------
+  // TEXT RETRIEVAL
+  // --------------------------------------------------------------------------
+  [[nodiscard]] std::string_view wordIdToString(WordIndex wordIndex) const;
+
+  [[nodiscard]] size_t getSizeOfTextBlocksSum(const std::string& word,
+                                              TextScanMode textScanMode) const;
+
+  IdTable getWordPostingsForTerm(
+      const std::string& term,
+      const ad_utility::AllocatorWithLimit<Id>& allocator) const;
+
+  IdTable getEntityMentionsForWord(
+      const std::string& term,
+      const ad_utility::AllocatorWithLimit<Id>& allocator) const;
+
+  size_t getIndexOfBestSuitedElTerm(
+      const std::vector<std::string>& terms) const;
+
+  [[nodiscard]] std::string getTextExcerpt(TextRecordIndex cid) const;
+
+  [[nodiscard]] float getAverageNofEntityContexts() const;
+
+  void setKbName(const std::string& name);
+
+  void setTextName(const std::string& name);
+
+  bool& usePatterns();
+
+  bool& loadAllPermutations();
+
+  bool& addHasWordTriples();
+
+  bool& doNotLoadPermutations();
+
+  void setKeepTempFiles(bool keepTempFiles);
+
+  ad_utility::MemorySize& memoryLimitIndexBuilding();
+  const ad_utility::MemorySize& memoryLimitIndexBuilding() const;
+
+  ad_utility::MemorySize& parserBufferSize();
+  const ad_utility::MemorySize& parserBufferSize() const;
+
+  size_t& rowsPerBlock();
+  const size_t& rowsPerBlock() const;
+
+  void setOnDiskBase(const std::string& onDiskBase);
+
+  void setSettingsFile(const std::string& filename);
+
+  void setNumTriplesPerBatch(uint64_t numTriplesPerBatch);
+
+  const std::string& getTextName() const;
+  const std::string& getKbName() const;
+  const std::string& getOnDiskBase() const;
+  const std::string& getIndexId() const;
+  const std::string& getGitShortHash() const;
+
+  NumNormalAndInternal numTriples() const;
+
+  size_t getNofTextRecords() const;
+  size_t getNofWordPostings() const;
+  size_t getNofEntityPostings() const;
+  size_t getNofNonLiteralsInTextIndex() const;
+
+  NumNormalAndInternal numDistinctSubjects() const;
+  NumNormalAndInternal numDistinctObjects() const;
+  NumNormalAndInternal numDistinctPredicates() const;
+
+  bool hasAllPermutations() const;
+
+  // ___________________________________________________________________________
+  std::vector<float> getMultiplicities(
+      const TripleComponent& key, const Permutation& permutation,
+      const LocatedTriplesState& locatedTriplesState) const;
+
+  // ___________________________________________________________________________
+  std::vector<float> getMultiplicities(const Permutation& permutation) const;
+
+  // Similar to the previous overload of `scan`, but only get the exact size of
+  // the scan result.
+  size_t getResultSizeOfScan(
+      const ScanSpecification& scanSpecification,
+      const Permutation::Enum& permutation,
+      const LocatedTriplesState& locatedTriplesState) const;
+
+  // Get access to the implementation. This should be used rarely as it
+  // requires including the rather expensive `IndexImpl.h` header
+  IndexImpl& getImpl() { return *pimpl_; }
+  [[nodiscard]] const IndexImpl& getImpl() const { return *pimpl_; }
+
+  // Allow implicit conversions to `const IndexImpl&`.
+  operator const IndexImpl&() const { return getImpl(); }
+
+  // Return this index as the context of the `LocalVocabEntry`s that belong to
+  // it. Defined out of line, such that the callers only need the forward
+  // declaration of `LocalVocabContext` above and not the complete type (which
+  // would require the rather expensive `IndexImpl.h`).
+  const LocalVocabContext& getLocalVocabContext() const;
+};
+
+#endif  // QLEVER_SRC_INDEX_INDEX_H

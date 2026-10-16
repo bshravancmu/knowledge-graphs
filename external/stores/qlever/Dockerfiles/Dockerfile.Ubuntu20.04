@@ -1,0 +1,44 @@
+# This Dockerfile is DEPRECATED, use the latest Dockerfile from the repository.
+#
+# The only reason it is here is to document how to install QLever on Ubuntu 20.04.
+
+FROM ubuntu:20.04 as base
+LABEL maintainer="Johannes Kalmbach <kalmbacj@informatik.uni-freiburg.de>"
+ENV LANG C.UTF-8
+ENV LC_ALL C.UTF-8
+ENV LC_CTYPE C.UTF-8
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update
+RUN apt install -y software-properties-common wget
+RUN add-apt-repository -y ppa:mhier/libboost-latest
+RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test
+RUN wget https://apt.kitware.com/kitware-archive.sh && chmod +x kitware-archive.sh &&./kitware-archive.sh
+RUN apt-get update
+
+FROM base as builder
+RUN apt-get install -y build-essential cmake libicu-dev tzdata pkg-config uuid-runtime uuid-dev git gcc-11 g++-11 libjemalloc-dev ninja-build libzstd-dev libssl-dev libboost1.81-dev libboost-url1.81-dev libboost-iostreams1.81-dev libboost-program-options1.81 libboost-container1.81-dev
+
+COPY . /app/
+
+WORKDIR /app/
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app/build/
+RUN cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER="g++-11" -DLOGLEVEL=INFO -GNinja .. && ninja
+RUN make test
+
+FROM base as runtime
+WORKDIR /app
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y wget python3-yaml unzip curl bzip2 pkg-config libicu-dev python3-icu uuid-runtime lbzip2 libjemalloc-dev libzstd-dev libssl-dev libboost1.81 libstdc++6
+
+ARG UID=1000
+RUN groupadd -r qlever && useradd --no-log-init -r -u $UID -g qlever qlever && chown qlever:qlever /app
+USER qlever
+ENV PATH=/app/:$PATH
+
+COPY --from=builder /app/build/qlever-* /app/
+COPY --from=builder /app/build/*Main /app/
+COPY --from=builder /app/e2e/* /app/e2e/
+
+ENTRYPOINT ["bash"]

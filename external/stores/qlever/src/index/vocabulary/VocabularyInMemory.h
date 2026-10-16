@@ -1,0 +1,160 @@
+// Copyright 2022, University of Freiburg,
+// Chair of Algorithms and Data Structures.
+// Author: Johannes Kalmbach<joka921> (johannes.kalmbach@gmail.com)
+
+#ifndef QLEVER_SRC_INDEX_VOCABULARY_VOCABULARYINMEMORY_H
+#define QLEVER_SRC_INDEX_VOCABULARY_VOCABULARYINMEMORY_H
+
+#include <string>
+#include <string_view>
+
+#include "index/vocabulary/StringSortComparator.h"
+#include "index/vocabulary/VocabularyBinarySearchMixin.h"
+#include "index/vocabulary/VocabularyTypes.h"
+#include "util/CompactStringVector.h"
+#include "util/Exception.h"
+#include "util/Serializer/Serializer.h"
+
+//! A vocabulary. Wraps a `CompactVectorOfStrings<char>`
+//! and provides additional methods for reading and writing to/from file,
+//! and retrieval via binary search.
+class VocabularyInMemory
+    : public VocabularyBinarySearchMixin<VocabularyInMemory> {
+ public:
+  using CharType = char;
+  using StringView = std::basic_string_view<CharType>;
+  using String = std::basic_string<CharType>;
+  using Words = CompactVectorOfStrings<CharType>;
+
+ private:
+  // The actual storage.
+  Words _words;
+
+ public:
+  // Construct an empty vocabulary
+  VocabularyInMemory() = default;
+
+  // Construct the vocabulary from `Words`
+  explicit VocabularyInMemory(Words words) : _words{std::move(words)} {}
+
+  // Build a vocabulary as a non-owning, zero-copy view directly into the
+  // buffer of `serializer`, which must support zero-copy deserialization
+  // (see `ZeroCopyReadSerializer` in `util/Serializer/Serializer.h`). The
+  // returned vocabulary is only valid as long as the memory backing
+  // `serializer`'s buffer is valid and unchanged.
+  CPP_template(typename S)(
+      requires ad_utility::serialization::ZeroCopyReadSerializer<
+          S>) static VocabularyInMemory
+      fromZeroCopyDeserializer(S& serializer) {
+    return VocabularyInMemory{Words::fromZeroCopyDeserializer(serializer)};
+  }
+
+  // Vocabularies are movable
+  VocabularyInMemory& operator=(VocabularyInMemory&&) noexcept = default;
+  VocabularyInMemory(VocabularyInMemory&&) noexcept = default;
+
+  // Read the vocabulary from a file. The file must have been created by a call
+  // to `writeToFile` or using a `WordWriter`.
+  void open(const std::string& fileName);
+
+  // Write the vocabulary to a file.
+  void writeToFile(const std::string& fileName) const;
+
+  // Return the total number of words
+  [[nodiscard]] size_t size() const { return _words.size(); }
+
+  // Return the `i-th` word. The behavior is undefined if `i >= size()`
+  auto operator[](uint64_t i) const { return _words[i]; }
+
+  // Default fallback iteration over all words.
+  auto scanAll() const {
+    return ad_utility::integerRange(static_cast<uint64_t>(size())) |
+           ql::views::transform([this](uint64_t index) {
+             return IndexAndWord{index, (*this)[index]};
+           });
+  }
+
+  //____________________________________________________________________________
+  VocabBatchLookupResult lookupBatch(ql::span<const size_t> indices) const {
+    return ad_utility::vocabulary::sequentialLookupBatch(*this, indices);
+  }
+
+  //____________________________________________________________________________
+  VocabLookupOutput lookupBatchesStreamed(VocabLookupInput input) const {
+    return ad_utility::vocabulary::lookupBatchesStreamed(*this,
+                                                         std::move(input));
+  }
+
+  // Conversion function that is used by the Mixin base class.
+  template <typename It>
+  WordAndIndex iteratorToWordAndIndex(It it) const {
+    if (it == _words.end()) {
+      return WordAndIndex::end();
+    }
+    size_t idx = it - _words.begin();
+    return {_words[idx], idx};
+  }
+
+  // A helper type that can be used to directly write a vocabulary to disk
+  // word-by-word, without having to materialize it in RAM first. See the
+  // documentation of `CompactVectorOfStrings` for details.
+  struct WordWriter : public WordWriterBase {
+    typename Words::Writer writer_;
+    uint64_t index_ = 0;
+
+    explicit WordWriter(const std::string& filename) : writer_{filename} {}
+    uint64_t operator()(std::string_view str,
+                        [[maybe_unused]] bool isExternalDummy) override {
+      writer_.push(str.data(), str.size());
+      return index_++;
+    }
+
+    ~WordWriter() override {
+      if (!finishWasCalled()) {
+        ad_utility::terminateIfThrows([this]() { this->finish(); },
+                                      "Calling `finish` from the destructor of "
+                                      "`VocabularyInMemory::WordWriter`");
+      }
+    }
+
+   private:
+    void finishImpl() override { writer_.finish(); }
+  };
+
+  // All the words are stored in a single file under the base filename itself.
+  static FileSuffixes fileSuffixes() { return {""}; }
+
+  // Return a `unique_ptr<WordWriter>` that directly writes the words to the
+  // given `filename`. The words are not materialized in RAM, but the vocabulary
+  // later has to be explicitly initialized via `open(filename)`.
+  static auto makeDiskWriterPtr(const std::string& filename) {
+    return std::make_unique<WordWriter>(filename);
+  }
+
+  // The block writer of this vocabulary simply feeds its `WordWriter` word by
+  // word (see `BlockWriterBase`).
+  static std::unique_ptr<BlockWriterBase> makeBlockWriterPtr(
+      const std::string& filename) {
+    return makeBlockWriterFromWordWriter(makeDiskWriterPtr(filename));
+  }
+
+  // The `ParallelWordWriterBase` of this (single) vocabulary, for a
+  // `Vocabulary` that is built directly on it (see `Vocabulary.h`).
+  static std::unique_ptr<ParallelWordWriterBase> makeParallelWriterPtr(
+      const std::string& filename) {
+    return std::make_unique<SingleVocabularyParallelWriter>(
+        makeBlockWriterPtr(filename));
+  }
+
+  // Clear the vocabulary.
+  void close() { _words.clear(); }
+
+  // Const access to the underlying words.
+  auto begin() const { return _words.begin(); }
+  auto end() const { return _words.end(); }
+
+  // Generic serialization support.
+  AD_SERIALIZE_FRIEND_FUNCTION(VocabularyInMemory) { serializer | arg._words; }
+};
+
+#endif  // QLEVER_SRC_INDEX_VOCABULARY_VOCABULARYINMEMORY_H

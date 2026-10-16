@@ -1,0 +1,519 @@
+//  Copyright 2022, University of Freiburg,
+//  Chair of Algorithms and Data Structures.
+//  Author: Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
+
+#include "util/DateYearDuration.h"
+
+#include <absl/strings/str_format.h>
+
+#include "util/CtreHelpers.h"
+#include "util/Log.h"
+
+// Regex objects with explicitly named groups to parse dates and times.
+constexpr static ctll::fixed_string dateRegex{
+    R"((?<year>-?\d{4,})-(?<month>\d{2})-(?<day>\d{2}))"};
+constexpr static ctll::fixed_string timeRegex{
+    R"((?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2}(\.\d+)?))"};
+constexpr static ctll::fixed_string timeZoneRegex{
+    R"((?<tzZ>Z)|(?<tzSign>[+\-])(?<tzHours>\d{2}):(?<tzMinutes>\d{2}))"};
+
+namespace detail {
+// Combined regex patterns for different date/time formats (namespace scope for
+// C++17)
+constexpr static ctll::fixed_string dateTimeRegex =
+    dateRegex + "T" + timeRegex + grp(timeZoneRegex) + "?";
+constexpr static ctll::fixed_string dateOnlyRegex =
+    dateRegex + grp(timeZoneRegex) + "?";
+constexpr static ctll::fixed_string gYearRegex = "(?<year>-?\\d{4,})";
+constexpr static ctll::fixed_string gYearRegexWithTz =
+    gYearRegex + grp(timeZoneRegex) + "?";
+constexpr static ctll::fixed_string gYearMonthRegex =
+    "(?<year>-?\\d{4,})-(?<month>\\d{2})";
+constexpr static ctll::fixed_string gYearMonthRegexWithTz =
+    gYearMonthRegex + grp(timeZoneRegex) + "?";
+
+// CTRE named capture group identifiers for C++17 compatibility
+constexpr ctll::fixed_string yearGroup = "year";
+constexpr ctll::fixed_string monthGroup = "month";
+constexpr ctll::fixed_string dayGroup = "day";
+constexpr ctll::fixed_string hourGroup = "hour";
+constexpr ctll::fixed_string minuteGroup = "minute";
+constexpr ctll::fixed_string secondGroup = "second";
+constexpr ctll::fixed_string tzZGroup = "tzZ";
+constexpr ctll::fixed_string tzSignGroup = "tzSign";
+constexpr ctll::fixed_string tzHoursGroup = "tzHours";
+constexpr ctll::fixed_string tzMinutesGroup = "tzMinutes";
+}  // namespace detail
+
+// _____________________________________________________________________________
+std::pair<std::string, const char*> DateYearOrDuration::toStringAndType()
+    const {
+  if (isDate()) {
+    return getDateUnchecked().toStringAndType();
+  }
+
+  // If a DayTimeDuration is contained it will be exported as a
+  // `xsd:dayTimeDuration` type.
+  if (isDayTimeDuration()) {
+    return getDayTimeDurationUnchecked().toStringAndType();
+  }
+
+  using F = absl::ParsedFormat<'d'>;
+
+  // Format the year using `format` and return the pair of `(formattedYear,
+  // type)`.
+  auto impl = [this](const F& format, const char* actualType) {
+    return std::pair{absl::StrFormat(format, getYear()), actualType};
+  };
+
+  switch (getType()) {
+    case Type::DateTime:
+      return impl(F{"%d-01-01T00:00:00"}, XSD_DATETIME_TYPE);
+    case Type::Date:
+      return impl(F{"%d-01-01"}, XSD_DATE_TYPE);
+    case Type::YearMonth:
+      return impl(F{"%d-01"}, XSD_GYEARMONTH_TYPE);
+    case Type::Year:
+      return impl(F{"%d"}, XSD_GYEAR_TYPE);
+  }
+  AD_FAIL();
+}
+
+// _____________________________________________________________________________
+template <typename T>
+static Date::TimeZone parseTimeZone(const T& match) {
+  if (match.template get<detail::tzZGroup>() == "Z") {
+    return Date::TimeZoneZ{};
+  } else if (!match.template get<detail::tzHoursGroup>()) {
+    return Date::NoTimeZone{};
+  }
+  int tz = match.template get<detail::tzHoursGroup>().to_number();
+  if (match.template get<detail::tzSignGroup>() == "-") {
+    tz *= -1;
+  }
+  if (match.template get<detail::tzMinutesGroup>() != "00") {
+    AD_LOG_DEBUG << "Qlever supports only full hours as timezones, timezone"
+                 << match.template get<0>() << "will be rounded down to " << tz
+                 << ":00" << std::endl;
+  }
+  return tz;
+}
+
+// _____________________________________________________________________________
+// Create a `DateYearOrDuration` from the given input. If the `year` is in the
+// range `[-9999, 9999]` then the date is stored regularly, otherwise only the
+// year is stored, and it is checked whether `month` and `day` are both `1`, and
+// `hour, minute, second` are all `0`.
+static DateYearOrDuration makeDateOrLargeYear(std::string_view fullInput,
+                                              int64_t year, int month, int day,
+                                              int hour, int minute,
+                                              double second,
+                                              Date::TimeZone timeZone) {
+  if (year < Date::minYear || year > Date::maxYear) {
+    if (year < DateYearOrDuration::minYear ||
+        year > DateYearOrDuration::maxYear) {
+      AD_LOG_DEBUG << "QLever cannot encode dates that are less than "
+                   << DateYearOrDuration::minYear << " or larger than "
+                   << DateYearOrDuration::maxYear << ". Input " << fullInput
+                   << " will be clamped to this range";
+      year = std::clamp(year, DateYearOrDuration::minYear,
+                        DateYearOrDuration::maxYear);
+    }
+
+    // Print a warning if the value of a component of a date (e.g. month or day)
+    // will be lost because of the large year representation.
+    auto warn = [&fullInput, alreadyWarned = false](std::string_view component,
+                                                    auto actualValue,
+                                                    auto defaultValue) mutable {
+      if (actualValue == defaultValue || alreadyWarned) {
+        return;
+      }
+      // Warn only for one component per input.
+      alreadyWarned = true;
+      AD_LOG_DEBUG
+          << "When the year of a datetime object is smaller than -9999 "
+             "or larger than 9999 then the "
+          << component << " will always be set to " << defaultValue
+          << " in QLever's implementation of dates. Full input was "
+          << fullInput << std::endl;
+    };
+
+    if (month == 0) {
+      return DateYearOrDuration(year, DateYearOrDuration::Type::Year);
+    }
+    warn("month", month, 1);
+
+    if (day == 0) {
+      return DateYearOrDuration(year, DateYearOrDuration::Type::YearMonth);
+    }
+    warn("day", day, 1);
+    if (hour == -1) {
+      return DateYearOrDuration(year, DateYearOrDuration::Type::Date);
+    }
+    warn("hour", hour, 0);
+    warn("minute", minute, 0);
+    warn("second", second, 0.0);
+    return DateYearOrDuration(year, DateYearOrDuration::Type::DateTime);
+  }
+  return DateYearOrDuration{
+      Date{static_cast<int>(year), month, day, hour, minute, second, timeZone}};
+}
+
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration>
+DateYearOrDuration::parseXsdDatetimeGetOptDate(std::string_view dateString) {
+  auto match = ctre::match<detail::dateTimeRegex>(dateString);
+  if (!match) {
+    return std::nullopt;
+  }
+  int64_t year = match.template get<detail::yearGroup>().to_number<int64_t>();
+  int month = match.template get<detail::monthGroup>().to_number();
+  int day = match.template get<detail::dayGroup>().to_number();
+  int hour = match.template get<detail::hourGroup>().to_number();
+  int minute = match.template get<detail::minuteGroup>().to_number();
+  double second = std::strtod(match.get<detail::secondGroup>().data(), nullptr);
+  return makeDateOrLargeYear(dateString, year, month, day, hour, minute, second,
+                             parseTimeZone(match));
+}
+
+// _____________________________________________________________________________
+DateYearOrDuration DateYearOrDuration::parseXsdDatetime(
+    std::string_view dateString) {
+  if (auto optDate = parseXsdDatetimeGetOptDate(dateString); optDate) {
+    return optDate.value();
+  }
+  throw DateParseException{absl::StrCat(
+      "The value ", dateString, " cannot be parsed as an `xsd:dateTime`.")};
+}
+
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration> DateYearOrDuration::parseXsdDateGetOptDate(
+    std::string_view dateString) {
+  auto match = ctre::match<detail::dateOnlyRegex>(dateString);
+  if (!match) {
+    return std::nullopt;
+  }
+  int64_t year = match.template get<detail::yearGroup>().to_number<int64_t>();
+  int month = match.template get<detail::monthGroup>().to_number();
+  int day = match.template get<detail::dayGroup>().to_number();
+  return makeDateOrLargeYear(dateString, year, month, day, -1, 0, 0.0,
+                             parseTimeZone(match));
+}
+
+// _____________________________________________________________________________
+DateYearOrDuration DateYearOrDuration::parseXsdDate(
+    std::string_view dateString) {
+  if (auto optDate = parseXsdDateGetOptDate(dateString); optDate) {
+    return optDate.value();
+  }
+  throw DateParseException{absl::StrCat("The value ", dateString,
+                                        " cannot be parsed as an `xsd:date`.")};
+}
+
+// _____________________________________________________________________________
+DateYearOrDuration DateYearOrDuration::parseGYear(std::string_view dateString) {
+  auto match = ctre::match<detail::gYearRegexWithTz>(dateString);
+  if (!match) {
+    throw DateParseException{absl::StrCat(
+        "The value ", dateString, " cannot be parsed as an `xsd:gYear`.")};
+  }
+  int64_t year = match.template get<detail::yearGroup>().to_number<int64_t>();
+  return makeDateOrLargeYear(dateString, year, 0, 0, -1, 0, 0.0,
+                             parseTimeZone(match));
+}
+
+// _____________________________________________________________________________
+DateYearOrDuration DateYearOrDuration::parseGYearMonth(
+    std::string_view dateString) {
+  auto match = ctre::match<detail::gYearMonthRegexWithTz>(dateString);
+  if (!match) {
+    throw DateParseException{absl::StrCat(
+        "The value ", dateString, " cannot be parsed as an `xsd:gYearMonth`.")};
+  }
+  int64_t year = match.template get<detail::yearGroup>().to_number<int64_t>();
+  int month = match.template get<detail::monthGroup>().to_number();
+  return makeDateOrLargeYear(dateString, year, month, 0, -1, 0, 0.0,
+                             parseTimeZone(match));
+}
+
+//_____________________________________________________________________________
+DateYearOrDuration DateYearOrDuration::parseXsdDayTimeDuration(
+    std::string_view dayTimeDurationString) {
+  return DateYearOrDuration{
+      DayTimeDuration::parseXsdDayTimeDuration(dayTimeDurationString)};
+}
+
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration>
+DateYearOrDuration::xsdDayTimeDurationFromDate(
+    const DateYearOrDuration& dateOrLargeYear) {
+  if (!dateOrLargeYear.isDate()) {
+    return std::nullopt;
+  } else {
+    Date::TimeZone timezone = dateOrLargeYear.getDateUnchecked().getTimeZone();
+    if (std::holds_alternative<int>(timezone)) {
+      int hour = std::get<int>(timezone);
+      auto type = hour < 0 ? DayTimeDuration::Type::Negative
+                           : DayTimeDuration::Type::Positive;
+      return DateYearOrDuration{
+          DayTimeDuration(type, 0, std::abs(hour), 0, 0.0)};
+    } else if (std::holds_alternative<Date::TimeZoneZ>(timezone)) {
+      return DateYearOrDuration{DayTimeDuration{}};
+    } else {
+      AD_CORRECTNESS_CHECK(std::holds_alternative<Date::NoTimeZone>(timezone));
+      return std::nullopt;
+    }
+  }
+}
+
+// _____________________________________________________________________________
+int64_t DateYearOrDuration::getYear() const {
+  if (isDate()) {
+    return getDateUnchecked().getYear();
+  } else {
+    return NBit::fromNBit(bits_ >> numTypeBits);
+  }
+}
+
+// _____________________________________________________________________________
+std::optional<int> DateYearOrDuration::getMonth() const {
+  if (isDate()) {
+    int month = getDateUnchecked().getMonth();
+    if (month == 0) {
+      return std::nullopt;
+    } else {
+      return month;
+    }
+  } else if (getType() != Type::Year) {
+    return 1;
+  } else {
+    return std::nullopt;
+  }
+}
+
+// _____________________________________________________________________________
+std::optional<int> DateYearOrDuration::getDay() const {
+  if (isDate()) {
+    int day = getDateUnchecked().getDay();
+    if (day == 0) {
+      return std::nullopt;
+    } else {
+      return day;
+    }
+  } else if (getType() == Type::Year || getType() == Type::YearMonth) {
+    return std::nullopt;
+  } else {
+    return 1;
+  }
+}
+
+// _____________________________________________________________________________
+std::string DateYearOrDuration::getStrTimezone() const {
+  if (isDate()) {
+    return getDateUnchecked().formatTimeZone();
+  } else {
+    return "";
+  }
+}
+
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration> DateYearOrDuration::convertToXsdDatetime(
+    const DateYearOrDuration& dateValue) {
+  if (dateValue.isDayTimeDuration() || !dateValue.isDate()) {
+    return std::nullopt;
+  }
+  const Date& date = dateValue.getDate();
+  if (date.hasTime()) {
+    // Is already xsd:dateTime value.
+    return dateValue;
+  }
+  return DateYearOrDuration(
+      Date(date.getYear(), date.getMonth(), date.getDay(), 0, 0, 0.0));
+}
+
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration> DateYearOrDuration::convertToXsdDate(
+    const DateYearOrDuration& dateValue) {
+  if (dateValue.isDayTimeDuration() || !dateValue.isDate()) {
+    return std::nullopt;
+  }
+  const Date& date = dateValue.getDate();
+  return DateYearOrDuration(
+      Date(date.getYear(), date.getMonth(), date.getDay()));
+}
+
+#ifndef QLEVER_REDUCED_FEATURE_SET_FOR_CPP17
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration> DateYearOrDuration::operator-(
+    const DateYearOrDuration& rhs) const {
+  if (isDate() && rhs.isDate()) {
+    // `Date` - `Date` => `DayTimeDuration` ; getting time between the two
+    // `Date`s.
+    const Date& ownDate = getDateUnchecked();
+    const Date& otherDate = rhs.getDateUnchecked();
+
+    std::optional<DayTimeDuration> difference = ownDate - otherDate;
+    if (!difference.has_value()) {
+      return std::nullopt;
+    } else {
+      return DateYearOrDuration{difference.value()};
+    }
+  } else if (isDayTimeDuration() && rhs.isDayTimeDuration()) {
+    //  `DayTimeDuration` - `DayTimeDuration` => `DayTimeDuration`.
+    const DayTimeDuration& ownDuration = getDayTimeDurationUnchecked();
+    const DayTimeDuration& otherDuration = rhs.getDayTimeDurationUnchecked();
+
+    std::optional<DayTimeDuration> difference = ownDuration - otherDuration;
+    if (!difference.has_value()) {
+      return std::nullopt;
+    } else {
+      return DateYearOrDuration{difference.value()};
+    }
+  } else if (isDate() && rhs.isDayTimeDuration()) {
+    //  `Date` - `DayTimeDuration` => `Date` or `LargeYear`.
+    const Date& ownDate = getDateUnchecked();
+    const DayTimeDuration& otherDuration = rhs.getDayTimeDurationUnchecked();
+
+    std::optional<DateYearOrDuration> difference = ownDate - otherDuration;
+    if (!difference.has_value()) {
+      return std::nullopt;
+    } else {
+      return difference.value();
+    }
+  } else if (isLongYear() && rhs.isLongYear()) {
+    //  `LargeYear` - `LargeYear` => `DayTimeDuration`.
+    using namespace std::chrono;
+    // Assuming Jan 1st of respective year because only year is stored.
+    auto year1 = year_month_day{year(getYear()) / 1 / 1};
+    auto year2 = year_month_day{year(rhs.getYear()) / 1 / 1};
+
+    auto difference = sys_days(year1) - sys_days(year2);
+    DayTimeDuration::Type durationType = DayTimeDuration::Type::Positive;
+    auto diff_count = difference.count();
+    if (diff_count < 0) {
+      durationType = DayTimeDuration::Type::Negative;
+      diff_count = -diff_count;
+    }
+    // If the resulting duration is too big for `DayTimeDuration` (>1'048'575
+    // days) return UNDEF.
+    std::optional<DayTimeDuration> result =
+        DayTimeDuration::makeWithBoundsCheck(
+            durationType, static_cast<int>(diff_count), 0, 0, 0);
+    if (!result.has_value()) {
+      return std::nullopt;
+    } else {
+      return DateYearOrDuration{result.value()};
+    }
+  }
+
+  // The following will not be implemented (not viable):
+  //  `DayTimeDuration` - `Date`,
+  //  `DayTimeDuration` - `LargeYear`.
+
+  // No viable subtraction.
+  return std::nullopt;
+}
+
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration> DateYearOrDuration::operator+(
+    const DateYearOrDuration& rhs) const {
+  if (isDayTimeDuration() && rhs.isDayTimeDuration()) {
+    //  `DayTimeDuration` + `DayTimeDuration` => `DayTimeDuration`.
+    const DayTimeDuration& ownDuration = getDayTimeDurationUnchecked();
+    const DayTimeDuration& otherDuration = rhs.getDayTimeDurationUnchecked();
+
+    std::optional<DayTimeDuration> sum = ownDuration + otherDuration;
+    if (!sum.has_value()) {
+      return std::nullopt;
+    } else {
+      return DateYearOrDuration{sum.value()};
+    }
+  } else if (isDate() && rhs.isDayTimeDuration()) {
+    //  `Date` + `DayTimeDuration` => `Date`.
+    const Date& ownDate = getDateUnchecked();
+    const DayTimeDuration& otherDuration = rhs.getDayTimeDurationUnchecked();
+
+    std::optional<DateYearOrDuration> sum = ownDate + otherDuration;
+    if (!sum.has_value()) {
+      return std::nullopt;
+    } else {
+      return DateYearOrDuration{sum.value()};
+    }
+  }
+
+  // The following will not be implemented (not viable):
+  //  `Date` + `Date`,
+  //  `DayTimeDuration` + `Date`,
+  //  `DayTimeDuration` + `LargeYear`,
+  //  `LargeYear` + `LargeYear` .
+
+  // No viable addition.
+  return std::nullopt;
+}
+
+// _____________________________________________________________________________
+DateYearOrDuration DateYearOrDuration::makeFromEpoch(
+    Date::Milliseconds timestamp, Date::TimeZone tz) {
+  int8_t offset = Date::getTimeZoneOffsetToUTCInHours(tz);
+  // Shift the timestamp according to the given `TimeZone`offset.
+  timestamp = timestamp + std::chrono::hours{offset};
+
+  // Extract date from epoch timestamp.
+  auto days = std::chrono::floor<std::chrono::days>(timestamp);
+  std::chrono::year_month_day date = std::chrono::year_month_day{days};
+
+  auto time = timestamp - days;
+  // Extract time from remaining seconds.
+  auto seconds = std::chrono::floor<std::chrono::seconds>(time);
+  std::chrono::hh_mm_ss remainder = std::chrono::hh_mm_ss{seconds};
+
+  // Extract remaining milliseconds to later reconstruct the seconds correctly.
+  auto milliseconds =
+      std::chrono::floor<std::chrono::milliseconds>(time - seconds);
+
+  auto year = static_cast<int>(date.year());
+  // Check if the result can be stored in a `Date`.
+  if (-9999 <= year && year <= 9999) {
+    // The methods `year`, `month`, `day` return
+    // `std::chrono::year`/`std::chrono::month`/`std::chrono::day`, therefore
+    // static casts are necessary. For `month` and `day` only `operator
+    // unsigned` is supported, therefore two casts are necessary.
+    return DateYearOrDuration{
+        Date{year, static_cast<int>(static_cast<unsigned>(date.month())),
+             static_cast<int>(static_cast<unsigned>(date.day())),
+             static_cast<int>(remainder.hours().count()),
+             static_cast<int>(remainder.minutes().count()),
+             static_cast<double>(remainder.seconds().count() +
+                                 (milliseconds.count() / 1'000.0)),
+             tz}};
+  } else {  // Needs to be stored as a `LargeYear`.
+    return DateYearOrDuration{year, DateYearOrDuration::Type::Year};
+  }
+}
+
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration> operator-(const Date lhs,
+                                            const DayTimeDuration& rhs) {
+  auto epochLhs = lhs.toEpoch();
+  if (!epochLhs.has_value()) {
+    return std::nullopt;
+  }
+  auto totalMillisecondsRhs = rhs.getTotalMilliseconds();
+  Date::Milliseconds newDate =
+      epochLhs.value() - std::chrono::milliseconds(totalMillisecondsRhs);
+  return DateYearOrDuration::makeFromEpoch(newDate, lhs.getTimeZone());
+}
+
+// _____________________________________________________________________________
+std::optional<DateYearOrDuration> operator+(const Date lhs,
+                                            const DayTimeDuration& rhs) {
+  auto epochLhs = lhs.toEpoch();
+  if (!epochLhs.has_value()) {
+    return std::nullopt;
+  }
+  auto totalMillisecondsRhs = rhs.getTotalMilliseconds();
+  Date::Milliseconds newDate =
+      epochLhs.value() + std::chrono::milliseconds(totalMillisecondsRhs);
+  return DateYearOrDuration::makeFromEpoch(newDate, lhs.getTimeZone());
+}
+#endif

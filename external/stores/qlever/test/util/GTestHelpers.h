@@ -1,0 +1,368 @@
+// Copyright 2022, University of Freiburg,
+// Chair of Algorithms and Data Structures.
+// Authors: Julian Mundhahs (mundhahj@informatik.uni-freiburg.de)
+//          Johannes Kalmbach (kalmbach@cs.uni-freiburg.de)
+
+#ifndef QLEVER_TEST_UTIL_GTESTHELPERS_H
+#define QLEVER_TEST_UTIL_GTESTHELPERS_H
+
+#include <absl/cleanup/cleanup.h>
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_replace.h>
+#include <gmock/gmock.h>
+#include <re2/re2.h>
+
+#include <chrono>
+#include <memory>
+#include <optional>
+#include <sstream>
+#include <thread>
+
+#include "backports/concepts.h"
+#include "backports/three_way_comparison.h"
+#include "util/Log.h"
+#include "util/SourceLocation.h"
+#include "util/TypeTraits.h"
+#include "util/json.h"
+
+// The following two macros make the usage of `testing::Property` and
+// `testing::Field` simpler and more consistent. Examples:
+//  AD_PROPERTY(std::string, empty, IsTrue);  // Matcher that checks that
+//  `arg.empty()` is true for the passed std::string `arg`.
+// AD_FIELD(std::pair<int, bool>, second, IsTrue); // Matcher that checks, that
+// `arg.second` is true for a`std::pair<int, bool>`
+
+#ifdef AD_PROPERTY
+#error "AD_PROPERTY must not already be defined. Consider renaming it."
+#else
+#define AD_PROPERTY(Class, Member, Matcher) \
+  ::testing::Property(#Member "()", &Class::Member, Matcher)
+#endif
+
+#ifdef AD_FIELD
+#error "AD_FIELD must not already be defined. Consider renaming it."
+#else
+#define AD_FIELD(Class, Member, Matcher) \
+  ::testing::Field(#Member, &Class::Member, Matcher)
+#endif
+
+// Type that can never be thrown because it can't be built
+class NeverThrown {
+  NeverThrown() = default;
+};
+
+/*
+Similar to Gtest's `EXPECT_THROW`. Expect that executing `statement` throws
+an exception that inherits from `std::exception`, and that the error message
+of that exception, obtained by the `what()` member function, matches the
+given `errorMessageMatcher`.
+
+A `errorMessageMatcher` is a google test matcher. More information can be found
+here:
+https://github.com/google/googletest/blob/main/docs/reference/matchers.md#matchers-reference
+*/
+#define AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(statement, errorMessageMatcher, \
+                                              exceptionType)                  \
+  try {                                                                       \
+    statement;                                                                \
+    ADD_FAILURE() << "No exception was thrown";                               \
+  } catch (const exceptionType& e) {                                          \
+    EXPECT_THAT(e.what(), errorMessageMatcher)                                \
+        << "The exception message does not match";                            \
+  } catch (const std::conditional_t<                                          \
+           ad_utility::isSimilar<exceptionType, std::exception>,              \
+           ::NeverThrown, std::exception>& exception) {                       \
+    ADD_FAILURE() << "The thrown exception was "                              \
+                  << ::testing::internal::GetTypeName(typeid(exception))      \
+                  << ", expected " #exceptionType;                            \
+  } catch (...) {                                                             \
+    ADD_FAILURE()                                                             \
+        << "The thrown exception did not inherit from " #exceptionType;       \
+  }                                                                           \
+  void()
+
+#define AD_EXPECT_THROW_WITH_MESSAGE(statement, errorMessageMatcher)    \
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(statement, errorMessageMatcher, \
+                                        std::exception)
+
+// `EXPECT` that the `argument`'s `has_value` method returns `false`. Checking
+// equality to `std::nullopt` does not work with `boost::optional`.
+#define AD_EXPECT_NULLOPT(argument) EXPECT_FALSE(argument.has_value())
+
+// _____________________________________________________________________________
+// Add the given `source_location`  to all gtest failure messages that occur,
+// while the return value is still in scope. It is important to bind the return
+// value to a variable, otherwise it will immediately go of scope and have no
+// effect.
+[[nodiscard]] inline testing::ScopedTrace generateLocationTrace(
+    ad_utility::source_location l,
+    std::string_view errorMessage = "Actual location of the test failure") {
+  return {l.file_name(), static_cast<int>(l.line()), errorMessage};
+}
+
+// _____________________________________________________________________________
+// Create a unique name for the `ad_utility::ScopedLogLevel` object that
+// `ENFORCE_LOG_LEVEL_OR_SKIP` below declares. The indirection via the
+// `..._IMPL` macro is required so that `__COUNTER__` is expanded before the
+// tokens are pasted together.
+#define AD_SCOPED_LOG_LEVEL_NAME_IMPL(counter) scopedLogLevel##counter##_
+#define AD_SCOPED_LOG_LEVEL_NAME(counter) AD_SCOPED_LOG_LEVEL_NAME_IMPL(counter)
+
+// _____________________________________________________________________________
+// Some tests require a certain log level, e.g. but not only because they
+// capture log output and make assertions about it. This macro enforces that
+// `level` is the runtime log level for the remainder of the enclosing scope, by
+// declaring an `ad_utility::ScopedLogLevel` object that restores the previous
+// level when the scope is left. If `ad_utility::compileTimeLogLevel` is less
+// verbose than `level`, the test is skipped instead: such log levels are
+// compiled out and can never become the runtime log level, so the test could
+// never pass. The `level` is the plain name of a log level, for example
+// `ENFORCE_LOG_LEVEL_OR_SKIP(INFO)`.
+#define ENFORCE_LOG_LEVEL_OR_SKIP(level)                                      \
+  if (ad_utility::compileTimeLogLevel < ad_utility::LogLevel::Enum::level) {  \
+    GTEST_SKIP()                                                              \
+        << "This test requires a compile-time log level of at least "         \
+        << ad_utility::LogLevel{ad_utility::LogLevel::Enum::level}.toString() \
+        << ", but it is "                                                     \
+        << ad_utility::LogLevel{ad_utility::compileTimeLogLevel}.toString();  \
+  }                                                                           \
+  ad_utility::ScopedLogLevel AD_SCOPED_LOG_LEVEL_NAME(__COUNTER__) {          \
+    ad_utility::LogLevel::Enum::level                                         \
+  }
+
+// _____________________________________________________________________________
+// Skip the enclosing test if the `_NO_TIMING_TESTS` CMake option is set. Use
+// this in tests that depend on the actual duration of `sleep` or on similar
+// timings, which are unreliable on some platforms (in particular macOS). Note
+// that the macro has to be used as a statement (with a trailing semicolon).
+#ifdef _QLEVER_NO_TIMING_TESTS
+#define QLEVER_SKIP_TEST_IF_FLAKY_TIMING \
+  GTEST_SKIP() << "because `_QLEVER_NO_TIMING_TESTS` is defined"
+#else
+#define QLEVER_SKIP_TEST_IF_FLAKY_TIMING static_assert(true)
+#endif
+
+// _____________________________________________________________________________
+// Redirect the global logging stream to `stream` and return an `absl::Cleanup`
+// that restores the *previously active* stream when it goes out of scope. Use
+// this in tests that temporarily capture or suppress log output, so the global
+// stream is never left dangling or reset to the wrong value.
+inline auto setGlobalLoggingStreamForTesting(std::ostream* stream) {
+  auto* previous = &ad_utility::LogstreamChoice::get().getStream();
+  ad_utility::setGlobalLoggingStream(stream);
+  return absl::Cleanup(
+      [previous] { ad_utility::setGlobalLoggingStream(previous); });
+}
+
+// _____________________________________________________________________________
+// Redirect the global logging stream to a fresh `std::ostringstream` and return
+// a pair of an `absl::Cleanup` (which restores the previously active stream
+// when it goes out of scope) and a reference to that stream. Typical usage is
+// `auto [cleanup, logStream] = setGlobalLoggingStreamToStringStream();`.
+// NOTE: The returned reference is only valid as long as the `cleanup` is alive,
+// as the underlying stream is owned by the `cleanup`.
+inline auto setGlobalLoggingStreamToStringStream() {
+  auto stream = std::make_shared<std::ostringstream>();
+  auto& streamRef = *stream;
+  // `setGlobalLoggingStreamForTesting` cannot be used here because we have to
+  // move the shared pointer to the string stream into the cleanup to keep it
+  // alive.
+  auto* previous = &ad_utility::LogstreamChoice::get().getStream();
+  ad_utility::setGlobalLoggingStream(stream.get());
+  auto cleanup = absl::Cleanup([previous, stream = std::move(stream)] {
+    ad_utility::setGlobalLoggingStream(previous);
+  });
+  return std::pair<decltype(cleanup), std::ostringstream&>{std::move(cleanup),
+                                                           streamRef};
+}
+
+// _____________________________________________________________________________
+
+// Helper matcher that allows to use matchers for strings that represent json
+// objects.
+// Example: EXPECT_THAT("{}", ParsedAsJson(Eq(nlohmann::json::object())));
+MATCHER_P(ParsedAsJson, matcher,
+          (negation ? "is not json " : "parsed as json ") +
+              testing::DescribeMatcher<nlohmann::json>(matcher, negation)) {
+  try {
+    auto json = nlohmann::json::parse(arg);
+    *result_listener << "is a JSON object ";
+    return testing::ExplainMatchResult(matcher, json, result_listener);
+  } catch (const nlohmann::json::parse_error& error) {
+    *result_listener << "is not a JSON object.";
+  }
+  return false;
+}
+
+// Helper matcher for a full `RE2` match, to use instead of
+// `::testing::MatchesRegex`, which works differently on non-POSIX platforms.
+// Example: EXPECT_THAT("t42", MatchesRegex("t[0-9]+"));
+MATCHER_P(MatchesRegex, pattern,
+          absl::StrCat(negation ? "doesn't match" : "matches", " the regex \"",
+                       pattern, "\"")) {
+  return RE2::FullMatch(arg, RE2{pattern});
+}
+
+// Helper matcher that can be used to make assertions about a JSON object's
+// values for a certain key. Example:
+// EXPECT_THAT((nlohmann::json{{"a", "b"}}), HasKeyMatching("a", Eq("b")));
+MATCHER_P2(HasKeyMatching, key, matcher,
+           (negation ? "has no key with value " : "has key with value ") +
+               testing::DescribeMatcher<nlohmann::json>(matcher, negation)) {
+  if (!arg.contains(key)) {
+    *result_listener << "that does not contain key \"" << key << '"';
+    return false;
+  }
+  *result_listener << "that contains key \"" << key << "\", with value "
+                   << arg[key] << ' ';
+  return testing::ExplainMatchResult(matcher, arg[key], result_listener);
+}
+MATCHER_P(HasKey, key, (negation ? "has no key " : "has key ")) {
+  if (!arg.contains(key)) {
+    *result_listener << "that does not contain key \"" << key << '"';
+    return false;
+  }
+  *result_listener << "that contains key \"" << key << "\" ";
+  return true;
+}
+
+// Matcher that can be used the make assertions about objects `<<` (insert into
+// stream) operator.
+MATCHER_P(InsertIntoStream, matcher,
+          (negation ? "does not yield " : "yields ") +
+              testing::DescribeMatcher<std::string>(matcher, negation)) {
+  std::stringstream outStream;
+  outStream << arg;
+  std::string output = outStream.str();
+  *result_listener << "that yields \"" << output << "\"";
+  return testing::ExplainMatchResult(matcher, output, result_listener);
+}
+
+// Helper type that allows to use non-copyable types in gtest matchers.
+template <typename T>
+class CopyShield {
+  std::shared_ptr<T> pointer_;
+
+ public:
+  CPP_variadic_template(typename... Ts)(
+      requires ql::concepts::constructible_from<T, Ts...>)
+  explicit CopyShield(Ts&&... args)
+      : pointer_{std::make_shared<T>(AD_FWD(args)...)} {}
+
+  CPP_template(typename Ts)(requires ql::concepts::constructible_from<T, Ts&&>)
+      CopyShield&
+      operator=(Ts&& ts) {
+    pointer_ = std::make_shared<T>(AD_FWD(ts));
+    return *this;
+  }
+
+  auto compareThreeWay(const T& other) const {
+    return ql::compareThreeWay(*pointer_, other);
+  }
+  QL_DEFINE_CUSTOM_THREEWAY_OPERATOR_LOCAL(T)
+
+  CPP_member auto operator==(const T& other) const
+      -> CPP_ret(bool)(requires ql::concepts::equality_comparable<T>) {
+    return *pointer_ == other;
+  }
+
+  friend std::ostream& operator<<(std::ostream& os, const CopyShield& s) {
+    os << *s.pointer_;
+    return os;
+  }
+};
+
+// Helper that takes an explicit type `T`, and a function `T -> Matcher<T>`
+// (where `T` is the type of the expected value for the matcher), and lifts it
+// to a function `std::optional<T> -> Matcher<std::optional<T>>` , by handling
+// the case of `std::nullopt` as expected (`std::nullopt` matches
+// `std::nullopt`) for both the expected and actual value.
+template <typename T, typename MakeMatcher>
+auto liftOptionalMatcher(MakeMatcher makeMatcher) {
+  return
+      [makeMatcher](
+          std::optional<T> expected) -> ::testing::Matcher<std::optional<T>> {
+        if (!expected.has_value()) {
+          return ::testing::Eq(std::nullopt);
+        } else {
+          return ::testing::Optional(makeMatcher(expected.value()));
+        }
+      };
+}
+
+// Helper that takes an explicit type `T`, and a function `T -> Matcher<T>`. It
+// returns a function `ArrayType -> Matcher<ArrayType>` that applies
+// `MakeMatcher` to each of the expected values in the argument of `ArrayType`
+// and returns an `ElementsAreArray` matcher of these submatchers.
+CPP_template(typename T, typename ArrayType, typename MakeMatcher)(
+    requires std::is_convertible_v<
+        ArrayType,
+        std::vector<T>>) auto liftMatcherToElementsAreArray(MakeMatcher
+                                                                makeMatcher) {
+  return
+      [makeMatcher](ArrayType expectedValues) -> ::testing::Matcher<ArrayType> {
+        std::vector<::testing::Matcher<T>> childMatchers;
+        ql::ranges::transform(expectedValues, std::back_inserter(childMatchers),
+                              makeMatcher);
+        return ::testing::ElementsAreArray(childMatchers);
+      };
+}
+
+// Matcher that takes a range of arguments, applies the `func` to them, and
+// asserts, that the results are all unique. Is currently implemented using a
+// linear find, s.t. we don't require hashing support for the projection result,
+// but therefore has a quadratic runtime.
+MATCHER_P(AllUniqueBy, func, "has all unique values under projection") {
+  std::vector<decltype(func(*arg.begin()))> seen;
+  for (const auto& item : arg) {
+    auto val = func(item);
+    if (std::find(seen.begin(), seen.end(), val) != seen.end()) {
+      *result_listener << "duplicate value found: "
+                       << ::testing::PrintToString(val);
+      return false;
+    }
+    seen.push_back(std::move(val));
+  }
+  return true;
+}
+
+// _____________________________________________________________________________
+// Returns "<TestSuiteName>_<TestName>" for the currently running gtest, with
+// any '/' replaced by '_' (parameterized tests embed '/' in their names).
+// If `assertInGtestEnvironment` is true (the default), crashes if called
+// outside a running gtest (i.e. when `current_test_info()` returns nullptr).
+// Pass false when the caller is also used by non-test code (e.g. benchmarks),
+// in which case an empty string is returned instead.
+inline std::string gtestCurrentTestName(bool assertInGtestEnvironment = true) {
+  const auto* testInfo =
+      ::testing::UnitTest::GetInstance()->current_test_info();
+  if (assertInGtestEnvironment) {
+    AD_CORRECTNESS_CHECK(testInfo != nullptr);
+  }
+  if (testInfo == nullptr) {
+    return "";
+  }
+  return absl::StrReplaceAll(
+      absl::StrCat(testInfo->test_suite_name(), "_", testInfo->name()),
+      {{"/", "_"}});
+}
+
+// _____________________________________________________________________________
+// Block until the `predicate` is true, polling it every millisecond, but at
+// most for the `timeout`. Return the final value of the `predicate`. Use this
+// to wait for the effect of work that runs on another thread, typically as
+// `ASSERT_TRUE(waitUntil(...))`.
+//
+// NOTE: The `timeout` is deliberately generous, because it is only waited for
+// in full when the awaited event never happens, which is a failing test anyway.
+template <typename Predicate>
+bool waitUntil(const Predicate& predicate,
+               std::chrono::milliseconds timeout = std::chrono::seconds{10}) {
+  auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (!predicate() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  return predicate();
+}
+
+#endif  // QLEVER_TEST_UTIL_GTESTHELPERS_H

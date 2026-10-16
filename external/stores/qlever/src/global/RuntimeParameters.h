@@ -1,0 +1,347 @@
+//   Copyright 2024, University of Freiburg,
+//   Chair of Algorithms and Data Structures.
+//   Author: Robin Textor-Falconi <textorr@informatik.uni-freiburg.de>
+
+#ifndef QLEVER_RUNTIMEPARAMETERS_H
+#define QLEVER_RUNTIMEPARAMETERS_H
+
+#include <algorithm>
+#include <optional>
+
+#include "util/Log.h"
+#include "util/Parameters.h"
+
+// A set of parameters that can be accessed with a runtime and a compile time
+// interface. They are currently managed using a synchronized singleton for the
+// complete QLever instance.
+struct RuntimeParameters {
+  using Bool = ad_utility::detail::parameterShortNames::Bool;
+  using Double = ad_utility::detail::parameterShortNames::Double;
+  template <typename DurationTp>
+  using Duration =
+      ad_utility::detail::parameterShortNames::DurationParameter<DurationTp>;
+  using MemorySizeParameter =
+      ad_utility::detail::parameterShortNames::MemorySizeParameter;
+  using SizeT = ad_utility::detail::parameterShortNames::SizeT;
+  using String = ad_utility::detail::parameterShortNames::String;
+  using SpaceSeparatedStrings =
+      ad_utility::detail::parameterShortNames::SpaceSeparatedStrings;
+  using DeduplicationMode = ad_utility::DeduplicationMode;
+  using DeduplicationModeParameter =
+      ad_utility::detail::parameterShortNames::DeduplicationModeParameter;
+
+  using LogLevelParameter =
+      ad_utility::Parameter<LogLevel, LogLevel::FromString, LogLevel::ToString>;
+
+  // ___________________________________________________________________________
+  // IMPORTANT NOTE: IF YOU ADD PARAMETERS BELOW, ALSO REGISTER THEM IN THE
+  // CONSTRUCTOR, S.T. THEY CAN ALSO BE ACCESSED VIA THE RUNTIME INTERFACE.
+  // ___________________________________________________________________________
+
+  // If set, then unneeded variables will not be emitted as the result of
+  // each operation.
+  // This makes the queries faster, but leads to more cache misses if e.g.
+  // variables in a SELECT clause change
+  // between otherwise equal queries.
+  Bool stripColumns_{false, "strip-columns"};
+
+  // If the time estimate for a sort operation is larger by more than this
+  // factor than the remaining time, then the sort is canceled with a
+  // timeout exception.
+  Double sortEstimateCancellationFactor_{3.0,
+                                         "sort-estimate-cancellation-factor"};
+  SizeT cacheMaxNumEntries_{1000, "cache-max-num-entries"};
+
+  MemorySizeParameter cacheMaxSize_{ad_utility::MemorySize::gigabytes(30),
+                                    "cache-max-size"};
+  MemorySizeParameter cacheMaxSizeSingleEntry_{
+      ad_utility::MemorySize::gigabytes(5), "cache-max-size-single-entry"};
+  // The number of blocks that a lazy index scan reads and decompresses on the
+  // global thread pool ahead of its consumer. The value must be at least `1`
+  // (enforced by a parameter constraint). The default of `20` keeps the
+  // prefetch depth that the scans had with threads of their own (2 threads
+  // plus a queue of 20 blocks). Smaller values measurably slow down queries
+  // with prefiltered joins on large relations, because their consumer
+  // processes the blocks in bursts.
+  SizeT lazyIndexScanNumBlocksInFlight_{20,
+                                        "lazy-index-scan-num-blocks-in-flight"};
+  // The maximum number of tasks that a single query runs at the same time on
+  // the global thread pool (for example, reading and decompressing the blocks
+  // of its lazy index scans). This keeps a single expensive query from
+  // occupying all the threads of the pool. The value must be at least `1`
+  // (enforced by a parameter constraint).
+  SizeT maxNumThreadsPerQuery_{6, "max-num-threads-per-query"};
+  // The maximum number of threads with which each scan of a permutation
+  // during a runtime index rebuild (see `IndexRebuilder`) reads and
+  // decompresses its blocks, both for the main scan of the old permutations
+  // and for the statistics recomputation. A value of 0 means "no limit".
+  // Lowering it reduces the rebuild's CPU usage without affecting query scans
+  // (how many blocks are read ahead of the consumer is determined by
+  // `lazy-index-scan-num-blocks-in-flight` above, as for query scans).
+  //
+  // NOTE: The default of 1 keeps a rebuild on a live server from starving
+  // concurrent queries of CPU, at nearly no cost in wall time: the bottleneck
+  // of each permutation pipeline is its single sequential remap thread, so
+  // more concurrent block reads mostly add contention (measured on Wikidata on
+  // an otherwise idle 16-core server, where the wall time was the same for 1,
+  // 2, and 4).
+  SizeT rebuildIndexScanNumThreads_{1, "rebuild-index-scan-num-threads"};
+  // The maximum number of threads with which each permutation is compressed
+  // and written during a runtime index rebuild. A value of 0 means "no limit".
+  // The number of blocks that are in flight is still determined by
+  // `permutation-writer-num-blocks-in-flight`, which is also used when
+  // building an index from scratch and when writing materialized views.
+  //
+  // NOTE: Like the scan parameter above, this exists so that a rebuild on a
+  // live server leaves as much CPU as possible to concurrent queries: the
+  // default of 1 compresses and writes the blocks of each permutation one
+  // after the other, which reduces the CPU work of the permutation phase by
+  // ~20% at nearly no cost in wall time (same measurement setup as above).
+  SizeT rebuildPermutationWriterNumThreads_{
+      1, "rebuild-permutation-writer-num-threads"};
+  // The maximum number of permutation pairs (PSO+POS, SPO+SOP, OPS+OSP, and
+  // the internal PSO+POS) that a runtime index rebuild processes in
+  // parallel. Each pair costs several CPU cores, several GB/s of memory
+  // bandwidth, and L3 cache, so lowering this value is THE knob for trading
+  // rebuild duration against interference with concurrent queries and
+  // updates. A value of 0 means "no limit" (all pairs in parallel).
+  SizeT rebuildMaxConcurrentPermutationPairs_{
+      0, "rebuild-max-concurrent-permutation-pairs"};
+  Duration<std::chrono::seconds> defaultQueryTimeout_{std::chrono::seconds(30),
+                                                      "default-query-timeout"};
+  SizeT lazyIndexScanMaxSizeMaterialization_{
+      1'000'000, "lazy-index-scan-max-size-materialization"};
+  Bool useBinsearchTransitivePath_{true, "use-binsearch-transitive-path"};
+  Bool groupByHashMapEnabled_{false, "group-by-hash-map-enabled"};
+  Bool groupByDisableIndexScanOptimizations_{
+      false, "group-by-disable-index-scan-optimizations"};
+  SizeT serviceMaxValueRows_{10'000, "service-max-value-rows"};
+  SizeT serviceMaxRedirects_{1, "service-max-redirects"};
+  SizeT queryPlanningBudget_{1500, "query-planning-budget"};
+  Bool throwOnUnboundVariables_{false, "throw-on-unbound-variables"};
+
+  // Control up until which size lazy results should be cached. Caching
+  // does cause significant overhead for this case.
+  MemorySizeParameter cacheMaxSizeLazyResult_{
+      ad_utility::MemorySize::megabytes(5), "cache-max-size-lazy-result"};
+
+  // Control if websockets are enable to post live query updates, and if they
+  // are control the throttle of how many request can be sent at once.
+  Bool websocketUpdatesEnabled_{true, "websocket-updates-enabled"};
+  Duration<std::chrono::milliseconds> websocketUpdateInterval_{
+      std::chrono::milliseconds(50), "websocket-update-interval"};
+  // When the result of an index scan is smaller than a single block, then
+  // its size estimate will be the size of the block divided by this
+  // value.
+  SizeT smallIndexScanSizeEstimateDivisor_{
+      5, "small-index-scan-size-estimate-divisor"};
+  // Determines whether the cost estimate for a cached subtree should be
+  // set to zero in query planning.
+  Bool zeroCostEstimateForCachedSubtree_{
+      false, "zero-cost-estimate-for-cached-subtree"};
+  // Maximum size for the body of requests that the server will process.
+  MemorySizeParameter requestBodyLimit_{ad_utility::MemorySize::gigabytes(1),
+                                        "request-body-limit"};
+  // SERVICE operations are not cached by default, but can be enabled
+  // which has the downside that the sibling optimization where VALUES are
+  // dynamically pushed into `SERVICE` is no longer used.
+  Bool cacheServiceResults_{false, "cache-service-results"};
+  // If set to `true`, we expect the contents of URLs loaded via a LOAD to
+  // not change over time. This enables caching of LOAD operations.
+  Bool cacheLoadResults_{false, "cache-load-results"};
+  // If set to `true`, several exceptions will silently be ignored and a
+  // dummy result will be returned instead.
+  // This mode should only be activated when running the syntax tests of
+  // the SPARQL conformance test suite.
+  Bool syntaxTestMode_{false, "syntax-test-mode"};
+  // If set to `true`, then a division by zero in an expression will lead
+  // to an
+  // expression error, meaning that the result is undefined. If set to
+  // false,
+  // the result will be `NaN` or `infinity` respectively.
+  Bool divisionByZeroIsUndef_{true, "division-by-zero-is-undef"};
+  // If set to `true`, the contained `FILTER` expressions in the query
+  // try to set and apply a corresponding `PrefilterExpression` (see
+  // `PrefilterExpressionIndex.h`) on its variable-related `IndexScan`
+  // operation.
+  //
+  // If set to `false`, the queries `FILTER` expressions omit setting and
+  // applying `PrefilterExpression`s. This is useful to set a
+  // prefilter-free baseline, or for debugging, as wrong results may be
+  // related to the `PrefilterExpression`s.
+  Bool enablePrefilterOnIndexScans_{true, "enable-prefilter-on-index-scans"};
+  // The maximum number of threads to be used by the spatial join algorithms.
+  SizeT spatialJoinMaxNumThreads_{8, "spatial-join-max-num-threads"};
+  // The maximum number of tasks of the parallel counting loops of the pattern
+  // trick (see `CountAvailablePredicates`) that run at the same time. They run
+  // on the query's executor, so `max-num-threads-per-query` still bounds the
+  // threads. The value `0` means the number of logical cores of the machine.
+  // The default of `3` captures most of the speedup, with quickly diminishing
+  // returns for more tasks.
+  SizeT patternTrickNumTasksInFlight_{3, "pattern-trick-num-tasks-in-flight"};
+  // A hint for how many tasks of the in-memory sort of intermediate results
+  // (see `IdTableUtils::sort`) run at the same time. They run on the query's
+  // executor, so `max-num-threads-per-query` still bounds the threads. Must be
+  // strictly positive; `1` means that the sort runs sequentially.
+  SizeT sortNumTasksInFlight_{3, "sort-num-tasks-in-flight"};
+  // The maximum size of the `prefilterBox` for
+  // `LibspatialjoinAlgorithm::parse()`.
+  SizeT spatialJoinPrefilterMaxSize_{2'500, "spatial-join-prefilter-max-size"};
+  // Writable directory for the temporary files written by `SpatialJoin` when
+  // using the `libspatialjoin` algorithm. If empty (the default), the index
+  // directory is used.
+  String spatialJoinTmpDir_{"", "spatial-join-tmp-dir"};
+  // Push joins into both children of unions if this leads to a cheaper
+  // cost-estimate.
+  Bool enableDistributiveUnion_{true, "enable-distributive-union"};
+
+  // If set, the query `SELECT * { GRAPH ?g { ?s ?p ?o } }` will return
+  // triples from the default graph, otherwise it will follow the
+  // behaviour defined by the SPARQL standard which filters them out.
+  Bool treatDefaultGraphAsNamedGraph_{false,
+                                      "treat-default-graph-as-named-graph"};
+
+  // If set, each `sparql-results+json` results will include a top-level "meta"
+  // field with information about query execution time and result size.
+  Bool sparqlResultsJsonWithTime_{true, "sparql-results-json-with-time"};
+
+  // Memory limit for sorting rows during the writing of materialized views.
+  MemorySizeParameter materializedViewWriterMemory_{
+      ad_utility::MemorySize::gigabytes(4), "materialized-view-writer-memory"};
+
+  // Memory threshold for switching from in-memory to external sort.
+  // If the input size exceeds this threshold, external sort is used.
+  MemorySizeParameter sortInMemoryThreshold_{
+      ad_utility::MemorySize::gigabytes(5), "sort-in-memory-threshold"};
+
+  Bool prefilteredOptionalJoin_{true, "prefiltered-optional-join"};
+
+  // If set, the query planner checks if suitable materialized views are loaded
+  // to substitute more expensive query plans.
+  Bool enableMaterializedViewQueryRewrite_{
+      true, "enable-materialized-view-query-rewrite"};
+
+  // When matching materialized views using pattern-based query rewriting, the
+  // maximum number of candidate assignments tried by the backtracking
+  // algorithm. `0` disables pattern-based rewriting.
+  SizeT materializedViewPatternMatchNumAssignments_{
+      100'000, "materialized-view-pattern-match-num-assignments"};
+
+  // When matching materialized views using pattern-based query rewriting, the
+  // maximum number of replacement plans collected.
+  SizeT materializedViewPatternMatchNumReplacementPlans_{
+      500, "materialized-view-pattern-match-num-replacement-plans"};
+
+  // A list of IRI prefixes that are allowed as `SERVICE` endpoints. If empty
+  // (the default), all IRIs are allowed. If non-empty, `SERVICE` requests to
+  // IRIs that do not start with any of the given prefixes are rejected.
+  SpaceSeparatedStrings serviceAllowedIriPrefixes_{
+      {}, "service-allowed-iri-prefixes"};
+
+  // If set to true, then all queries and operations created afterward will
+  // neither read from nor write to QLever's subtree cache. This can be used to
+  // debug caching issues, and to get rid of the overhead of caching (in
+  // particular the computation of cache keys) when caching is not required.
+  Bool disableCaching_{false, "disable-caching"};
+
+  // The maximal number of blocks per permutation that are queued for or
+  // currently being compressed and written (see
+  // `CompressedRelationWriter::makeBlockWriteQueue`). Each of them is held in
+  // memory until it has been written. How many of them are compressed at the
+  // same time is not determined by this parameter, but by the executor on
+  // which they are written (for the runtime index rebuild, see
+  // `rebuild-permutation-writer-num-threads`). The value must be at least `1`
+  // (enforced by a parameter constraint). Even though this influences the
+  // logic of regular index building, `qlever-index` doesn't expose a CLI flag
+  // to set this parameter, but derives it from its `--num-threads` option.
+  SizeT permutationWriterNumBlocksInFlight_{
+      4, "permutation-writer-num-blocks-in-flight"};
+
+  // Only blocks of this size or larger will be considered for vacuuming.
+  SizeT vacuumMinimumBlockSize_{100, "vacuum-minimum-block-size"};
+
+  // The runtime log level. Messages with a higher level are suppressed. The
+  // compile-time level (CMake LOGLEVEL) still applies as an upper bound.
+  LogLevelParameter logLevel_{LogLevel{ad_utility::detail::defaultLogLevel},
+                              "log-level"};
+
+  // Controls deduplication of triples in CONSTRUCT query results.
+  // "false" (default): no deduplication, every triple is emitted.
+  // "global": a triple is emitted at most once across the entire result.
+  // N (positive integer): deduplicate against the N most recently seen unique
+  // triples (per template triple); bounded memory, partial deduplication.
+  DeduplicationModeParameter constructDeduplication_{
+      DeduplicationMode{DeduplicationMode::None{}}, "construct-deduplication"};
+
+  // ___________________________________________________________________________
+  // IMPORTANT NOTE: IF YOU ADD PARAMETERS ABOVE, ALSO REGISTER THEM IN THE
+  // CONSTRUCTOR, S.T. THEY CAN ALSO BE ACCESSED VIA THE RUNTIME INTERFACE.
+  // ___________________________________________________________________________
+
+  std::map<std::string, ad_utility::ParameterBase*, std::less<>> runtimeMap_;
+
+  // Constructor: Add all parameters to the map.
+  RuntimeParameters();
+
+  // Obtain a map from parameter names to parameter values.
+  // This map only contains strings and is purely for logging
+  // to human users.
+  [[nodiscard]] ad_utility::HashMap<std::string, std::string> toMap() const;
+
+  //  Set a parameter from a string.
+  // Throws if the parameter does not exist or if the value is invalid.
+  void setFromString(const std::string& parameterName,
+                     const std::string& value);
+
+  // Set a parameter from a single string of the form `<name>=<value>` (split
+  // at the first `=`). Throws if the string contains no `=`, if the parameter
+  // does not exist, or if the value is invalid. Used for the
+  // `--set-runtime-parameter` option of `qlever-server`.
+  void setFromAssignment(const std::string& assignment);
+
+  // Get all parameter names.
+  std::vector<std::string> getKeys() const;
+
+  // Copy and move are disallowed.
+  RuntimeParameters(const RuntimeParameters&) = delete;
+  RuntimeParameters& operator=(const RuntimeParameters&) = delete;
+  RuntimeParameters(RuntimeParameters&&) = delete;
+  RuntimeParameters& operator=(RuntimeParameters&&) = delete;
+};
+
+// Get synchronized access to the global runtime parameter singleton.
+inline ad_utility::Synchronized<RuntimeParameters> globalRuntimeParameters;
+
+// Set a parameter, specified by a pointer-to-member to the `RuntimeParameters`
+// struct to the specified `value`, e.g.
+// `setRuntimeParameter<&RuntimeParameters::nameOfParameter>(42)`.
+template <auto ParameterPtr, typename ValueType>
+void setRuntimeParameter(const ValueType& value) {
+  std::invoke(ParameterPtr, *globalRuntimeParameters.wlock()).set(value);
+}
+
+// Get the current value of the runtime parameter specified by the
+// `ParameterPtr` (see `setRuntimeParameter` above for details).
+// The value has to be returned as an object, otherwise we might get data races.
+// That's why the return type is `auto` and not `decltype(auto)` or `const
+// auto&`.
+template <auto ParameterPtr>
+auto getRuntimeParameter() {
+  // It is important that we make the deep copy of the reference that `get()`
+  // returns before the lock is released because the `rlock()` object is
+  // destroyed. This is achieved by directly returning a copy of the parameter
+  // value (the function returns `auto`, see above).
+  return std::invoke(ParameterPtr, *globalRuntimeParameters.rlock()).get();
+}
+
+// Get the current value of the numeric runtime parameter specified by the
+// `ParameterPtr`, translated to an optional override: the value 0, which for
+// such parameters means "fall back to the corresponding general parameter",
+// becomes `std::nullopt`.
+template <auto ParameterPtr>
+std::optional<size_t> getRuntimeParameterAsOptional() {
+  size_t value = getRuntimeParameter<ParameterPtr>();
+  return value == 0 ? std::nullopt : std::optional<size_t>{value};
+}
+
+#endif  // QLEVER_RUNTIMEPARAMETERS_H

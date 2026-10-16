@@ -1,0 +1,1 @@
+Syntax error between line 1 column 47 and line 2 column 4: Unexpected end of file

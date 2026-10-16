@@ -1,0 +1,26 @@
+addLinkAndDiscoverTestNoLibs(VocabularyInMemoryTest vocabulary)
+
+addLinkAndDiscoverTestNoLibs(VocabularyOnDiskTest vocabulary)
+
+addLinkAndDiscoverTest(CompressedVocabularyTest vocabulary)
+
+addLinkAndDiscoverTestNoLibs(UnicodeVocabularyTest vocabulary)
+
+addLinkAndDiscoverTestNoLibs(VocabularyInternalExternalTest vocabulary)
+
+addLinkAndDiscoverTestNoLibs(VocabularyInMemoryBinSearchTest vocabulary)
+
+addLinkAndDiscoverTestNoLibs(PolymorphicVocabularyTest vocabulary sparqlParser qlever_util)
+
+addLinkAndDiscoverTestNoLibs(VocabularyTypeTest)
+
+addLinkAndDiscoverTest(GeoVocabularyTest vocabulary sparqlParser qlever_util)
+
+addLinkAndDiscoverTest(SplitVocabularyTest vocabulary)
+
+addLinkAndDiscoverTestNoLibs(VocabularyTypesTest)
+
+addLinkAndDiscoverTest(VocabularyFileSuffixesTest vocabulary sparqlParser qlever_util)
+
+addLinkAndDiscoverTestNoLibs(BuildFilteredVocabularyTest vocabulary)
+addLinkAndDiscoverTest(BlockWriterTest vocabulary sparqlParser qlever_util)

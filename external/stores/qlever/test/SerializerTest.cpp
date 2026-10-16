@@ -1,0 +1,1715 @@
+//  Copyright 2021, University of Freiburg,
+//  Chair of Algorithms and Data Structures.
+//  Author: Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
+//
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
+
+#include <absl/cleanup/cleanup.h>
+#include <absl/strings/str_cat.h>
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+
+#include "backports/span.h"
+#include "util/GTestHelpers.h"
+#include "util/MemorySize/MemorySize.h"
+#include "util/Random.h"
+#include "util/Serializer/BufferedSerializer.h"
+#include "util/Serializer/ByteBufferSerializer.h"
+#include "util/Serializer/CompressedSerializer.h"
+#include "util/Serializer/FileSerializer.h"
+#include "util/Serializer/FromCallableSerializer.h"
+#include "util/Serializer/SerializeArrayOrTuple.h"
+#include "util/Serializer/SerializeHashMap.h"
+#include "util/Serializer/SerializeOptional.h"
+#include "util/Serializer/SerializePair.h"
+#include "util/Serializer/SerializeString.h"
+#include "util/Serializer/SerializeVariant.h"
+#include "util/Serializer/SerializeVector.h"
+#include "util/Serializer/Serializer.h"
+
+using namespace ad_utility;
+using namespace memory_literals;
+using ad_utility::serialization::AlignedByteBufferReadSerializer;
+using ad_utility::serialization::AlignedByteBufferWriteSerializer;
+using ad_utility::serialization::BufferedWriteSerializer;
+using ad_utility::serialization::ByteBufferReadSerializer;
+using ad_utility::serialization::ByteBufferWriteSerializer;
+using ad_utility::serialization::CompressedReadSerializer;
+using ad_utility::serialization::CompressedWriteSerializer;
+using ad_utility::serialization::CopyableFileReadSerializer;
+using ad_utility::serialization::FileReadSerializer;
+using ad_utility::serialization::FileWriteSerializer;
+using ad_utility::serialization::VectorIncrementalSerializer;
+
+using ad_utility::serialization::ReadSerializer;
+using ad_utility::serialization::ReadViaCallableSerializer;
+using ad_utility::serialization::Serializer;
+using ad_utility::serialization::WriteSerializer;
+using ad_utility::serialization::WriteViaCallableSerializer;
+
+// The following tests are also examples for the serialization module and for
+// several pitfalls.
+namespace testNamespaceA {
+// Free serialization function.
+struct A {
+  int a;
+  int b;
+};
+AD_SERIALIZE_FUNCTION(A) {
+  serializer | arg.a;
+  serializer | arg.b;
+}
+
+// Friend serialization function, defined inline.
+class B {
+ private:
+  int a;
+  int b;
+
+ public:
+  AD_SERIALIZE_FRIEND_FUNCTION(B) {
+    serializer | arg.a;
+    serializer | arg.b;
+  }
+};
+
+// Friend serialization function, defined outside the class
+class C {
+ private:
+  int a;
+  int b;
+
+ public:
+  AD_SERIALIZE_FRIEND_FUNCTION(C) {
+    serializer | arg.a;
+    serializer | arg.b;
+  }
+};
+
+// D is not serializable
+struct D {
+  int z = 43;
+};
+
+struct E {
+  D d;
+  AD_SERIALIZE_FRIEND_FUNCTION(E) {
+    // Ill-formed, because `D` has no `serialize()` function.
+    serializer | arg.d;
+  }
+};
+struct EFixed {
+  D d;
+  AD_SERIALIZE_FRIEND_FUNCTION(EFixed) {
+    // Well formed, because `d` has no serialization form, but is trivially
+    // copyable, so we can explicitly use the `triviallySerialize` function.
+    triviallySerialize(serializer, arg.d);
+  }
+};
+
+struct F {
+  int a;
+};
+struct G {
+  int a;
+};
+}  // namespace testNamespaceA
+
+namespace testNamespaceB {
+// `F is not serializable because the serialization function is not in
+// F's namespace (or a parent namespace thereof)  nor in
+// `ad_utility::serialization`
+AD_SERIALIZE_FUNCTION(testNamespaceA::F) { serializer | arg.a; }
+}  // namespace testNamespaceB
+
+namespace ad_utility::serialization {
+// G is now serializable (the serialize function is in the
+// `ad_utility::serialization` namespace).
+AD_SERIALIZE_FUNCTION(testNamespaceA::G) { serializer | arg.a; }
+}  // namespace ad_utility::serialization
+
+// Test that the claims about serializability are in fact true.
+template <typename T>
+static constexpr bool isReadSerializable =
+    requires(ByteBufferReadSerializer s, T& t) { serialize(s, t); };
+template <typename T>
+static constexpr bool isWriteSerializable =
+    requires(ByteBufferWriteSerializer s, T t) { serialize(s, t); };
+
+// Simple dummy "compression" for testing (modify the data in a way that is
+// simple, and reversed in the below dummy decompression function)
+auto dummyCompress = [](ql::span<const char> data,
+                        ad_utility::serialization::UninitializedBuffer& res) {
+  res.clear();
+  res.insert(res.end(), data.begin(), data.end());
+  for (auto& c : res) {
+    ++c;
+  }
+  res.push_back('A');
+};
+auto dummyDecompress = [](ql::span<const char> data, ql::span<char> res) {
+  AD_CORRECTNESS_CHECK(res.size() == data.size() - 1);
+  AD_CORRECTNESS_CHECK(data.back() == 'A');
+  std::copy(data.begin(), data.end() - 1, res.begin());
+  for (auto& c : res) {
+    --c;
+  }
+};
+
+TEST(Serializer, Serializability) {
+  using testNamespaceA::A;
+  using testNamespaceA::B;
+  using testNamespaceA::C;
+  using testNamespaceA::D;
+  using testNamespaceA::E;
+  using testNamespaceA::EFixed;
+  using testNamespaceA::F;
+  using testNamespaceA::G;
+  static_assert(isReadSerializable<A>);
+  static_assert(isWriteSerializable<A>);
+
+  // We can serialize to and from any kind of a::A value or reference, but we
+  // can only read from a serializer if the target is not const.
+  static_assert(isReadSerializable<A&&>);
+  static_assert(isWriteSerializable<A&&>);
+
+  static_assert(isWriteSerializable<const A&>);
+  static_assert(!isReadSerializable<const A&>);
+
+  static_assert(isWriteSerializable<const A&&>);
+  static_assert(!isReadSerializable<const A&&>);
+
+  static_assert(isWriteSerializable<const A>);
+  static_assert(!isReadSerializable<const A>);
+
+  // See the definitions above as for why or why not these are serializable.
+  static_assert(isReadSerializable<B>);
+  // C is not read serializable on clang 17, probably because of a bug in
+  // relation with templated friend functions which are defined outside the
+  // class. This bug has been reported at
+  // https://github.com/llvm/llvm-project/issues/71595
+#if !(defined(__clang__) && (__clang_major__ == 17))
+  static_assert(isReadSerializable<C>);
+#endif
+  static_assert(!isReadSerializable<D>);
+  static_assert(!isReadSerializable<F>);
+  static_assert(isReadSerializable<G>);
+
+  // E seems to be serializable according to this SFINAE check, but
+  // actually instantiating the serialize function wouldn't compile because
+  // one of the members is not serializable.
+  static_assert(isReadSerializable<E>);
+}
+
+// A simple example that demonstrates the use of the serializers.
+TEST(Serializer, SimpleExample) {
+  using testNamespaceA::A;
+  using testNamespaceA::EFixed;
+  std::string filename = "Serializer.SimpleExample.dat";
+  {
+    A a{42, -5};
+    // Also test the `EFixed` struct which uses the `triviallySerialize`
+    // function.
+    EFixed e{10293};
+
+    serialization::FileWriteSerializer writer{filename};
+    writer << a;  // `writer | a` or `serialize(writer, a)` are equivalent;
+    writer << e;
+  }
+  {
+    // `a` has been written to the file, the file has been closed, reopen it and
+    // read.
+    A a{};  // Uninitialized, we will read into it;
+    EFixed e{};
+    serialization::FileReadSerializer reader{filename};
+    reader >> a;
+    reader >> e;
+    // We have successfully restored the values.
+    ASSERT_EQ(a.a, 42);
+    ASSERT_EQ(a.b, -5);
+    EXPECT_EQ(e.d.z, 10293);
+  }
+  ad_utility::deleteFile(filename);
+}
+
+// A example that shows how different actions can be performed for reading and
+// writing;
+struct T {
+  int value = 42;
+  mutable bool writing = false;
+  bool reading = false;
+  AD_SERIALIZE_FRIEND_FUNCTION(T) {
+    serializer | arg.value;
+    if constexpr (WriteSerializer<S>) {
+      arg.writing = true;
+    } else {
+      arg.reading = true;
+    }
+  }
+};
+
+TEST(Serializer, ReadAndWriteDiffers) {
+  std::string filename = "Serializer.ReadAndWriteDiffers.dat";
+  {
+    T t;
+    serialization::FileWriteSerializer writer{filename};
+    // Serialization and `if constexpr (WriteSerializer<S>)` still works when
+    // the serializer is a reference.
+    auto& writerRef = writer;
+    writerRef << t;
+    ASSERT_TRUE(t.writing);
+    ASSERT_FALSE(t.reading);
+  }
+  {
+    T t;
+    serialization::FileReadSerializer reader{filename};
+    auto& readerRef = reader;
+    readerRef >> t;
+    ASSERT_FALSE(t.writing);
+    ASSERT_TRUE(t.reading);
+  }
+  ad_utility::deleteFile(filename);
+}
+
+// Assert that the serializers actually fulfill the `Serializer` concept.
+// You should write similar tests when adding custom serializers.
+TEST(Serializer, Concepts) {
+  static_assert(ReadSerializer<ByteBufferReadSerializer>);
+  static_assert(!WriteSerializer<ByteBufferReadSerializer>);
+  static_assert(WriteSerializer<ByteBufferWriteSerializer>);
+  static_assert(!ReadSerializer<ByteBufferWriteSerializer>);
+  static_assert(ReadSerializer<FileReadSerializer>);
+  static_assert(!WriteSerializer<FileReadSerializer>);
+  static_assert(WriteSerializer<FileWriteSerializer>);
+  static_assert(!ReadSerializer<FileWriteSerializer>);
+  static_assert(ReadSerializer<CopyableFileReadSerializer>);
+  static_assert(!WriteSerializer<CopyableFileReadSerializer>);
+  {
+    using Writer = ad_utility::serialization::ZstdWriteSerializer<
+        ByteBufferWriteSerializer>;
+    using Reader =
+        ad_utility::serialization::ZstdReadSerializer<ByteBufferReadSerializer>;
+    static_assert(WriteSerializer<Writer>);
+    static_assert(!ReadSerializer<Writer>);
+    static_assert(ReadSerializer<Reader>);
+    static_assert(!WriteSerializer<Reader>);
+  }
+  {
+    using Writer = CompressedWriteSerializer<ByteBufferWriteSerializer,
+                                             decltype(dummyCompress)>;
+    using Reader = CompressedReadSerializer<ByteBufferReadSerializer,
+                                            decltype(dummyDecompress)>;
+    static_assert(WriteSerializer<Writer>);
+    static_assert(!ReadSerializer<Writer>);
+    static_assert(ReadSerializer<Reader>);
+    static_assert(!WriteSerializer<Reader>);
+  }
+}
+
+// The following tests are mainly not for documentation but rather stress tests
+// that all kinds of serializers work with all kind of builtin and user-defined
+// and arbitrary nested types.
+auto testWithByteBuffer = [](auto testFunction) {
+  ByteBufferWriteSerializer writer;
+  auto makeReaderFromWriter = [&writer]() {
+    return ByteBufferReadSerializer{std::move(writer).data()};
+  };
+  testFunction(writer, makeReaderFromWriter);
+};
+
+auto testWithCallableSerializer = [](auto testFunction) {
+  std::vector<char> buffer;
+  auto write = [&buffer](const char* source, size_t numBytes) {
+    buffer.insert(buffer.end(), source, source + numBytes);
+  };
+
+  WriteViaCallableSerializer writer{write};
+  auto makeReaderFromWriter = [&buffer]() {
+    auto read = [pos = size_t{0}, &buffer](char* target,
+                                           size_t numBytes) mutable {
+      std::copy(buffer.begin() + pos, buffer.begin() + pos + numBytes, target);
+      pos += numBytes;
+    };
+    return ReadViaCallableSerializer{read};
+  };
+  testFunction(writer, makeReaderFromWriter);
+};
+
+auto testWithFileSerialization = [](auto testFunction) {
+  const std::string filename =
+      absl::StrCat("serializationTest_", gtestCurrentTestName(), ".tmp");
+  FileWriteSerializer writer{filename};
+  auto makeReaderFromWriter = [filename, &writer] {
+    writer.close();
+    return FileReadSerializer{filename};
+  };
+  testFunction(writer, makeReaderFromWriter);
+  unlink(filename.c_str());
+};
+
+auto testWithAllSerializers = [](auto testFunction) {
+  testWithByteBuffer(testFunction);
+  testWithFileSerialization(testFunction);
+  testWithCallableSerializer(testFunction);
+  // TODO<joka921> Register new serializers here to apply all existing tests
+  // to them
+};
+
+TEST(Serializer, Simple) {
+  auto simpleIntTest = [](auto& writer, auto makeReaderFromWriter) {
+    int x = 42;
+    writer << x;
+
+    auto reader = makeReaderFromWriter();
+    int y;
+    reader >> y;
+    ASSERT_EQ(y, 42);
+  };
+  testWithAllSerializers(simpleIntTest);
+}
+TEST(Serializer, ManyTrivialDatatypes) {
+  auto testmanyPrimitives = [](auto&& writer, auto makeReaderFromWriter) {
+    FastRandomIntGenerator<size_t> r;
+    RandomDoubleGenerator d;
+    std::vector<int32_t> ints;
+    std::vector<char> chars;
+    std::vector<short> shorts;
+    std::vector<int64_t> longInts;
+    std::vector<double> doubles;
+    std::vector<float> floats;
+
+    // Enabling cheaper unit tests when building in Debug mode
+#ifdef QLEVER_RUN_EXPENSIVE_TESTS
+    static constexpr int numIterations = 300'000;
+#else
+    static constexpr int numIterations = 300;
+#endif
+
+    for (int i = 0; i < numIterations; ++i) {
+      ints.push_back(static_cast<int>(r()));
+      writer | ints.back();
+      chars.push_back(static_cast<char>(r()));
+      writer | chars.back();
+      shorts.push_back(static_cast<short>(r()));
+      writer | shorts.back();
+      longInts.push_back(static_cast<int64_t>(r()));
+      writer | longInts.back();
+      doubles.push_back(d());
+      writer | doubles.back();
+      floats.push_back(static_cast<float>(d()));
+      writer | floats.back();
+    }
+
+    auto reader = makeReaderFromWriter();
+    for (int i = 0; i < numIterations; ++i) {
+      int x;
+      reader | x;
+      ASSERT_EQ(x, ints[i]);
+      char c;
+      reader | c;
+      ASSERT_EQ(c, chars[i]);
+      short s;
+      reader | s;
+      ASSERT_EQ(s, shorts[i]);
+      int64_t l;
+      reader | l;
+      ASSERT_EQ(l, longInts[i]);
+      double dob;
+      reader | dob;
+      ASSERT_FLOAT_EQ(dob, doubles[i]);
+      float f;
+      reader | f;
+      ASSERT_FLOAT_EQ(f, floats[i]);
+    }
+  };
+
+  testWithAllSerializers(testmanyPrimitives);
+}
+
+TEST(Serializer, StringAndHashMap) {
+  auto testFunction = [](auto&& writer, auto makeReaderFromWriter) {
+    ad_utility::HashMap<std::string, int> m;
+    m["hallo"] = 42;
+    m["tschüss"] = 84;
+
+    std::string withZero = "something";
+    withZero.push_back(0);
+    withZero.push_back('a');
+    m["withZero"] = 4321;
+    writer | m;
+
+    auto reader = makeReaderFromWriter();
+    ad_utility::HashMap<std::string, int> n;
+    reader | n;
+    ASSERT_EQ(m, n);
+  };
+  testWithAllSerializers(testFunction);
+}
+
+TEST(Serializer, Vector) {
+  auto testTriviallyCopyableDatatype = [](auto&& writer,
+                                          auto makeReaderFromWriter) {
+    std::vector<int> v{5, 6, 89, 42, -23948165, 0, 59309289, -42};
+    writer | v;
+
+    auto reader = makeReaderFromWriter();
+    std::vector<int> w;
+    reader | w;
+    ASSERT_EQ(v, w);
+  };
+
+  auto testNonTriviallyCopyableDatatype = [](auto&& writer,
+                                             auto makeReaderFromWriter) {
+    std::vector<std::string> v{"hi",          "bye",      "someone",
+                               "someoneElse", "23059178", "-42"};
+    writer | v;
+
+    auto reader = makeReaderFromWriter();
+    std::vector<std::string> w;
+    reader | w;
+    ASSERT_EQ(v, w);
+  };
+
+  testWithAllSerializers(testTriviallyCopyableDatatype);
+  testWithAllSerializers(testNonTriviallyCopyableDatatype);
+}
+
+TEST(Serializer, Array) {
+  auto testTriviallyCopyableDatatype = [](auto&& writer,
+                                          auto makeReaderFromWriter) {
+    std::array v_in{5, 6, 89, 42, -23948165, 0, 59309289, -42};
+    std::tuple t_in{5, 3.16, 'a', 42, -23948165, 0, 59309289, -42};
+    writer | v_in;
+    writer | t_in;
+    using namespace ad_utility::serialization;
+    static_assert(TriviallySerializable<decltype(v_in)>);
+    static_assert(!TriviallySerializable<decltype(t_in)>);
+    static_assert(
+        ad_utility::serialization::detail::tupleTriviallySerializableImpl<
+            decltype(t_in)>());
+
+    auto reader = makeReaderFromWriter();
+    decltype(v_in) v_out;
+    decltype(t_in) t_out;
+    reader | v_out;
+    reader | t_out;
+    ASSERT_EQ(v_in, v_out);
+    ASSERT_EQ(t_in, t_out);
+  };
+
+  auto testNonTriviallyCopyableDatatype = [](auto&& writer,
+                                             auto makeReaderFromWriter) {
+    using namespace std::string_literals;
+    std::array v_in{"hi"s, "bye"s};
+    std::tuple t_in{5,         3.16,   'a',      "bimmbamm"s,
+                    -23948165, "ups"s, 59309289, -42};
+    writer | v_in;
+    writer | t_in;
+    using namespace ad_utility::serialization;
+    static_assert(!TriviallySerializable<decltype(v_in)>);
+    static_assert(!TriviallySerializable<decltype(t_in)>);
+    static_assert(
+        !ad_utility::serialization::detail::tupleTriviallySerializableImpl<
+            decltype(t_in)>());
+
+    auto reader = makeReaderFromWriter();
+    decltype(v_in) v_out;
+    decltype(t_in) t_out;
+    reader | v_out;
+    reader | t_out;
+    ASSERT_EQ(v_in, v_out);
+    ASSERT_EQ(t_in, t_out);
+  };
+
+  testWithAllSerializers(testTriviallyCopyableDatatype);
+  testWithAllSerializers(testNonTriviallyCopyableDatatype);
+}
+
+// Test that we can successfully write `string_view`s to a serializer and
+// correctly read them as `string`s.
+TEST(Serializer, StringViewToString) {
+  auto testString = [](auto&& writer, auto makeReaderFromWriter) {
+    std::vector<std::string_view> v = {"bim", "bam",
+                                       "veryLongStringLongerThanShortString"};
+    std::vector<std::string> vAsString = {
+        "bim", "bam", "veryLongStringLongerThanShortString"};
+    writer | v;
+
+    auto reader = makeReaderFromWriter();
+    std::vector<std::string> w;
+    reader | w;
+    ASSERT_EQ(vAsString, w);
+  };
+
+  testWithAllSerializers(testString);
+}
+
+TEST(Serializer, CopyAndMove) {
+  auto testWithMove = [](auto&& writer, auto makeReaderFromWriter) {
+    using Writer = std::decay_t<decltype(writer)>;
+
+    // Assert that write serializers cannot be copied.
+    static_assert(!requires(Writer w1, Writer w2) {
+      { w1 = w2 };
+    });
+    static_assert(!std::constructible_from<Writer, const Writer&>);
+
+    // Assert that moving writers consistently writes to the same resource.
+    writer | 1;
+    Writer writer2(std::move(writer));
+    writer2 | 2;
+    writer = std::move(writer2);
+    writer | 3;
+
+    auto reader = makeReaderFromWriter();
+    // Assert that read serializers cannot be copied.
+    using Reader = decltype(reader);
+    static_assert(!requires(Reader r1, Reader r2) {
+      { r1 = r2 };
+    });
+    static_assert(!std::constructible_from<Reader, const Reader&>);
+    // Assert that moving writers consistently reads from the same resource.
+    int i;
+    reader | i;
+    ASSERT_EQ(i, 1);
+    decltype(reader) reader2{std::move(reader)};
+    reader2 | i;
+    ASSERT_EQ(i, 2);
+    static_assert(!std::is_const_v<decltype(reader2)>);
+    reader = std::move(reader2);
+    reader | i;
+    ASSERT_EQ(i, 3);
+  };
+  testWithAllSerializers(testWithMove);
+}
+
+TEST(VectorIncrementalSerializer, Serialize) {
+  std::vector<int> ints{9, 7, 5, 3, 1, -1, -3, 5, 5, 6, 67498235, 0, 42};
+  std::vector<std::string> strings{"alpha", "beta", "gamma", "Epsilon",
+                                   "kartoffelsalat"};
+  std::string filename = gtestCurrentTestName();
+
+  auto testIncrementalSerialization = [filename](const auto& inputVector) {
+    using T = std::decay_t<decltype(inputVector)>;
+    VectorIncrementalSerializer<typename T::value_type, FileWriteSerializer>
+        writer{filename};
+    for (const auto& element : inputVector) {
+      writer.push(element);
+    }
+    writer.finish();
+    FileReadSerializer reader{filename};
+    T vectorRead;
+    reader >> vectorRead;
+    ASSERT_EQ(inputVector, vectorRead);
+  };
+  testIncrementalSerialization(ints);
+  testIncrementalSerialization(strings);
+  ad_utility::deleteFile(filename);
+}
+
+TEST(VectorIncrementalSerializer, SerializeInTheMiddle) {
+  std::vector<int> ints{9, 7, 5, 3, 1, -1, -3, 5, 5, 6, 67498235, 0, 42};
+  std::vector<std::string> strings{"alpha", "beta", "gamma", "Epsilon",
+                                   "kartoffelsalat"};
+  std::string filename = gtestCurrentTestName();
+
+  auto testIncrementalSerialization = [filename](const auto& inputVector) {
+    using T = std::decay_t<decltype(inputVector)>;
+    FileWriteSerializer writeSerializer{filename};
+    double d = 42.42;
+    writeSerializer << d;
+    VectorIncrementalSerializer<typename T::value_type, FileWriteSerializer>
+        writer{std::move(writeSerializer)};
+    for (const auto& element : inputVector) {
+      writer.push(element);
+    }
+    writeSerializer = FileWriteSerializer{std::move(writer).serializer()};
+    d = -13.123;
+    writeSerializer << d;
+    writeSerializer.close();
+    FileReadSerializer reader{filename};
+    double doubleRead;
+    reader >> doubleRead;
+    ASSERT_FLOAT_EQ(doubleRead, 42.42);
+    T vectorRead;
+    reader >> vectorRead;
+    ASSERT_EQ(inputVector, vectorRead);
+    reader >> doubleRead;
+    ASSERT_FLOAT_EQ(doubleRead, -13.123);
+  };
+  testIncrementalSerialization(ints);
+  testIncrementalSerialization(strings);
+  ad_utility::deleteFile(filename);
+}
+
+// _____________________________________________________________________________
+TEST(Serializer, serializeSpan) {
+  std::vector ints{3, 4, 5, 6};
+  std::vector<std::string> strings{"eins", "zwei", "drei", "vier"};
+  auto intSpan = ql::span{ints}.subspan(1, 2);
+  auto stringSpan = ql::span{strings}.subspan(2, 2);
+  ByteBufferWriteSerializer writer;
+  writer | intSpan;
+  writer | stringSpan;
+  writer | stringSpan;
+  writer | stringSpan;
+  writer | stringSpan;
+
+  auto buffer = std::move(writer).data();
+  ByteBufferReadSerializer reader(buffer);
+  {
+    std::vector<int> intResult;
+    intResult.resize(2);
+    // Read into a span of the correct size, trivially serializable
+    // `value_type`.
+    reader | ql::span{intResult};
+    EXPECT_THAT(intResult, ::testing::ElementsAre(4, 5));
+  }
+
+  {
+    std::vector<std::string> stringResult;
+    stringResult.resize(2);
+    // Read into a span of the correct size, nontrivially serializable
+    // `value_type`.
+    reader | ql::span{stringResult};
+    EXPECT_THAT(stringResult, ::testing::ElementsAre("drei", "vier"));
+  }
+
+  std::vector<std::string> stringsWithWrongSize;
+  // Deserialize into a `span` that doesn't have the correct size. This throws
+  // an exception and skips the span.
+  AD_EXPECT_THROW_WITH_MESSAGE(reader | ql::span{stringsWithWrongSize},
+                               ::testing::HasSubstr("must be properly sized"));
+  {
+    // The writing was done via a `span`, but we now read into a `vector`.
+    // This works even if the vector is not resized in advance, because the
+    // vector deserialization will do the resize.
+    EXPECT_NO_THROW(reader | stringsWithWrongSize);
+    EXPECT_THAT(stringsWithWrongSize, ::testing::ElementsAre("drei", "vier"));
+  }
+}
+
+// _____________________________________________________________________________
+TEST(Serializer, serializeOptional) {
+  std::optional<std::string> s = "hallo";
+  std::optional<std::string> nil = std::nullopt;
+  ByteBufferWriteSerializer writer;
+  writer << s;
+  writer << nil;
+  std::optional<std::string> sExpected;
+  std::optional<std::string> nilExpected = "bye";
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+  reader >> sExpected;
+  reader >> nilExpected;
+  EXPECT_THAT(sExpected, ::testing::Optional(std::string("hallo")));
+  EXPECT_EQ(nilExpected, std::nullopt);
+}
+
+// _____________________________________________________________________________
+TEST(Serializer, serializeTriviallyCopyableOptional) {
+  std::optional<double> d = 3.5;
+  std::optional<double> nil = std::nullopt;
+  ByteBufferWriteSerializer writer;
+  writer << d;
+  writer << nil;
+  // The optionals are written as a `bool` followed by the value (if any), and
+  // not as their raw bytes.
+  EXPECT_EQ(writer.data().size(), 2 * sizeof(bool) + sizeof(double));
+  std::optional<double> dExpected;
+  std::optional<double> nilExpected = 1.0;
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+  reader >> dExpected;
+  reader >> nilExpected;
+  EXPECT_THAT(dExpected, ::testing::Optional(3.5));
+  EXPECT_EQ(nilExpected, std::nullopt);
+}
+
+// _____________________________________________________________________________
+TEST(Serializer, serializeVariant) {
+  using Variant = std::variant<int, std::string, std::vector<int>>;
+  Variant number = 42;
+  Variant string = std::string{"hallo"};
+  Variant vector = std::vector<int>{1, 2, 3};
+
+  ByteBufferWriteSerializer writer;
+  writer << number;
+  writer << string;
+  writer << vector;
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+
+  // The alternative that was written is also the alternative that is read, no
+  // matter which alternative the target currently holds.
+  Variant numberExpected = std::string{"not a number"};
+  Variant stringExpected;
+  Variant vectorExpected;
+  reader >> numberExpected;
+  reader >> stringExpected;
+  reader >> vectorExpected;
+  EXPECT_EQ(numberExpected, number);
+  EXPECT_EQ(stringExpected, string);
+  EXPECT_EQ(vectorExpected, vector);
+}
+
+// _____________________________________________________________________________
+TEST(Serializer, serializeVariantWithAnOutOfRangeIndex) {
+  using Variant = std::variant<int, std::string>;
+  // Write an index that is out of range for `Variant`, which can only happen
+  // for a corrupted or otherwise unsuitable input.
+  ByteBufferWriteSerializer writer;
+  writer << uint64_t{2};
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+  Variant variant;
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      reader >> variant,
+      ::testing::HasSubstr(
+          "out of range index 2 (the variant has 2 alternatives)"));
+  // The variant is unchanged, in particular it does not hold an alternative
+  // that was never read.
+  EXPECT_EQ(variant, Variant{int{}});
+}
+
+// A type that makes a `std::variant` `valueless_by_exception`, which is the
+// only state in which a variant holds no alternative at all.
+struct ThrowingOnMove {
+  int value_ = 0;
+  ThrowingOnMove() = default;
+  ThrowingOnMove(ThrowingOnMove&&) {
+    throw std::runtime_error{"deliberately throwing move constructor"};
+  }
+  ThrowingOnMove& operator=(ThrowingOnMove&&) = default;
+  AD_SERIALIZE_FRIEND_FUNCTION(ThrowingOnMove) { serializer | arg.value_; }
+};
+
+// _____________________________________________________________________________
+TEST(Serializer, serializeValuelessVariant) {
+  std::variant<int, ThrowingOnMove> variant;
+  EXPECT_ANY_THROW(variant.emplace<ThrowingOnMove>(ThrowingOnMove{}));
+  ASSERT_TRUE(variant.valueless_by_exception());
+
+  ByteBufferWriteSerializer writer;
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      writer << variant, ::testing::HasSubstr("`valueless_by_exception`"));
+}
+
+// _____________________________________________________________________________
+TEST(Serializer, serializeEnum) {
+  // Enums are implicitly serializable without any additional code.
+  enum E { a, b, c };
+  enum struct F { d, e, f };
+
+  ByteBufferWriteSerializer writer;
+  writer << b;
+  writer << F::f;
+
+  ByteBufferReadSerializer reader(std::move(writer).data());
+  E e;
+  F f;
+  reader | e;
+  reader | f;
+  EXPECT_EQ(e, E::b);
+  EXPECT_EQ(f, F::f);
+}
+
+// _____________________________________________________________________________
+// Tests for CompressedSerializer
+// _____________________________________________________________________________
+
+// _____________________________________________________________________________
+TEST(CompressedSerializer, SimpleRoundtrip) {
+  auto blockSize = ad_utility::MemorySize::bytes(3);
+
+  ByteBufferWriteSerializer bufferWriter;
+  CompressedWriteSerializer writer{std::move(bufferWriter), dummyCompress,
+                                   blockSize};
+  int x = 42;
+  double d = 3.14159;
+  std::string s = "hello world";
+  writer << x;
+  writer << d;
+  writer << s;
+  auto buffer = std::move(writer).underlyingSerializer();
+
+  ByteBufferReadSerializer bufferReader{std::move(buffer).data()};
+  CompressedReadSerializer reader{std::move(bufferReader), dummyDecompress};
+  int xRead;
+  double dRead;
+  std::string sRead;
+  reader >> xRead;
+  reader >> dRead;
+  reader >> sRead;
+
+  EXPECT_EQ(x, xRead);
+  EXPECT_DOUBLE_EQ(d, dRead);
+  EXPECT_EQ(s, sRead);
+}
+
+// _____________________________________________________________________________
+TEST(CompressedSerializer, LargeDataMultipleBlocks) {
+  auto blockSize = ad_utility::MemorySize::bytes(32);
+
+  std::vector<int> original;
+  for (int i = 0; i < 1000; ++i) {
+    original.push_back(i * 17 - 500);
+  }
+
+  ByteBufferWriteSerializer bufferWriter;
+  CompressedWriteSerializer writer{std::move(bufferWriter), dummyCompress,
+                                   blockSize};
+  writer << original;
+  auto buffer = std::move(writer).underlyingSerializer();
+
+  ByteBufferReadSerializer bufferReader{std::move(buffer).data()};
+  CompressedReadSerializer reader{std::move(bufferReader), dummyDecompress};
+  std::vector<int> read;
+  reader >> read;
+
+  EXPECT_EQ(original, read);
+}
+
+// _____________________________________________________________________________
+TEST(CompressedSerializer, ExactBlockSize) {
+  // Exactly 4 ints per block
+  auto blockSize = ad_utility::MemorySize::bytes(sizeof(int) * 4);
+
+  std::vector<int> original = {1, 2, 3, 4, 5, 6, 7, 8};  // Exactly 2 blocks
+
+  ByteBufferWriteSerializer bufferWriter;
+  CompressedWriteSerializer writer{std::move(bufferWriter), dummyCompress,
+                                   blockSize};
+  for (int i : original) {
+    writer << i;
+  }
+  auto buffer = std::move(writer).underlyingSerializer();
+
+  ByteBufferReadSerializer bufferReader{std::move(buffer).data()};
+  CompressedReadSerializer reader{std::move(bufferReader), dummyDecompress};
+  std::vector<int> read;
+  for (size_t i = 0; i < original.size(); ++i) {
+    int val;
+    reader >> val;
+    read.push_back(val);
+  }
+
+  EXPECT_EQ(original, read);
+}
+
+// _____________________________________________________________________________
+TEST(CompressedSerializer, WithFileSerializer) {
+  std::string filename = "CompressedSerializer.WithFileSerializer.dat";
+  auto cleanup =
+      absl::Cleanup{[&filename]() { ad_utility::deleteFile(filename); }};
+  auto blockSize = ad_utility::MemorySize::bytes(64);
+
+  std::vector<double> original;
+  for (int i = 0; i < 100; ++i) {
+    original.push_back(i * 1.5);
+  }
+
+  {
+    FileWriteSerializer fileWriter{filename};
+    CompressedWriteSerializer writer{std::move(fileWriter), dummyCompress,
+                                     blockSize};
+    writer << original;
+  }
+
+  {
+    FileReadSerializer fileReader{filename};
+    CompressedReadSerializer reader{std::move(fileReader), dummyDecompress};
+    std::vector<double> read;
+    reader >> read;
+    EXPECT_EQ(original, read);
+  }
+}
+
+// _____________________________________________________________________________
+TEST(ZstdSerializer, RoundtripWithByteBuffer) {
+  using ad_utility::serialization::ZstdReadSerializer;
+  using ad_utility::serialization::ZstdWriteSerializer;
+
+  auto blockSize =
+      ad_utility::MemorySize::kilobytes(1);  // Small block for testing
+
+  std::vector<int> original;
+  for (int i = 0; i < 100'000; ++i) {
+    original.push_back(i * 17 - 500);
+  }
+
+  ByteBufferWriteSerializer bufferWriter;
+  ZstdWriteSerializer writer{std::move(bufferWriter), blockSize};
+  writer << original;
+  auto buffer = std::move(writer).underlyingSerializer();
+
+  ByteBufferReadSerializer bufferReader{std::move(buffer).data()};
+  ZstdReadSerializer reader{std::move(bufferReader)};
+  std::vector<int> read;
+  reader >> read;
+
+  EXPECT_EQ(original, read);
+}
+
+// _____________________________________________________________________________
+TEST(ZstdSerializer, RoundtripWithFileSerializer) {
+  using ad_utility::serialization::ZstdReadSerializer;
+  using ad_utility::serialization::ZstdWriteSerializer;
+
+  std::string filename = "ZstdSerializer.RoundtripWithFileSerializer.dat";
+  auto cleanup =
+      absl::Cleanup{[&filename]() { ad_utility::deleteFile(filename); }};
+  auto blockSize = ad_utility::MemorySize::kilobytes(1);
+
+  std::vector<std::string> original = {"alpha", "beta", "gamma", "delta",
+                                       "epsilon"};
+  for (int i = 0; i < 1000; ++i) {
+    original.push_back("string_number_" + std::to_string(i));
+  }
+
+  {
+    FileWriteSerializer fileWriter{filename};
+    ZstdWriteSerializer writer{std::move(fileWriter), blockSize};
+    writer << original;
+  }
+
+  {
+    FileReadSerializer fileReader{filename};
+    ZstdReadSerializer reader{std::move(fileReader)};
+    std::vector<std::string> read;
+    reader >> read;
+    EXPECT_EQ(original, read);
+  }
+}
+
+// _____________________________________________________________________________
+TEST(ByteBufferWriteSerializer, serializeAtPosition) {
+  ByteBufferWriteSerializer writer;
+  writer << uint32_t{1};
+  // Remember the position of the value that is patched below, and write a
+  // placeholder for it, as a caller would do for a size that is only known
+  // once the data that it describes has been written.
+  size_t position = writer.getCurrentPosition();
+  writer << uint32_t{0};
+  writer << uint32_t{3};
+
+  serializeAtPosition(writer, position, uint32_t{42});
+  // The number of bytes is unchanged, only the middle value was replaced.
+  EXPECT_EQ(writer.getCurrentPosition(), 3 * sizeof(uint32_t));
+
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+  uint32_t first, second, third;
+  reader >> first;
+  reader >> second;
+  reader >> third;
+  EXPECT_EQ(first, 1u);
+  EXPECT_EQ(second, 42u);
+  EXPECT_EQ(third, 3u);
+}
+
+// _____________________________________________________________________________
+TEST(ByteBufferWriteSerializer, serializeAtPositionOutOfRangeThrows) {
+  ByteBufferWriteSerializer writer;
+  writer << uint32_t{1};
+
+  // Overwriting exactly the bytes that were written is still allowed.
+  EXPECT_NO_THROW(serializeAtPosition(writer, 0, uint32_t{7}));
+
+  // Overwriting a single byte past the end throws, as does an overwrite that
+  // starts inside the data but reaches past its end.
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      serializeAtPosition(writer, sizeof(uint32_t), char{0}),
+      ::testing::HasSubstr("position_ + numBytes <= data_.size()"));
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      serializeAtPosition(writer, 1, uint32_t{7}),
+      ::testing::HasSubstr("position_ + numBytes <= data_.size()"));
+}
+
+// _____________________________________________________________________________
+TEST(ByteBufferReadSerializer, ThrowsWhenReadingPastEnd) {
+  ByteBufferWriteSerializer writer;
+  int x = 42;
+  writer << x;
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+
+  // Reading the value succeeds.
+  int y;
+  reader >> y;
+  EXPECT_EQ(y, 42);
+
+  // Any further read past the end throws a contract-check failure.
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      reader >> y, ::testing::HasSubstr("iterator_ + numBytes <= data_.end()"));
+}
+
+// _____________________________________________________________________________
+TEST(ByteBufferReadSerializer, ThrowsOnSkipPastEnd) {
+  ByteBufferWriteSerializer writer;
+  char c = 'Q';
+  writer << c;
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      reader.skip(100),
+      ::testing::HasSubstr(
+          "Tried to read/access bytes in ByteBufferReadSerializer but not "
+          "enough bytes available"));
+}
+
+// _____________________________________________________________________________
+TEST(ByteBufferReadSerializer, ThrowsOnGetSpanPastEnd) {
+  ByteBufferWriteSerializer writer;
+  char c = 'Q';
+  writer << c;
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      reader.getSpanToBytes(100),
+      ::testing::HasSubstr(
+          "Tried to read/access bytes in ByteBufferReadSerializer but not "
+          "enough bytes available"));
+}
+
+// _____________________________________________________________________________
+// Tests for `alignSerializerForType` directly.
+// _____________________________________________________________________________
+
+// _____________________________________________________________________________
+TEST(AlignedSerializer, AlignSerializerForType) {
+  using ad_utility::serialization::alignSerializerForType;
+
+  // Write: an already-aligned position (0 % 8 == 0) must not add any padding.
+  {
+    AlignedByteBufferWriteSerializer writer;
+    ASSERT_EQ(writer.getCurrentPosition(), 0u);
+    alignSerializerForType<int64_t>(writer);
+    EXPECT_EQ(writer.getCurrentPosition(), 0u);
+  }
+  // Write: an unaligned position adds the correct number of padding bytes.
+  {
+    AlignedByteBufferWriteSerializer writer;
+    char c = 'X';
+    writer << c;
+    alignSerializerForType<int64_t>(writer);
+    // 1 byte (char) + 7 bytes padding = position 8.
+    EXPECT_EQ(writer.getCurrentPosition(), 8u);
+  }
+
+  // Read: an already-aligned position (0 % 8 == 0) must not skip any bytes.
+  {
+    AlignedByteBufferWriteSerializer tmpWriter;
+    for (int i = 0; i < 16; ++i) {
+      tmpWriter << char{0};
+    }
+    AlignedByteBufferReadSerializer reader{std::move(tmpWriter).data()};
+    ASSERT_EQ(reader.getCurrentPosition(), 0u);
+    alignSerializerForType<int64_t>(reader);
+    EXPECT_EQ(reader.getCurrentPosition(), 0u);
+  }
+  // Read: an unaligned position skips the correct number of bytes.
+  {
+    AlignedByteBufferWriteSerializer tmpWriter;
+    for (int i = 0; i < 16; ++i) {
+      tmpWriter << char{0};
+    }
+    AlignedByteBufferReadSerializer reader{std::move(tmpWriter).data()};
+    char c;
+    reader >> c;
+    alignSerializerForType<int64_t>(reader);
+    // 1 byte (char) read + 7 bytes skipped = position 8.
+    EXPECT_EQ(reader.getCurrentPosition(), 8u);
+  }
+}
+
+// _____________________________________________________________________________
+// Tests for the UsesAlignedSerialization trait and aligned serializers.
+// _____________________________________________________________________________
+
+// Test that the trait is correctly detected.
+TEST(AlignedSerializer, TraitDetection) {
+  using ad_utility::serialization::usesAlignedSerialization;
+  // Default (unaligned) serializers.
+  static_assert(!usesAlignedSerialization<ByteBufferWriteSerializer>);
+  static_assert(!usesAlignedSerialization<ByteBufferReadSerializer>);
+  static_assert(!usesAlignedSerialization<FileWriteSerializer>);
+  static_assert(!usesAlignedSerialization<FileReadSerializer>);
+  // Aligned serializers.
+  static_assert(usesAlignedSerialization<AlignedByteBufferWriteSerializer>);
+  static_assert(usesAlignedSerialization<AlignedByteBufferReadSerializer>);
+  // CopyableFileReadSerializer has no trait.
+  static_assert(!usesAlignedSerialization<CopyableFileReadSerializer>);
+}
+
+// Test that the aligned serializers fulfill the Serializer concepts.
+TEST(AlignedSerializer, Concepts) {
+  static_assert(WriteSerializer<AlignedByteBufferWriteSerializer>);
+  static_assert(!ReadSerializer<AlignedByteBufferWriteSerializer>);
+  static_assert(ReadSerializer<AlignedByteBufferReadSerializer>);
+  static_assert(!WriteSerializer<AlignedByteBufferReadSerializer>);
+}
+
+// Test the concepts `SpanReadSerializer` and `ZeroCopyReadSerializer` and the
+// deduction guide of `ByteBufferReadSerializerT`.
+TEST(Serializer, SpanReadSerializerConcepts) {
+  using ad_utility::serialization::SpanReadSerializer;
+  using ad_utility::serialization::ZeroCopyReadSerializer;
+  using SpanReader = ad_utility::serialization::ByteBufferReadSerializerT<
+      false, ql::span<const char>>;
+  using UninitializedBufferReader =
+      ad_utility::serialization::ByteBufferReadSerializerT<
+          false, ad_utility::serialization::UninitializedBuffer>;
+  using AlignedSpanReader =
+      ad_utility::serialization::ByteBufferReadSerializerT<
+          true, ql::span<const char>>;
+
+  // Every byte buffer read serializer gives access to its buffer, regardless
+  // of its storage and of whether it uses aligned serialization.
+  static_assert(SpanReadSerializer<ByteBufferReadSerializer>);
+  static_assert(SpanReadSerializer<SpanReader>);
+  static_assert(SpanReadSerializer<UninitializedBufferReader>);
+  static_assert(SpanReadSerializer<AlignedByteBufferReadSerializer>);
+  static_assert(SpanReadSerializer<AlignedSpanReader>);
+
+  // Serializers that read from a file have no buffer to point into, and write
+  // serializers are no read serializers.
+  static_assert(!SpanReadSerializer<FileReadSerializer>);
+  static_assert(!SpanReadSerializer<CopyableFileReadSerializer>);
+  static_assert(!SpanReadSerializer<ByteBufferWriteSerializer>);
+  static_assert(!SpanReadSerializer<AlignedByteBufferWriteSerializer>);
+  static_assert(!SpanReadSerializer<FileWriteSerializer>);
+
+  // `ZeroCopyReadSerializer` is strictly stronger: it additionally requires
+  // aligned serialization.
+  static_assert(ZeroCopyReadSerializer<AlignedByteBufferReadSerializer>);
+  static_assert(ZeroCopyReadSerializer<AlignedSpanReader>);
+  static_assert(!ZeroCopyReadSerializer<ByteBufferReadSerializer>);
+  static_assert(!ZeroCopyReadSerializer<SpanReader>);
+  static_assert(!ZeroCopyReadSerializer<UninitializedBufferReader>);
+  static_assert(!ZeroCopyReadSerializer<FileReadSerializer>);
+  static_assert(!ZeroCopyReadSerializer<ByteBufferWriteSerializer>);
+
+  // The deduction guide of `ByteBufferReadSerializerT` yields the plain (not
+  // aligned) reader for any kind of buffer.
+  std::vector<char> vec;
+  ad_utility::serialization::UninitializedBuffer uninitializedBuffer;
+  static_assert(
+      std::is_same_v<
+          decltype(ad_utility::serialization::ByteBufferReadSerializerT{vec}),
+          ByteBufferReadSerializer>);
+  static_assert(std::is_same_v<
+                decltype(ad_utility::serialization::ByteBufferReadSerializerT{
+                    std::move(uninitializedBuffer)}),
+                UninitializedBufferReader>);
+  static_assert(std::is_same_v<
+                decltype(ad_utility::serialization::ByteBufferReadSerializerT{
+                    ql::span<const char>{vec}}),
+                SpanReader>);
+}
+
+// Test that `zeroCopyDeserializeToStringView` returns views into the buffer of
+// the reader, for the unaligned and the aligned serializers, and throws on a
+// truncated buffer.
+TEST(Serializer, ZeroCopyDeserializeToStringView) {
+  using ad_utility::serialization::zeroCopyDeserializeToStringView;
+  using namespace ad_utility::use_type_identity;
+
+  // Write a mix of strings and other values with the `Writer`, read them back
+  // with the `Reader` via `zeroCopyDeserializeToStringView`, and check that the
+  // returned views point into the buffer of the reader.
+  auto test = [](auto writerTi, auto makeReader) {
+    using Writer = typename decltype(writerTi)::type;
+    Writer writer;
+    std::string s1 = "a string that is longer than the short string buffer";
+    std::string_view s2 = "view";
+    std::string empty;
+    int64_t i = 42;
+    writer << s1;
+    writer << i;
+    writer << s2;
+    writer << empty;
+    auto data = std::move(writer).data();
+
+    auto reader = makeReader(data);
+    const char* begin = reader.data().data();
+    const char* end = begin + reader.data().size();
+    auto pointsIntoBuffer = [begin, end](std::string_view view) {
+      return view.data() >= begin && view.data() + view.size() <= end;
+    };
+
+    auto s1Read = zeroCopyDeserializeToStringView(reader);
+    int64_t iRead = 0;
+    reader >> iRead;
+    auto s2Read = zeroCopyDeserializeToStringView(reader);
+    auto emptyRead = zeroCopyDeserializeToStringView(reader);
+    EXPECT_EQ(s1Read, s1);
+    EXPECT_EQ(iRead, i);
+    EXPECT_EQ(s2Read, s2);
+    EXPECT_TRUE(emptyRead.empty());
+    EXPECT_TRUE(pointsIntoBuffer(s1Read));
+    EXPECT_TRUE(pointsIntoBuffer(s2Read));
+    EXPECT_EQ(reader.getCurrentPosition(), reader.data().size());
+  };
+
+  // The unaligned writer with a reader that owns its buffer, and one that
+  // only views it.
+  test(ti<ByteBufferWriteSerializer>,
+       [](const auto& data) { return ByteBufferReadSerializer{data}; });
+  test(ti<ByteBufferWriteSerializer>, [](const auto& data) {
+    return ad_utility::serialization::ByteBufferReadSerializerT{
+        ql::span<const char>{data}};
+  });
+  // Strings have no alignment requirement, so the function also works for the
+  // aligned serializers.
+  test(ti<AlignedByteBufferWriteSerializer>,
+       [](const auto& data) { return AlignedByteBufferReadSerializer{data}; });
+
+  // A buffer that ends inside the bytes of the string throws.
+  {
+    ByteBufferWriteSerializer writer;
+    std::string s = "truncated";
+    writer << s;
+    auto data = std::move(writer).data();
+    data.resize(data.size() - 3);
+    ByteBufferReadSerializer reader{std::move(data)};
+    AD_EXPECT_THROW_WITH_MESSAGE(
+        zeroCopyDeserializeToStringView(reader),
+        ::testing::HasSubstr("not enough bytes available"));
+  }
+}
+
+// Test that alignment padding is correctly inserted. We write a single char
+// followed by a vector<int64_t>. The vector serialization writes a size_t (8
+// bytes) then aligns to alignof(int64_t) == 8. After writing 1 byte (char) + 8
+// bytes (size), the position is 9, so 7 bytes of padding should be inserted
+// to reach position 16 before the data.
+TEST(AlignedSerializer, AlignmentPaddingInserted) {
+  AlignedByteBufferWriteSerializer writer;
+  char c = 'X';
+  writer << c;
+  // Position is now 1.
+  EXPECT_EQ(writer.getCurrentPosition(), 1u);
+
+  std::vector<int64_t> v = {100, 200, 300};
+  writer << v;
+
+  // The total size should be: 1 (char) + 8 (size_t for vector length) + 7
+  // (padding to align to 8) + 24 (3 * int64_t) = 40.
+  EXPECT_EQ(writer.getCurrentPosition(), 40u);
+
+  // Verify round-trip.
+  AlignedByteBufferReadSerializer reader{std::move(writer).data()};
+  char cRead;
+  reader >> cRead;
+  EXPECT_EQ(cRead, 'X');
+  std::vector<int64_t> vRead;
+  reader >> vRead;
+  EXPECT_EQ(v, vRead);
+}
+
+// Test that unaligned serializers do NOT insert padding.
+TEST(AlignedSerializer, NoPaddingWithoutAlignment) {
+  ByteBufferWriteSerializer writer;
+  char c = 'X';
+  writer << c;
+
+  std::vector<int64_t> v = {100, 200, 300};
+  writer << v;
+
+  // Without alignment: 1 (char) + 8 (size_t) + 24 (3 * int64_t) = 33.
+  EXPECT_EQ(writer.getCurrentPosition(), 33u);
+
+  // Verify round-trip.
+  ByteBufferReadSerializer reader{std::move(writer).data()};
+  char cRead;
+  reader >> cRead;
+  EXPECT_EQ(cRead, 'X');
+  std::vector<int64_t> vRead;
+  reader >> vRead;
+  EXPECT_EQ(v, vRead);
+}
+
+// Test round-trip with matching alignment specifications for byte buffers.
+// While doing so, also test the zero copy serialization via a
+// `ByteBufferReadSerializer` that takes a span.
+TEST(AlignedSerializer, MatchingAlignmentByteBuffer) {
+  // Aligned write + aligned read.
+
+  using namespace ad_utility::use_type_identity;
+  auto test = [&]<typename Writer, typename Reader>(TI<Writer>, TI<Reader>) {
+    Writer writer;
+    char c = 'A';
+    writer << c;
+    std::vector<int64_t> v = {1, 2, 3, 4, 5};
+    writer << v;
+    std::string s = "hello";
+    writer << s;
+
+    auto data = std::move(writer).data();
+
+    Reader reader{data};
+    char cRead;
+    reader >> cRead;
+    auto vRead = [&reader]() {
+      if constexpr (serialization::ZeroCopyReadSerializer<Reader>) {
+        return serialization::zeroCopyDeserializeToSpan<int64_t>(reader);
+      } else {
+        std::vector<int64_t> vRead;
+        reader >> vRead;
+        return vRead;
+      }
+    }();
+    std::string sRead;
+    reader >> sRead;
+    EXPECT_EQ(cRead, 'A');
+    EXPECT_THAT(vRead, ::testing::ElementsAreArray(v));
+    EXPECT_EQ(s, sRead);
+  };
+
+  auto alignedWriter = ti<AlignedByteBufferWriteSerializer>;
+  auto alignedReader = ti<AlignedByteBufferReadSerializer>;
+  auto alignedZeroCopyReader =
+      ti<ad_utility::serialization::ByteBufferReadSerializerT<
+          true, ql::span<const char>>>;
+  test(alignedWriter, alignedReader);
+  test(alignedWriter, alignedZeroCopyReader);
+
+  // Test the unaligned reading and writing.
+  test(ti<ByteBufferWriteSerializer>, ti<ByteBufferReadSerializer>);
+}
+
+// Test that mismatched alignment specifications produce incorrect results.
+// Writing with alignment inserts padding that the unaligned reader doesn't
+// skip, and vice versa.
+TEST(AlignedSerializer, MismatchedAlignmentProducesWrongResults) {
+  // Aligned write + unaligned read: the reader doesn't skip alignment padding,
+  // so it reads garbage.
+  {
+    AlignedByteBufferWriteSerializer writer;
+    char c = 'X';
+    writer << c;
+    std::vector<int64_t> v = {100, 200, 300};
+    writer << v;
+
+    // Read the raw buffer with an unaligned reader. An explicit copy is needed
+    // because the aligned writer's storage uses a different allocator type.
+    auto d = std::move(writer).data();
+    ByteBufferReadSerializer reader{std::vector<char>(d.begin(), d.end())};
+    char cRead;
+    reader >> cRead;
+    EXPECT_EQ(cRead, 'X');
+    std::vector<int64_t> vRead;
+    reader >> vRead;
+    // The unaligned reader doesn't skip the 7 padding bytes, so the data is
+    // misinterpreted.
+    EXPECT_NE(v, vRead);
+  }
+
+  // Unaligned write + aligned read: the reader tries to skip padding that
+  // doesn't exist, reading into the data region.
+  {
+    ByteBufferWriteSerializer writer;
+    char c = 'X';
+    writer << c;
+    std::vector<int64_t> v = {100, 200, 300};
+    writer << v;
+
+    // Read with an aligned reader. An explicit copy is needed because the
+    // aligned reader's storage uses a different allocator type.
+    auto d = std::move(writer).data();
+    using AlignedVec = std::vector<char, ad_utility::AlignedAllocator<char>>;
+    AlignedByteBufferReadSerializer reader{AlignedVec(d.begin(), d.end())};
+    char cRead;
+    reader >> cRead;
+    EXPECT_EQ(cRead, 'X');
+    std::vector<int64_t> vRead;
+    // The aligned reader skips bytes that weren't padding, so the data is
+    // misinterpreted. This may throw or produce wrong results.
+    EXPECT_ANY_THROW(reader >> vRead);
+  }
+}
+
+// _____________________________________________________________________________
+TEST(BufferedWriteSerializer, TransparentPassthrough) {
+  std::array<std::string_view, 4> strings{"alpha", "beta", "gamma", "delta"};
+
+  ByteBufferWriteSerializer expectedWriter;
+  expectedWriter << strings;
+  auto expected = std::move(expectedWriter).data();
+
+  for (MemorySize blockSize : {1_B, 7_B, 64_B, 1024_B}) {
+    BufferedWriteSerializer writer{ByteBufferWriteSerializer{}, blockSize};
+    writer << strings;
+    auto actual = std::move(writer).underlyingSerializer().data();
+    EXPECT_EQ(actual, expected) << "block size was " << blockSize;
+  }
+}
+
+// _____________________________________________________________________________
+TEST(BufferedWriteSerializer, RoundtripWithByteBuffer) {
+  std::vector<int> original;
+  for (int i = 0; i < 10'000; ++i) {
+    original.push_back(i);
+  }
+
+  BufferedWriteSerializer writer{ByteBufferWriteSerializer{}, 7_B};
+  writer << original;
+  auto buffer = std::move(writer).underlyingSerializer();
+
+  ByteBufferReadSerializer reader{std::move(buffer).data()};
+  std::vector<int> read;
+  reader >> read;
+  EXPECT_EQ(original, read);
+}
+
+// _____________________________________________________________________________
+TEST(BufferedWriteSerializer, RoundtripWithFileSerializerViaClose) {
+  std::string filename = gtestCurrentTestName();
+  auto cleanup = absl::Cleanup{[&filename]() { deleteFile(filename); }};
+  auto blockSize = 13_B;
+
+  std::vector<std::string> original{"alpha", "beta", "gamma", "delta"};
+
+  {
+    BufferedWriteSerializer writer{FileWriteSerializer{filename}, blockSize};
+    writer << original;
+    // `close` flushes the remaining buffered data to the file.
+    writer.close();
+    // Closing again is a no-op.
+    writer.close();
+  }
+
+  {
+    FileReadSerializer reader{filename};
+    std::vector<std::string> read;
+    reader >> read;
+    EXPECT_EQ(original, read);
+  }
+}
+
+// _____________________________________________________________________________
+TEST(BufferedWriteSerializer, FlushOnDestruction) {
+  // The remaining, incomplete block is flushed on destruction, even if neither
+  // `close` nor `underlyingSerializer` is called explicitly.
+  std::string filename = gtestCurrentTestName();
+  auto cleanup = absl::Cleanup{[&filename]() { deleteFile(filename); }};
+
+  std::vector<int> original = {1, 2, 3, 4, 5};
+  {
+    BufferedWriteSerializer writer{FileWriteSerializer{filename}, 1_MB};
+    writer << original;
+  }
+
+  FileReadSerializer reader{filename};
+  std::vector<int> read;
+  reader >> read;
+  EXPECT_EQ(original, read);
+}
+
+// _____________________________________________________________________________
+TEST(BufferedWriteSerializer, IsWriteSerializer) {
+  static_assert(WriteSerializer<BufferedWriteSerializer<FileWriteSerializer>>);
+  static_assert(
+      WriteSerializer<BufferedWriteSerializer<ByteBufferWriteSerializer>>);
+}
+
+// _____________________________________________________________________________
+// A blocksize of zero is rejected, as it would make `serializeBytes` loop
+// forever.
+TEST(BufferedWriteSerializer, ThrowsOnZeroBlocksize) {
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      (BufferedWriteSerializer{ByteBufferWriteSerializer{}, 0_B}),
+      ::testing::HasSubstr("blocksize_ > 0"));
+}
+
+// _____________________________________________________________________________
+// The serialization position of a `BufferedWriteSerializer` also accounts for
+// the bytes that are still sitting in its buffer, and `serializeAtPosition`
+// (which first flushes that buffer) can overwrite data that has already been
+// written.
+TEST(BufferedWriteSerializer, SerializeAtPosition) {
+  std::string filename = gtestCurrentTestName();
+  auto cleanup = absl::Cleanup{[&filename]() { deleteFile(filename); }};
+
+  for (MemorySize blockSize : {1_B, 3_B, 64_B, 1024_B}) {
+    uint32_t placeholder = 0;
+    uint32_t trailer = 12345;
+    uint32_t actualValue = 42;
+    {
+      BufferedWriteSerializer writer{FileWriteSerializer{filename}, blockSize};
+      EXPECT_EQ(writer.getSerializationPosition(), 0u);
+      writer << placeholder;
+      // The position advances even for bytes that may still be buffered.
+      EXPECT_EQ(writer.getSerializationPosition(), sizeof(placeholder));
+      writer << trailer;
+      auto positionAfter = writer.getSerializationPosition();
+
+      serializeAtPosition(writer, 0, actualValue);
+      // The position is restored, such that the following bytes are appended.
+      EXPECT_EQ(writer.getSerializationPosition(), positionAfter);
+      writer << trailer;
+    }
+
+    FileReadSerializer reader{filename};
+    uint32_t read = 0;
+    reader >> read;
+    EXPECT_EQ(read, actualValue) << "block size was " << blockSize;
+    reader >> read;
+    EXPECT_EQ(read, trailer) << "block size was " << blockSize;
+    reader >> read;
+    EXPECT_EQ(read, trailer) << "block size was " << blockSize;
+  }
+}
+
+// _____________________________________________________________________________
+// A `BufferedWriteSerializer` that has been closed or moved from can no longer
+// be used.
+TEST(BufferedWriteSerializer, ThrowsWhenClosedOrMovedFrom) {
+  std::string filename = gtestCurrentTestName();
+  auto cleanup = absl::Cleanup{[&filename]() { deleteFile(filename); }};
+  using ::testing::HasSubstr;
+
+  auto expectUnusable = [](BufferedWriteSerializer<FileWriteSerializer>& writer,
+                           ad_utility::source_location l =
+                               AD_CURRENT_SOURCE_LOC()) {
+    auto trace = generateLocationTrace(l);
+    AD_EXPECT_THROW_WITH_MESSAGE(
+        std::ignore = writer.getSerializationPosition(),
+        HasSubstr("`getSerializationPosition` was called on a "
+                  "`BufferedWriteSerializer` that has already been closed"));
+    AD_EXPECT_THROW_WITH_MESSAGE(
+        serializeAtPosition(writer, 0, uint32_t{42}),
+        HasSubstr("`serializeAtPosition` was called on a "
+                  "`BufferedWriteSerializer` that has already been closed"));
+    AD_EXPECT_THROW_WITH_MESSAGE(
+        std::move(writer).underlyingSerializer(),
+        HasSubstr("`underlyingSerializer` was called on a "
+                  "`BufferedWriteSerializer` that has already been closed"));
+  };
+
+  BufferedWriteSerializer writer{FileWriteSerializer{filename}, 1_kB};
+  writer << uint32_t{1};
+  auto other = std::move(writer);
+  // NOLINTNEXTLINE(bugprone-use-after-move)
+  expectUnusable(writer);
+
+  other.close();
+  expectUnusable(other);
+}
+
+// _____________________________________________________________________________
+// A `VectorIncrementalSerializer` on top of a `BufferedWriteSerializer` writes
+// exactly the same format as one that writes to the file directly, also if the
+// vector does not start at position 0.
+TEST(VectorIncrementalSerializer, WithBufferedWriteSerializer) {
+  std::vector<int> original{9, 7, 5, 3, 1, -1, -3, 5, 5, 6, 67498235, 0, 42};
+  double firstDouble = 42.42;
+  double secondDouble = -13.123;
+  std::string filename = gtestCurrentTestName();
+  auto cleanup = absl::Cleanup{[&filename]() { deleteFile(filename); }};
+
+  using Writer = BufferedWriteSerializer<FileWriteSerializer>;
+  for (MemorySize blockSize : {1_B, 5_B, 64_B, 1024_B}) {
+    {
+      Writer bufferedWriter{FileWriteSerializer{filename}, blockSize};
+      bufferedWriter << firstDouble;
+      VectorIncrementalSerializer<int, Writer> writer{
+          std::move(bufferedWriter)};
+      for (int element : original) {
+        writer.push(element);
+      }
+      bufferedWriter = std::move(writer).serializer();
+      bufferedWriter << secondDouble;
+    }
+
+    FileReadSerializer reader{filename};
+    double doubleRead = 0.0;
+    reader >> doubleRead;
+    EXPECT_EQ(doubleRead, firstDouble) << "block size was " << blockSize;
+    std::vector<int> vectorRead;
+    reader >> vectorRead;
+    EXPECT_EQ(vectorRead, original) << "block size was " << blockSize;
+    reader >> doubleRead;
+    EXPECT_EQ(doubleRead, secondDouble) << "block size was " << blockSize;
+  }
+}
+
+// _____________________________________________________________________________
+// A moved-from `VectorIncrementalSerializer` writes nothing anymore, in
+// particular its destructor doesn't touch the serializer that has been moved
+// away.
+TEST(VectorIncrementalSerializer, MoveConstructor) {
+  std::vector<int> original{1, 2, 3, 4, 5};
+  std::string filename = gtestCurrentTestName();
+  auto cleanup = absl::Cleanup{[&filename]() { deleteFile(filename); }};
+  {
+    VectorIncrementalSerializer<int, FileWriteSerializer> writer{filename};
+    writer.push(original.at(0));
+    auto movedTo = std::move(writer);
+    for (size_t i = 1; i < original.size(); ++i) {
+      movedTo.push(original.at(i));
+    }
+  }
+
+  FileReadSerializer reader{filename};
+  std::vector<int> read;
+  reader >> read;
+  EXPECT_EQ(read, original);
+}
+
+namespace {
+// Read a `std::vector<int>` from the file with the given name.
+std::vector<int> readIntVector(const std::string& filename) {
+  FileReadSerializer reader{filename};
+  std::vector<int> result;
+  reader >> result;
+  return result;
+}
+}  // namespace
+
+// _____________________________________________________________________________
+// Overwriting a `BufferedWriteSerializer` flushes its buffered data.
+TEST(BufferedWriteSerializer, MoveAssignmentFlushesOverwrittenSerializer) {
+  std::string filenameA = gtestCurrentTestName() + "A";
+  std::string filenameB = gtestCurrentTestName() + "B";
+  auto cleanup = absl::Cleanup{[&filenameA, &filenameB]() {
+    deleteFile(filenameA);
+    deleteFile(filenameB);
+  }};
+  std::vector<int> originalA{1, 2, 3};
+  std::vector<int> originalB{4, 5};
+  {
+    BufferedWriteSerializer writerA{FileWriteSerializer{filenameA}, 1_MB};
+    writerA << originalA;
+    BufferedWriteSerializer writerB{FileWriteSerializer{filenameB}, 1_MB};
+    writerB << originalB;
+    writerA = std::move(writerB);
+    // The file of the overwritten serializer is complete and closed.
+    EXPECT_EQ(readIntVector(filenameA), originalA);
+  }
+  EXPECT_EQ(readIntVector(filenameB), originalB);
+}
+
+// _____________________________________________________________________________
+// Overwriting a `VectorIncrementalSerializer` finishes it.
+TEST(VectorIncrementalSerializer, MoveAssignmentFinishesOverwrittenSerializer) {
+  std::string filenameA = gtestCurrentTestName() + "A";
+  std::string filenameB = gtestCurrentTestName() + "B";
+  auto cleanup = absl::Cleanup{[&filenameA, &filenameB]() {
+    deleteFile(filenameA);
+    deleteFile(filenameB);
+  }};
+  std::vector<int> originalA{1, 2, 3};
+  std::vector<int> originalB{4, 5, 6, 7};
+  {
+    using Writer = VectorIncrementalSerializer<int, FileWriteSerializer>;
+    Writer writerA{FileWriteSerializer{filenameA}};
+    writerA.push(originalA.at(0));
+    writerA.push(originalA.at(1));
+    writerA.push(originalA.at(2));
+    Writer writerB{FileWriteSerializer{filenameB}};
+    writerB.push(originalB.at(0));
+    writerA = std::move(writerB);
+    // The file of the overwritten serializer is complete and closed.
+    EXPECT_EQ(readIntVector(filenameA), originalA);
+    for (size_t i = 1; i < originalB.size(); ++i) {
+      writerA.push(originalB.at(i));
+    }
+  }
+  EXPECT_EQ(readIntVector(filenameB), originalB);
+}

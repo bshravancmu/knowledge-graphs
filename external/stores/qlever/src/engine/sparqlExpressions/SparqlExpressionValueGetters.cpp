@@ -1,0 +1,755 @@
+//  Copyright 2021, University of Freiburg,
+//                  Chair of Algorithms and Data Structures.
+//  Author: Johannes Kalmbach <kalmbacj@cs.uni-freiburg.de>
+
+#include "engine/sparqlExpressions/SparqlExpressionValueGetters.h"
+
+#include <absl/strings/str_format.h>
+
+#include "backports/StartsWithAndEndsWith.h"
+#include "backports/type_traits.h"
+#include "engine/sparqlExpressions/SparqlExpressionGenerators.h"
+#include "global/Constants.h"
+#include "global/Id.h"
+#include "index/ExportIds.h"
+#include "parser/LiteralOrIri.h"
+#include "parser/NormalizedString.h"
+#include "rdfTypes/GeoSparqlHelpers.h"
+#include "rdfTypes/GeometryInfo.h"
+#include "rdfTypes/Literal.h"
+#include "util/ParsedUri.h"
+
+using namespace sparqlExpression::detail;
+
+namespace {
+// The functions of `ql::exportIds` that resolve an `Id` all need the index and
+// the local vocabulary that the `Id` belongs to. Those are always the same two
+// members of the `EvaluationContext`, so the value getters below go through the
+// following wrappers instead of spelling them out at every call site.
+using EvaluationContextPtr = const sparqlExpression::EvaluationContext*;
+
+// Resolve `id`, which has to denote a word of one of the vocabularies or an
+// encoded IRI, see `ql::exportIds::getLiteralOrIriFromVocabIndex`.
+auto getLiteralOrIri(Id id, EvaluationContextPtr context) {
+  return ql::exportIds::getLiteralOrIriFromVocabIndex(context->_qec.getIndex(),
+                                                      id, context->_localVocab);
+}
+
+// Convert `id` to a `Literal`, see `ql::exportIds::idToLiteral`.
+auto idToLiteral(Id id, EvaluationContextPtr context,
+                 bool onlyReturnLiteralsWithXsdString = false) {
+  return ql::exportIds::idToLiteral(context->_qec.getIndex(), id,
+                                    context->_localVocab,
+                                    onlyReturnLiteralsWithXsdString);
+}
+
+// Convert `id` to a `LiteralOrIri`, see `ql::exportIds::idToLiteralOrIri`.
+auto idToLiteralOrIri(Id id, EvaluationContextPtr context,
+                      bool skipEncodedValues = false) {
+  return ql::exportIds::idToLiteralOrIri(
+      context->_qec.getIndex(), id, context->_localVocab, skipEncodedValues);
+}
+
+// Convert `id` to a string and its datatype, see
+// `ql::exportIds::idToStringAndType`.
+template <bool removeQuotesAndAngleBrackets = false,
+          bool returnOnlyLiterals = false>
+auto idToStringAndType(Id id, EvaluationContextPtr context) {
+  return ql::exportIds::idToStringAndType<removeQuotesAndAngleBrackets,
+                                          returnOnlyLiterals>(
+      context->_qec.getIndex(), id, context->_localVocab);
+}
+}  // namespace
+
+// _____________________________________________________________________________
+NumericValue NumericValueGetter::operator()(
+    ValueId id, const sparqlExpression::EvaluationContext*) const {
+  switch (id.getDatatype()) {
+    case Datatype::Double:
+      return id.getDouble();
+    case Datatype::Int:
+      return id.getInt();
+    case Datatype::Bool:
+      // TODO<joka921> Check in the specification what the correct behavior is
+      // here. They probably should be UNDEF as soon as we have conversion
+      // functions.
+      return static_cast<int64_t>(id.getBool());
+    case Datatype::Undefined:
+    case Datatype::EncodedVal:
+    case Datatype::VocabIndex:
+    case Datatype::LocalVocabIndex:
+    case Datatype::TextRecordIndex:
+    case Datatype::WordVocabIndex:
+    case Datatype::Date:
+    case Datatype::GeoPoint:
+    case Datatype::BlankNodeIndex:
+    case Datatype::SecondaryVocabIndex:
+      return NotNumeric{};
+  }
+  AD_FAIL();
+}
+
+// _____________________________________________________________________________
+NumericOrDateValue NumericOrDateValueGetter::operator()(
+    ValueId id, const sparqlExpression::EvaluationContext*) const {
+  switch (id.getDatatype()) {
+    case Datatype::Double:
+      return id.getDouble();
+    case Datatype::Int:
+      return id.getInt();
+    case Datatype::Bool:
+      return static_cast<int64_t>(id.getBool());
+    case Datatype::Undefined:
+    case Datatype::EncodedVal:
+    case Datatype::VocabIndex:
+    case Datatype::LocalVocabIndex:
+    case Datatype::TextRecordIndex:
+    case Datatype::WordVocabIndex:
+      return NotNumeric{};
+    case Datatype::Date:
+      return id.getDate();
+    case Datatype::GeoPoint:
+    case Datatype::BlankNodeIndex:
+    case Datatype::SecondaryVocabIndex:
+      return NotNumeric{};
+  }
+  AD_FAIL();
+}
+
+// _____________________________________________________________________________
+auto EffectiveBooleanValueGetter::operator()(
+    ValueId id, const EvaluationContext* context) const -> Result {
+  using enum Result;
+  switch (id.getDatatype()) {
+    case Datatype::Double: {
+      auto d = id.getDouble();
+      return (d != 0.0 && !std::isnan(d)) ? True : False;
+    }
+    case Datatype::Int:
+      return (id.getInt() != 0) ? True : False;
+    case Datatype::Bool:
+      return id.getBool() ? True : False;
+    case Datatype::Undefined:
+    case Datatype::BlankNodeIndex:
+      return Undef;
+    case Datatype::EncodedVal:
+      // This assumes that we never use this for empty IRIs.
+      return True;
+    case Datatype::VocabIndex: {
+      auto index = id.getVocabIndex();
+      // TODO<joka921> We could precompute whether the empty literal or empty
+      // iri are contained in the KB.
+      return context->_qec.getIndex().indexToString(index).empty() ? False
+                                                                   : True;
+    }
+    case Datatype::LocalVocabIndex:
+    case Datatype::SecondaryVocabIndex:
+      return getLiteralOrIri(id, context).getContent().empty() ? False : True;
+    case Datatype::WordVocabIndex:
+    case Datatype::TextRecordIndex:
+    case Datatype::Date:
+    case Datatype::GeoPoint:
+      return True;
+  }
+  AD_FAIL();
+}
+
+// ____________________________________________________________________________
+std::optional<std::string> StringValueGetter::operator()(
+    Id id, const EvaluationContext* context) const {
+  // For Booleans, return the canonical "true" or "false".
+  if (id.getDatatype() == Datatype::Bool) {
+    return id.getBool() ? "true" : "false";
+  }
+  // For doubles that hold integers, do NOT have ".0" at the end, in compliance
+  // with https://www.w3.org/TR/xpath-functions/#casting-to-string
+  if (id.getDatatype() == Datatype::Double) {
+    double d = id.getDouble();
+    double dIntPart;
+    if (std::modf(d, &dIntPart) == 0.0 && std::isfinite(d)) {
+      return absl::StrFormat("%.0f", d);
+    }
+  }
+  // `true` means that we remove the quotes and angle brackets.
+  auto optionalStringAndType = idToStringAndType<true>(id, context);
+  if (optionalStringAndType.has_value()) {
+    return std::move(optionalStringAndType.value().first);
+  } else {
+    return std::nullopt;
+  }
+}
+
+// ____________________________________________________________________________
+std::optional<ad_utility::triple_component::Literal>
+LiteralValueGetterWithStrFunction::operator()(
+    Id id, const EvaluationContext* context) const {
+  return idToLiteral(id, context);
+}
+
+// ____________________________________________________________________________
+std::optional<ad_utility::triple_component::Literal>
+LiteralValueGetterWithStrFunction::operator()(const LiteralOrIri& s,
+                                              const EvaluationContext*) const {
+  return ql::exportIds::handleIriOrLiteral(s, false);
+}
+
+// ____________________________________________________________________________
+std::optional<ad_utility::triple_component::Literal>
+LiteralValueGetterWithoutStrFunction::operator()(
+    Id id, const EvaluationContext* context) const {
+  return idToLiteral(id, context, true);
+}
+
+// ____________________________________________________________________________
+std::optional<ad_utility::triple_component::Literal>
+LiteralValueGetterWithoutStrFunction::operator()(
+    const LiteralOrIri& s, const EvaluationContext*) const {
+  return ql::exportIds::handleIriOrLiteral(s, true);
+}
+
+// ____________________________________________________________________________
+std::optional<std::string> ReplacementStringGetter::operator()(
+    Id id, const EvaluationContext* context) const {
+  std::optional<std::string> originalString =
+      LiteralFromIdGetter{}(id, context);
+  if (!originalString.has_value()) {
+    return originalString;
+  }
+  return convertToReplacementString(originalString.value());
+}
+
+// ____________________________________________________________________________
+std::optional<std::string> ReplacementStringGetter::operator()(
+    const LiteralOrIri& s, const EvaluationContext*) const {
+  return convertToReplacementString(asStringViewUnsafe(s.getContent()));
+}
+
+// ____________________________________________________________________________
+std::string ReplacementStringGetter::convertToReplacementString(
+    std::string_view view) {
+  std::string result;
+  // Rough estimate of the size of the result string.
+  result.reserve(view.size());
+  for (size_t i = 0; i < view.size(); i++) {
+    char c = view.at(i);
+    switch (c) {
+      case '$':
+        // Re2 used \1, \2, ... for backreferences, so we change $ to \.
+        result.push_back('\\');
+        break;
+      case '\\':
+        // "\$" is unescaped to "$"
+        if (i + 1 < view.size() && view.at(i + 1) == '$') {
+          result.push_back('$');
+          i++;
+        } else {
+          // Escape existing backslashes.
+          result.push_back(c);
+          result.push_back(c);
+        }
+        break;
+      default:
+        result.push_back(c);
+        break;
+    }
+  }
+  return result;
+}
+
+// ____________________________________________________________________________
+template <auto isSomethingFunction, const auto& prefix>
+Id IsSomethingValueGetter<isSomethingFunction, prefix>::operator()(
+    ValueId id, const EvaluationContext* context) const {
+  switch (id.getDatatype()) {
+    case Datatype::VocabIndex:
+      // See instantiations below for what `isSomethingFunction` is.
+      return Id::makeFromBool(std::invoke(isSomethingFunction,
+                                          context->_qec.getIndex().getVocab(),
+                                          id.getVocabIndex()));
+    case Datatype::LocalVocabIndex:
+    case Datatype::SecondaryVocabIndex: {
+      auto word = idToStringAndType<false>(id, context);
+      return Id::makeFromBool(word.has_value() &&
+                              ql::starts_with(word.value().first, prefix));
+    }
+    case Datatype::EncodedVal:
+      // We currently only encode IRIs.
+      return Id::makeFromBool(prefix == isIriPrefix);
+    case Datatype::Bool:
+    case Datatype::Int:
+    case Datatype::Double:
+    case Datatype::Date:
+    case Datatype::GeoPoint:
+      if constexpr (prefix == isLiteralPrefix) {
+        return Id::makeFromBool(true);
+      }
+    case Datatype::Undefined:
+    case Datatype::TextRecordIndex:
+    case Datatype::WordVocabIndex:
+    case Datatype::BlankNodeIndex:
+      return Id::makeFromBool(false);
+  }
+  AD_FAIL();
+}
+template struct sparqlExpression::detail::IsSomethingValueGetter<
+    &Index::Vocab::isIri, isIriPrefix>;
+template struct sparqlExpression::detail::IsSomethingValueGetter<
+    &Index::Vocab::isLiteral, isLiteralPrefix>;
+
+// _____________________________________________________________________________
+std::optional<std::string> LiteralFromIdGetter::operator()(
+    ValueId id, const EvaluationContext* context) const {
+  auto optionalStringAndType = idToStringAndType<true, true>(id, context);
+  if (optionalStringAndType.has_value()) {
+    return std::move(optionalStringAndType.value().first);
+  } else {
+    return std::nullopt;
+  }
+}
+
+// _____________________________________________________________________________
+bool IsValidValueGetter::operator()(
+    ValueId id, [[maybe_unused]] const EvaluationContext* context) const {
+  // Every knowledge base value that is bound converts to "True"
+  // TODO<joka921> check for the correct semantics of the error handling and
+  // implement it in a further version.
+  return id != ValueId::makeUndefined();
+}
+
+// _____________________________________________________________________________
+IntDoubleStr ToNumericValueGetter::operator()(
+    ValueId id, [[maybe_unused]] const EvaluationContext* context) const {
+  switch (id.getDatatype()) {
+    case Datatype::Undefined:
+      return std::monostate{};
+    case Datatype::Int:
+      return id.getInt();
+    case Datatype::Double:
+      return id.getDouble();
+    case Datatype::Bool:
+      return static_cast<int64_t>(id.getBool());
+    case Datatype::GeoPoint:
+      return id.getGeoPoint().toStringRepresentation();
+    case Datatype::VocabIndex:
+    case Datatype::LocalVocabIndex:
+    case Datatype::TextRecordIndex:
+    case Datatype::WordVocabIndex:
+    case Datatype::Date:
+    case Datatype::BlankNodeIndex:
+    case Datatype::EncodedVal:
+    case Datatype::SecondaryVocabIndex:
+      auto optString = LiteralFromIdGetter{}(id, context);
+      if (optString.has_value()) {
+        return std::move(optString.value());
+      } else {
+        return std::monostate{};
+      }
+  }
+  AD_FAIL();
+}
+
+// _____________________________________________________________________________
+IntDoubleStr ToNumericValueGetter::operator()(
+    const LiteralOrIri& s,
+    [[maybe_unused]] const EvaluationContext* context) const {
+  return std::string(asStringViewUnsafe(s.getContent()));
+}
+
+// _____________________________________________________________________________
+OptIri DatatypeValueGetter::operator()(ValueId id,
+                                       const EvaluationContext* context) const {
+  using enum Datatype;
+  auto datatype = id.getDatatype();
+  std::optional<std::string> entity;
+  switch (datatype) {
+    case Bool:
+      return Iri::fromIrirefWithoutBrackets(XSD_BOOLEAN_TYPE);
+    case Double:
+      return Iri::fromIrirefWithoutBrackets(XSD_DOUBLE_TYPE);
+    case Int:
+      return Iri::fromIrirefWithoutBrackets(XSD_INT_TYPE);
+    case GeoPoint:
+      return Iri::fromIrirefWithoutBrackets(GEO_WKT_LITERAL);
+    case Date: {
+      auto dateType = id.getDate().toStringAndType().second;
+      AD_CORRECTNESS_CHECK(dateType != nullptr);
+      return Iri::fromIrirefWithoutBrackets(dateType);
+    }
+    case EncodedVal:
+    case LocalVocabIndex:
+    case VocabIndex:
+    case SecondaryVocabIndex:
+      return (*this)(getLiteralOrIri(id, context), context);
+    case Undefined:
+    case BlankNodeIndex:
+    case TextRecordIndex:
+    case WordVocabIndex:
+      return std::nullopt;
+  }
+  AD_FAIL();
+}
+
+// _____________________________________________________________________________
+OptIri DatatypeValueGetter::operator()(
+    const LiteralOrIri& litOrIri,
+    [[maybe_unused]] const EvaluationContext* context) const {
+  if (litOrIri.isLiteral()) {
+    const auto& literal = litOrIri.getLiteral();
+    if (literal.hasLanguageTag()) {
+      return Iri::fromIrirefWithoutBrackets(RDF_LANGTAG_STRING);
+    } else if (literal.hasDatatype()) {
+      return Iri::fromIrirefWithoutBrackets(
+          asStringViewUnsafe(literal.getDatatype()));
+    } else {
+      return Iri::fromIrirefWithoutBrackets(XSD_STRING);
+    }
+  } else {
+    return std::nullopt;
+  }
+}
+
+// _____________________________________________________________________________
+OptIri IriValueGetter::operator()(
+    const LiteralOrIri& s,
+    [[maybe_unused]] const EvaluationContext* context) const {
+  if (s.isIri()) {
+    return s.getIri();
+  } else {
+    return std::nullopt;
+  }
+}
+
+// _____________________________________________________________________________
+UnitOfMeasurement UnitOfMeasurementValueGetter::operator()(
+    ValueId id, const EvaluationContext* context) const {
+  // Use cache to remember fully parsed units for reoccurring ValueIds
+  return cache_.getOrCompute(
+      id, [&context](const ValueId& value) -> UnitOfMeasurement {
+        // Get string content of ValueId
+        auto str = idToLiteralOrIri(value, context, true);
+        // Use LiteralOrIri overload for actual computation
+        if (str.has_value()) {
+          return UnitOfMeasurementValueGetter{}(str.value(), context);
+        }
+        return UnitOfMeasurement::UNKNOWN;
+      });
+}
+
+// _____________________________________________________________________________
+UnitOfMeasurement UnitOfMeasurementValueGetter::operator()(
+    const LiteralOrIri& s, const EvaluationContext*) const {
+  return litOrIriToUnit(s);
+}
+
+// _____________________________________________________________________________
+UnitOfMeasurement UnitOfMeasurementValueGetter::litOrIriToUnit(
+    const LiteralOrIri& s) {
+  // The GeoSPARQL standard requires literals of datatype xsd:anyURI for units
+  // of measurement. Because this is a rather obscure requirement, we support
+  // IRIs also.
+  if (s.isIri() ||
+      (s.isLiteral() && s.getLiteral().hasDatatype() &&
+       asStringViewUnsafe(s.getLiteral().getDatatype()) == XSD_ANYURI_TYPE)) {
+    return ad_utility::detail::iriToUnitOfMeasurement(
+        asStringViewUnsafe(s.getContent()));
+  }
+  return UnitOfMeasurement::UNKNOWN;
+}
+
+//______________________________________________________________________________
+std::optional<ad_utility::GeoPointOrWkt> GeoPointOrWktValueGetter::operator()(
+    ValueId id, const EvaluationContext* context) const {
+  using enum Datatype;
+  switch (id.getDatatype()) {
+    case GeoPoint:
+      return id.getGeoPoint();
+    case VocabIndex:
+    case LocalVocabIndex:
+    case SecondaryVocabIndex: {
+      auto lit = getLiteralOrIri(id, context);
+      return GeoPointOrWktValueGetter{}(lit, context);
+    }
+    case Bool:
+    case Int:
+    case Double:
+    case Date:
+    case Undefined:
+    case TextRecordIndex:
+    case WordVocabIndex:
+    case BlankNodeIndex:
+    case EncodedVal:
+      return std::nullopt;
+  }
+
+  AD_FAIL();
+}
+
+//______________________________________________________________________________
+std::optional<ad_utility::GeoPointOrWkt> GeoPointOrWktValueGetter::operator()(
+    const LiteralOrIri& litOrIri, const EvaluationContext*) const {
+  if (litOrIri.isLiteral() && litOrIri.hasDatatype() &&
+      asStringViewUnsafe(litOrIri.getDatatype()) == GEO_WKT_LITERAL) {
+    return litOrIri.toStringRepresentation();
+  }
+  return std::nullopt;
+}
+
+//______________________________________________________________________________
+CPP_template(typename T, typename ValueGetter)(
+    requires(concepts::same_as<sparqlExpression::IdOrLocalVocabEntry, T> ||
+             concepts::same_as<std::optional<std::string>, T>)) T
+    getValue(ValueId id, const sparqlExpression::EvaluationContext* context,
+             ValueGetter& valueGetter) {
+  using enum Datatype;
+  switch (id.getDatatype()) {
+    case LocalVocabIndex:
+    case EncodedVal:
+    case VocabIndex:
+    case SecondaryVocabIndex:
+      return valueGetter(getLiteralOrIri(id, context), context);
+    case TextRecordIndex:
+    case WordVocabIndex:
+    case BlankNodeIndex:
+    case Bool:
+    case Int:
+    case Double:
+    case Date:
+    case GeoPoint:
+    case Undefined:
+      if constexpr (std::is_same_v<T, sparqlExpression::IdOrLocalVocabEntry>) {
+        return Id::makeUndefined();
+      } else {
+        return std::nullopt;
+      }
+  }
+  AD_FAIL();
+}
+
+//_____________________________________________________________________________
+sparqlExpression::IdOrLocalVocabEntry IriOrUriValueGetter::operator()(
+    ValueId id, const EvaluationContext* context) const {
+  return getValue<sparqlExpression::IdOrLocalVocabEntry>(id, context, *this);
+}
+
+//______________________________________________________________________________
+std::optional<std::string> LanguageTagValueGetter::operator()(
+    ValueId id, const EvaluationContext* context) const {
+  using enum Datatype;
+  switch (id.getDatatype()) {
+    case Bool:
+    case Int:
+    case Double:
+    case Date:
+    case GeoPoint:
+      // For literals without language tag, we return an empty string per
+      // standard.
+      return {""};
+    case Undefined:
+    case EncodedVal:
+    case VocabIndex:
+    case LocalVocabIndex:
+    case TextRecordIndex:
+    case WordVocabIndex:
+    case BlankNodeIndex:
+    case SecondaryVocabIndex:
+      return getValue<std::optional<std::string>>(id, context, *this);
+  }
+  AD_FAIL();
+}
+
+//______________________________________________________________________________
+sparqlExpression::IdOrLocalVocabEntry IriOrUriValueGetter::operator()(
+    const LiteralOrIri& litOrIri, const EvaluationContext* context) const {
+  return LocalVocabEntry{
+      LiteralOrIri{litOrIri.isIri()
+                       ? litOrIri.getIri()
+                       : Iri::fromIrirefWithoutBrackets(asStringViewUnsafe(
+                             litOrIri.getLiteral().getContent()))},
+      context->getLocalVocabContext()};
+}
+
+//______________________________________________________________________________
+[[noreturn]] std::optional<qlever::util::ParsedUri> ParsedUriGetter::operator()(
+    ValueId, const EvaluationContext*) const {
+  // The base IRI argument of `IriOrUriExpression` is always an `IriExpression`
+  // which evaluates to a `LocalVocabEntry`, never a `ValueId`. This overload
+  // is required by the `Mixin` interface but is logically unreachable.
+  AD_FAIL();
+}
+
+//______________________________________________________________________________
+std::optional<qlever::util::ParsedUri> ParsedUriGetter::operator()(
+    const LiteralOrIri& litOrIri, const EvaluationContext*) const {
+  AD_CORRECTNESS_CHECK(litOrIri.isIri());
+  const auto& iri = litOrIri.getIri();
+  if (iri.empty()) {
+    return std::nullopt;
+  }
+  return qlever::util::ParsedUri{asStringViewUnsafe(iri.getContent())};
+}
+
+//______________________________________________________________________________
+CPP_template_out_def(typename RequestedInfo)(
+    requires ad_utility::RequestedInfoT<RequestedInfo>)
+std::optional<ad_utility::GeometryInfo> GeometryInfoValueGetter<CPP_sfinae_args(
+    RequestedInfo)>::getPrecomputedGeometryInfo(ValueId id,
+                                                const EvaluationContext*
+                                                    context) {
+  auto datatype = id.getDatatype();
+  if (datatype == Datatype::VocabIndex) {
+    // All geometry strings encountered during index build have a precomputed
+    // geometry info object.
+    return context->_qec.getIndex().getVocab().getGeoInfo(id.getVocabIndex());
+  }
+  return std::nullopt;
+}
+
+//______________________________________________________________________________
+CPP_template_out_def(typename RequestedInfo)(
+    requires ad_utility::RequestedInfoT<RequestedInfo>)
+std::optional<RequestedInfo> GeometryInfoValueGetter<CPP_sfinae_args(
+    RequestedInfo)>::operator()(ValueId id,
+                                const EvaluationContext * context) const {
+  using enum Datatype;
+  switch (id.getDatatype()) {
+    case EncodedVal:
+    case LocalVocabIndex:
+    case VocabIndex:
+    case SecondaryVocabIndex: {
+      auto precomputed = getPrecomputedGeometryInfo(id, context);
+      if (precomputed.has_value()) {
+        return precomputed.value().getRequestedInfo<RequestedInfo>();
+      } else {
+        // No precomputed geometry info available: we have to fetch and parse
+        // the string.
+        auto lit = getLiteralOrIri(id, context);
+        return GeometryInfoValueGetter{}(lit, context);
+      }
+    }
+    case GeoPoint:
+      return ad_utility::GeometryInfo::fromGeoPoint(id.getGeoPoint())
+          .getRequestedInfo<RequestedInfo>();
+    case TextRecordIndex:
+    case WordVocabIndex:
+    case BlankNodeIndex:
+    case Bool:
+    case Int:
+    case Double:
+    case Date:
+    case Undefined:
+      return std::nullopt;
+  }
+  AD_FAIL();
+}
+
+//______________________________________________________________________________
+CPP_template_out_def(typename RequestedInfo)(
+    requires ad_utility::RequestedInfoT<RequestedInfo>)
+std::optional<RequestedInfo> GeometryInfoValueGetter<CPP_sfinae_args(
+    RequestedInfo)>::operator()(const LiteralOrIri & litOrIri,
+                                [[maybe_unused]] const EvaluationContext *
+                                    context) const {
+  // If we receive only a literal, we have no choice but to parse it and compute
+  // the geometry info ad hoc.
+  if (litOrIri.isLiteral() && litOrIri.hasDatatype() &&
+      asStringViewUnsafe(litOrIri.getDatatype()) == GEO_WKT_LITERAL) {
+    auto wktLiteral = litOrIri.getLiteral().toStringRepresentation();
+    return ad_utility::GeometryInfo::getRequestedInfo<RequestedInfo>(
+        wktLiteral);
+  }
+  return std::nullopt;
+}
+
+// Explicit instantiations
+namespace sparqlExpression::detail {
+template struct GeometryInfoValueGetter<ad_utility::GeometryInfo>;
+template struct GeometryInfoValueGetter<ad_utility::GeometryType>;
+template struct GeometryInfoValueGetter<ad_utility::Centroid>;
+template struct GeometryInfoValueGetter<ad_utility::BoundingBox>;
+template struct GeometryInfoValueGetter<ad_utility::NumGeometries>;
+template struct GeometryInfoValueGetter<ad_utility::MetricLength>;
+template struct GeometryInfoValueGetter<ad_utility::MetricArea>;
+}  // namespace sparqlExpression::detail
+
+//______________________________________________________________________________
+std::optional<int64_t> IntValueGetter::operator()(
+    const LiteralOrIri&, const EvaluationContext*) const {
+  return std::nullopt;
+}
+
+//______________________________________________________________________________
+std::optional<int64_t> IntValueGetter::operator()(
+    ValueId id, const EvaluationContext*) const {
+  if (id.getDatatype() == Datatype::Int) {
+    return id.getInt();
+  }
+  return std::nullopt;
+}
+
+//______________________________________________________________________________
+template <typename ValueGetter>
+ad_utility::InputRangeTypeErased<typename ValueGetter::Value>
+TypeErasedValueGetter<ValueGetter>::operator()(ExpressionResult res,
+                                               EvaluationContext* context,
+                                               size_t size) const {
+  // Generate `numItems` many values from the `input` and apply the
+  // `valueGetter` to each of the values.
+  return std::visit(
+      [&](auto input)
+          -> ad_utility::InputRangeTypeErased<typename ValueGetter::Value> {
+        return ad_utility::InputRangeTypeErased{valueGetterGenerator(
+            size, context, std::move(input), ValueGetter{})};
+      },
+      std::move(res));
+}
+
+// Explicit instantiations of `TypeErasedValueGetter` for all value getter
+// classes.
+namespace sparqlExpression::detail {
+template struct TypeErasedValueGetter<NumericValueGetter>;
+template struct TypeErasedValueGetter<IsValidValueGetter>;
+template struct TypeErasedValueGetter<EffectiveBooleanValueGetter>;
+template struct TypeErasedValueGetter<StringValueGetter>;
+template struct TypeErasedValueGetter<LiteralValueGetterWithStrFunction>;
+template struct TypeErasedValueGetter<LiteralValueGetterWithoutStrFunction>;
+template struct TypeErasedValueGetter<
+    IsValueIdValueGetter<Datatype::BlankNodeIndex>>;
+template struct TypeErasedValueGetter<IsValueIdValueGetter<Datatype::GeoPoint>>;
+template struct TypeErasedValueGetter<
+    IsValueIdValueGetter<Datatype::EncodedVal>>;
+template struct TypeErasedValueGetter<IsNumericValueGetter>;
+template struct TypeErasedValueGetter<IsIriValueGetter>;
+template struct TypeErasedValueGetter<IsLiteralValueGetter>;
+template struct TypeErasedValueGetter<DateValueGetter>;
+template struct TypeErasedValueGetter<GeoPointValueGetter>;
+template struct TypeErasedValueGetter<LiteralFromIdGetter>;
+template struct TypeErasedValueGetter<ReplacementStringGetter>;
+template struct TypeErasedValueGetter<ToNumericValueGetter>;
+template struct TypeErasedValueGetter<DatatypeValueGetter>;
+template struct TypeErasedValueGetter<IriValueGetter>;
+template struct TypeErasedValueGetter<UnitOfMeasurementValueGetter>;
+template struct TypeErasedValueGetter<GeoPointOrWktValueGetter>;
+template struct TypeErasedValueGetter<LanguageTagValueGetter>;
+template struct TypeErasedValueGetter<IriOrUriValueGetter>;
+template struct TypeErasedValueGetter<ParsedUriGetter>;
+template struct TypeErasedValueGetter<
+    GeometryInfoValueGetter<ad_utility::GeometryInfo>>;
+template struct TypeErasedValueGetter<
+    GeometryInfoValueGetter<ad_utility::GeometryType>>;
+template struct TypeErasedValueGetter<
+    GeometryInfoValueGetter<ad_utility::Centroid>>;
+template struct TypeErasedValueGetter<
+    GeometryInfoValueGetter<ad_utility::BoundingBox>>;
+template struct TypeErasedValueGetter<
+    GeometryInfoValueGetter<ad_utility::NumGeometries>>;
+template struct TypeErasedValueGetter<
+    GeometryInfoValueGetter<ad_utility::MetricLength>>;
+template struct TypeErasedValueGetter<
+    GeometryInfoValueGetter<ad_utility::MetricArea>>;
+template struct TypeErasedValueGetter<StringOrDateGetter>;
+template struct TypeErasedValueGetter<IntValueGetter>;
+template struct TypeErasedValueGetter<RegexValueGetter>;
+template struct TypeErasedValueGetter<AlwaysTrueValueGetter>;
+template struct TypeErasedValueGetter<NumericOrDateValueGetter>;
+
+}  // namespace sparqlExpression::detail

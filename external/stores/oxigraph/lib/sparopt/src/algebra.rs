@@ -1,0 +1,1476 @@
+//! [SPARQL 1.1 Query Algebra](https://www.w3.org/TR/sparql11-query/#sparqlQuery) representation.
+
+use oxrdf::vocab::xsd;
+use oxstr::OxString;
+pub use spargebra::algebra::PropertyPathExpression;
+use spargebra::algebra::{
+    AggregateExpression as AlAggregateExpression, Expression as AlExpression,
+    OrderExpression as AlOrderExpression, QueryExpression as AlQueryExpression,
+};
+#[cfg(feature = "sparql-12")]
+use spargebra::term::GroundTriple;
+pub use spargebra::term::{
+    GroundTerm, Literal, NamedNode, NamedNodePattern, TermPattern, TriplePattern, Variable,
+};
+use spargebra::vocab::sparql;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{BTreeMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::ops::{BitAnd, BitOr, Not};
+
+/// An [expression](https://www.w3.org/TR/sparql11-query/#expressions).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum Expression {
+    NamedNode(NamedNode),
+    Literal(Literal),
+    Variable(Variable),
+    /// [Logical-or](https://www.w3.org/TR/sparql11-query/#func-logical-or).
+    Or(Vec<Self>),
+    /// [Logical-and](https://www.w3.org/TR/sparql11-query/#func-logical-and).
+    And(Vec<Self>),
+    /// [EXISTS](https://www.w3.org/TR/sparql11-query/#func-filter-exists).
+    Exists(Box<QueryExpression>),
+    /// [BOUND](https://www.w3.org/TR/sparql11-query/#func-bound).
+    Bound(Variable),
+    /// [IF](https://www.w3.org/TR/sparql11-query/#func-if).
+    If(Box<Self>, Box<Self>, Box<Self>),
+    /// [COALESCE](https://www.w3.org/TR/sparql11-query/#func-coalesce).
+    Coalesce(Vec<Self>),
+    /// A regular function call.
+    FunctionCall(NamedNode, Vec<Self>),
+}
+
+impl Expression {
+    pub fn or_all(args: impl IntoIterator<Item = Self>) -> Self {
+        let args = args.into_iter();
+        let mut all = Vec::with_capacity(args.size_hint().0);
+        for arg in args {
+            if let Some(ebv) = arg.effective_boolean_value() {
+                if ebv {
+                    return true.into();
+                }
+                // We ignore false values
+            } else if let Self::Or(args) = arg {
+                all.extend(args);
+            } else {
+                all.push(arg);
+            }
+        }
+        match all.len() {
+            0 => false.into(),
+            1 => {
+                let result = all.pop().unwrap();
+                if result.returns_boolean() {
+                    result // It's already casted to boolean
+                } else {
+                    Self::And(vec![result])
+                }
+            }
+            _ => Self::Or(order_vec(all)),
+        }
+    }
+
+    pub fn and_all(args: impl IntoIterator<Item = Self>) -> Self {
+        let args = args.into_iter();
+        let mut all = Vec::with_capacity(args.size_hint().0);
+        for arg in args {
+            if let Some(ebv) = arg.effective_boolean_value() {
+                if !ebv {
+                    return false.into();
+                }
+                // We ignore true values
+            } else if let Self::And(args) = arg {
+                all.extend(args);
+            } else {
+                all.push(arg);
+            }
+        }
+        match all.len() {
+            0 => true.into(),
+            1 => {
+                let result = all.pop().unwrap();
+                if result.returns_boolean() {
+                    result
+                } else {
+                    Self::And(vec![result])
+                }
+            }
+            _ => Self::And(order_vec(all)),
+        }
+    }
+
+    pub fn equal(left: Self, right: Self) -> Self {
+        // TODO: simplify equality when both operands are literal taking care of fun stuff like NaN != NaN
+        match (left, right) {
+            (Self::NamedNode(left), Self::NamedNode(right)) => (left == right).into(),
+            (left, right) => {
+                let (left, right) = order_pair(left, right);
+                Self::FunctionCall(sparql::EQUALS, vec![left, right])
+            }
+        }
+    }
+
+    pub fn not_equal(left: Self, right: Self) -> Self {
+        match (left, right) {
+            (Self::NamedNode(left), Self::NamedNode(right)) => (left != right).into(),
+            (left, right) => {
+                let (left, right) = order_pair(left, right);
+                Self::FunctionCall(sparql::NOT_EQUALS, vec![left, right])
+            }
+        }
+    }
+
+    pub fn same_term(left: Self, right: Self) -> Self {
+        match (left, right) {
+            (Self::NamedNode(left), Self::NamedNode(right)) => (left == right).into(),
+            (Self::Literal(left), Self::Literal(right)) if left == right => true.into(),
+            (left, right) => {
+                let (left, right) = order_pair(left, right);
+                Self::FunctionCall(sparql::SAME_TERM, vec![left, right])
+            }
+        }
+    }
+
+    pub fn exists(inner: QueryExpression) -> Self {
+        if inner.is_empty() {
+            return false.into();
+        }
+        if inner.is_empty_singleton() {
+            return true.into();
+        }
+        Self::Exists(Box::new(inner))
+    }
+
+    pub fn if_cond(cond: Self, then: Self, els: Self) -> Self {
+        match cond.effective_boolean_value() {
+            Some(true) => then,
+            Some(false) => els,
+            None => Self::If(Box::new(cond), Box::new(then), Box::new(els)),
+        }
+    }
+
+    pub fn coalesce(args: Vec<Self>) -> Self {
+        Self::Coalesce(args)
+    }
+
+    pub fn call(name: NamedNode, args: Vec<Self>) -> Self {
+        Self::FunctionCall(name, args)
+    }
+
+    pub fn effective_boolean_value(&self) -> Option<bool> {
+        if let Self::Literal(literal) = self {
+            let datatype = literal.datatype();
+            if *datatype == xsd::BOOLEAN {
+                match literal.value() {
+                    "true" | "1" => Some(true),
+                    "false" | "0" => Some(false),
+                    _ => None, // TODO
+                }
+            } else if *datatype == xsd::STRING {
+                Some(!literal.value().is_empty())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn used_variables(&self) -> HashSet<&Variable> {
+        let mut variables = HashSet::new();
+        self.lookup_used_variables(&mut |v| {
+            variables.insert(v);
+        });
+        variables
+    }
+
+    pub fn lookup_used_variables<'a>(&'a self, callback: &mut impl FnMut(&'a Variable)) {
+        match self {
+            Self::NamedNode(_) | Self::Literal(_) => {}
+            Self::Variable(v) | Self::Bound(v) => callback(v),
+            Self::Or(inner)
+            | Self::And(inner)
+            | Self::Coalesce(inner)
+            | Self::FunctionCall(_, inner) => {
+                for i in inner {
+                    i.lookup_used_variables(callback);
+                }
+            }
+            Self::Exists(e) => e.lookup_used_variables(callback),
+            Self::If(a, b, c) => {
+                a.lookup_used_variables(callback);
+                b.lookup_used_variables(callback);
+                c.lookup_used_variables(callback);
+            }
+        }
+    }
+
+    fn returns_boolean(&self) -> bool {
+        match self {
+            Self::Or(_) | Self::And(_) | Self::Exists(_) | Self::Bound(_) => true,
+            Self::FunctionCall(name, _)
+                if [
+                    sparql::LOGICAL_NOT,
+                    sparql::EQUALS,
+                    sparql::NOT_EQUALS,
+                    sparql::SAME_TERM,
+                    sparql::GREATER_THAN,
+                    sparql::GREATER_THAN_OR_EQUAL,
+                    sparql::LESS_THAN,
+                    sparql::LESS_THAN_OR_EQUAL,
+                    sparql::IS_BLANK,
+                    sparql::IS_IRI,
+                    sparql::IS_URI,
+                    sparql::IS_LITERAL,
+                    sparql::IS_NUMERIC,
+                    #[cfg(feature = "sparql-12")]
+                    sparql::IS_TRIPLE,
+                    xsd::BOOLEAN,
+                ]
+                .contains(name) =>
+            {
+                true
+            }
+            Self::Literal(literal) => *literal.datatype() == xsd::BOOLEAN,
+            Self::If(_, a, b) => a.returns_boolean() && b.returns_boolean(),
+            _ => false,
+        }
+    }
+}
+
+impl From<NamedNode> for Expression {
+    fn from(value: NamedNode) -> Self {
+        Self::NamedNode(value)
+    }
+}
+
+impl From<Literal> for Expression {
+    fn from(value: Literal) -> Self {
+        Self::Literal(value)
+    }
+}
+
+impl From<GroundTerm> for Expression {
+    fn from(value: GroundTerm) -> Self {
+        match value {
+            GroundTerm::NamedNode(value) => value.into(),
+            GroundTerm::Literal(value) => value.into(),
+            #[cfg(feature = "sparql-12")]
+            GroundTerm::Triple(value) => (*value).into(),
+        }
+    }
+}
+
+impl From<NamedNodePattern> for Expression {
+    fn from(value: NamedNodePattern) -> Self {
+        match value {
+            NamedNodePattern::NamedNode(value) => value.into(),
+            NamedNodePattern::Variable(variable) => variable.into(),
+        }
+    }
+}
+
+impl From<TermPattern> for Expression {
+    fn from(value: TermPattern) -> Self {
+        match value {
+            TermPattern::NamedNode(value) => value.into(),
+            TermPattern::Literal(value) => value.into(),
+            #[cfg(feature = "sparql-12")]
+            TermPattern::Triple(value) => (*value).into(),
+            TermPattern::Variable(variable) => variable.into(),
+        }
+    }
+}
+
+#[cfg(feature = "sparql-12")]
+impl From<GroundTriple> for Expression {
+    fn from(value: GroundTriple) -> Self {
+        Self::FunctionCall(
+            sparql::TRIPLE,
+            vec![
+                value.subject.into(),
+                value.predicate.into(),
+                value.object.into(),
+            ],
+        )
+    }
+}
+
+#[cfg(feature = "sparql-12")]
+impl From<TriplePattern> for Expression {
+    fn from(value: TriplePattern) -> Self {
+        Self::FunctionCall(
+            sparql::TRIPLE,
+            vec![
+                value.subject.into(),
+                value.predicate.into(),
+                value.object.into(),
+            ],
+        )
+    }
+}
+
+impl From<Variable> for Expression {
+    fn from(value: Variable) -> Self {
+        Self::Variable(value)
+    }
+}
+
+impl From<bool> for Expression {
+    fn from(value: bool) -> Self {
+        Literal::from(value).into()
+    }
+}
+
+impl From<&AlExpression> for Expression {
+    fn from(expression: &AlExpression) -> Self {
+        match expression {
+            AlExpression::NamedNode(node) => Self::NamedNode(node.clone()),
+            AlExpression::Literal(literal) => Self::Literal(literal.clone()),
+            AlExpression::Variable(variable) => Self::Variable(variable.clone()),
+            AlExpression::Or(left, right) => {
+                Self::Or(vec![left.as_ref().into(), right.as_ref().into()])
+            }
+            AlExpression::And(left, right) => {
+                Self::And(vec![left.as_ref().into(), right.as_ref().into()])
+            }
+            AlExpression::In(left, right) => {
+                let left = left.as_ref().into();
+                match right.len() {
+                    0 => Self::if_cond(left, false.into(), false.into()),
+                    1 => Self::equal(left, (&right[0]).into()),
+                    _ => Self::Or(
+                        right
+                            .iter()
+                            .map(|e| Self::equal(left.clone(), e.into()))
+                            .collect(),
+                    ),
+                }
+            }
+            AlExpression::Exists(inner) => Self::Exists(Box::new(QueryExpression::from(&**inner))),
+            AlExpression::Bound(variable) => Self::Bound(variable.clone()),
+            AlExpression::If(cond, yes, no) => Self::If(
+                Box::new(cond.as_ref().into()),
+                Box::new(yes.as_ref().into()),
+                Box::new(no.as_ref().into()),
+            ),
+            AlExpression::Coalesce(inner) => Self::Coalesce(inner.iter().map(Into::into).collect()),
+            AlExpression::FunctionCall(name, args) => {
+                Self::FunctionCall(name.clone(), args.iter().map(Into::into).collect())
+            }
+        }
+    }
+}
+
+impl From<&Expression> for AlExpression {
+    fn from(expression: &Expression) -> Self {
+        match expression {
+            Expression::NamedNode(node) => Self::NamedNode(node.clone()),
+            Expression::Literal(literal) => Self::Literal(literal.clone()),
+            Expression::Variable(variable) => Self::Variable(variable.clone()),
+            Expression::Or(inner) => inner
+                .iter()
+                .map(Into::into)
+                .reduce(|a, b| Self::Or(Box::new(a), Box::new(b)))
+                .unwrap_or_else(|| Literal::from(false).into()),
+            Expression::And(inner) => inner
+                .iter()
+                .map(Into::into)
+                .reduce(|a, b| Self::And(Box::new(a), Box::new(b)))
+                .unwrap_or_else(|| Literal::from(true).into()),
+            Expression::Exists(inner) => Self::Exists(Box::new(inner.as_ref().into())),
+            Expression::Bound(variable) => Self::Bound(variable.clone()),
+            Expression::If(cond, yes, no) => Self::If(
+                Box::new(cond.as_ref().into()),
+                Box::new(yes.as_ref().into()),
+                Box::new(no.as_ref().into()),
+            ),
+            Expression::Coalesce(inner) => Self::Coalesce(inner.iter().map(Into::into).collect()),
+            Expression::FunctionCall(name, args) => {
+                Self::FunctionCall(name.clone(), args.iter().map(Into::into).collect())
+            }
+        }
+    }
+}
+
+impl BitAnd for Expression {
+    type Output = Self;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self::and_all([self, rhs])
+    }
+}
+
+impl BitOr for Expression {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self::or_all([self, rhs])
+    }
+}
+
+impl Not for Expression {
+    type Output = Self;
+
+    fn not(self) -> Self {
+        if let Some(v) = self.effective_boolean_value() {
+            return (!v).into();
+        }
+        // TODO: collapse !! into EBV()
+        Self::FunctionCall(sparql::LOGICAL_NOT, vec![self])
+    }
+}
+
+/// A SPARQL query [graph pattern](https://www.w3.org/TR/sparql11-query/#sparqlQuery).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum QueryExpression {
+    /// A [basic graph pattern](https://www.w3.org/TR/sparql11-query/#defn_BasicGraphPattern).
+    QuadPattern {
+        subject: TermPattern,
+        predicate: NamedNodePattern,
+        object: TermPattern,
+        graph_name: Option<NamedNodePattern>, // None for the default graph
+    },
+    /// A [property path pattern](https://www.w3.org/TR/sparql11-query/#defn_evalPP_predicate).
+    Path {
+        subject: TermPattern,
+        path: PropertyPathExpression,
+        object: TermPattern,
+    },
+    /// [Graph](https://www.w3.org/TR/sparql11-query/#defn_evalGraph).
+    Graph {
+        graph_name: NamedNodePattern,
+        inner: Box<Self>,
+    },
+    /// [Join](https://www.w3.org/TR/sparql11-query/#defn_algJoin).
+    Join {
+        left: Box<Self>,
+        right: Box<Self>,
+        algorithm: JoinAlgorithm,
+    },
+    /// [LeftJoin](https://www.w3.org/TR/sparql11-query/#defn_algLeftJoin).
+    LeftJoin {
+        left: Box<Self>,
+        right: Box<Self>,
+        expression: Expression,
+        algorithm: LeftJoinAlgorithm,
+    },
+    /// Lateral join i.e. evaluate right for all result row of left
+    #[cfg(feature = "sep-0006")]
+    Lateral { left: Box<Self>, right: Box<Self> },
+    /// [Filter](https://www.w3.org/TR/sparql11-query/#defn_algFilter).
+    Filter {
+        expression: Expression,
+        inner: Box<Self>,
+    },
+    /// [Union](https://www.w3.org/TR/sparql11-query/#defn_algUnion).
+    Union { inner: Vec<Self> },
+    /// [Extend](https://www.w3.org/TR/sparql11-query/#defn_extend).
+    Extend {
+        inner: Box<Self>,
+        variable: Variable,
+        expression: Expression,
+    },
+    /// [Minus](https://www.w3.org/TR/sparql11-query/#defn_algMinus).
+    Minus {
+        left: Box<Self>,
+        right: Box<Self>,
+        algorithm: MinusAlgorithm,
+    },
+    /// A table used to provide inline values
+    Values {
+        variables: Vec<Variable>,
+        bindings: Vec<Vec<Option<GroundTerm>>>,
+    },
+    /// [OrderBy](https://www.w3.org/TR/sparql11-query/#defn_algOrdered).
+    OrderBy {
+        inner: Box<Self>,
+        expression: Vec<OrderExpression>,
+    },
+    /// [Project](https://www.w3.org/TR/sparql11-query/#defn_algProjection).
+    Project {
+        inner: Box<Self>,
+        variables: Vec<Variable>,
+    },
+    /// [Distinct](https://www.w3.org/TR/sparql11-query/#defn_algDistinct).
+    Distinct { inner: Box<Self> },
+    /// [Reduced](https://www.w3.org/TR/sparql11-query/#defn_algReduced).
+    Reduced { inner: Box<Self> },
+    /// [Slice](https://www.w3.org/TR/sparql11-query/#defn_algSlice).
+    Slice {
+        inner: Box<Self>,
+        offset: u64,
+        limit: Option<u64>,
+    },
+    /// [Group](https://www.w3.org/TR/sparql11-query/#aggregateAlgebra).
+    Group {
+        inner: Box<Self>,
+        variables: Vec<Variable>,
+        aggregates: Vec<(Variable, AggregateExpression)>,
+    },
+    /// [Service](https://www.w3.org/TR/sparql11-federated-query/#defn_evalService).
+    Service {
+        name: NamedNodePattern,
+        inner: Box<Self>,
+        silent: bool,
+    },
+}
+
+impl QueryExpression {
+    pub fn empty() -> Self {
+        Self::Values {
+            variables: Vec::new(),
+            bindings: Vec::new(),
+        }
+    }
+
+    /// Check if the pattern is the empty table
+    fn is_empty(&self) -> bool {
+        if let Self::Values { bindings, .. } = self {
+            bindings.is_empty()
+        } else {
+            false
+        }
+    }
+
+    pub fn empty_singleton() -> Self {
+        Self::Values {
+            variables: Vec::new(),
+            bindings: vec![Vec::new()],
+        }
+    }
+
+    pub fn is_empty_singleton(&self) -> bool {
+        if let Self::Values { bindings, .. } = self {
+            bindings.len() == 1 && bindings.iter().all(|b| b.iter().all(Option::is_none))
+        } else {
+            false
+        }
+    }
+
+    pub fn join(left: Self, right: Self, algorithm: JoinAlgorithm) -> Self {
+        if left.is_empty() || right.is_empty() {
+            return Self::empty();
+        }
+        if left.is_empty_singleton() {
+            return right;
+        }
+        if right.is_empty_singleton() {
+            return left;
+        }
+        Self::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            algorithm,
+        }
+    }
+
+    #[cfg(feature = "sep-0006")]
+    pub fn lateral(left: Self, right: Self) -> Self {
+        if left.is_empty() || right.is_empty() {
+            return Self::empty();
+        }
+        if left.is_empty_singleton()
+            && !matches!(
+                &right,
+                Self::LeftJoin { left, .. } if left.is_empty_singleton()
+            )
+        {
+            return right;
+        }
+        if right.is_empty_singleton() {
+            return left;
+        }
+        Self::Lateral {
+            left: Box::new(left),
+            right: Box::new(right),
+        }
+    }
+
+    pub fn left_join(
+        left: Self,
+        right: Self,
+        expression: Expression,
+        algorithm: LeftJoinAlgorithm,
+    ) -> Self {
+        let expression_ebv = expression.effective_boolean_value();
+        if left.is_empty()
+            || right.is_empty()
+            || right.is_empty_singleton()
+            || expression_ebv == Some(false)
+        {
+            return left;
+        }
+        Self::LeftJoin {
+            left: Box::new(left),
+            right: Box::new(right),
+            expression: if expression_ebv == Some(true) {
+                true.into()
+            } else {
+                expression
+            },
+            algorithm,
+        }
+    }
+
+    pub fn minus(left: Self, right: Self, algorithm: MinusAlgorithm) -> Self {
+        if left.is_empty() {
+            return Self::empty();
+        }
+        if right.is_empty() {
+            return left;
+        }
+        Self::Minus {
+            left: Box::new(left),
+            right: Box::new(right),
+            algorithm,
+        }
+    }
+
+    pub fn union(left: Self, right: Self) -> Self {
+        Self::union_all([left, right])
+    }
+
+    pub fn union_all(args: impl IntoIterator<Item = Self>) -> Self {
+        let args = args.into_iter();
+        let mut all = Vec::with_capacity(args.size_hint().0);
+        for arg in args {
+            if arg.is_empty() {
+                continue;
+            }
+            if let Self::Union { inner } = arg {
+                all.extend(inner);
+            } else {
+                all.push(arg);
+            }
+        }
+        if all.is_empty() {
+            Self::empty()
+        } else {
+            Self::Union {
+                inner: order_vec(all),
+            }
+        }
+    }
+
+    pub fn filter(inner: Self, expression: Expression) -> Self {
+        if inner.is_empty() {
+            return Self::empty();
+        }
+        // We unwrap singleton And
+        let expression = match expression {
+            Expression::And(mut l) if l.len() == 1 => l.pop().unwrap(),
+            e => e,
+        };
+        match expression.effective_boolean_value() {
+            Some(true) => inner,
+            Some(false) => Self::empty(),
+            None => match inner {
+                Self::Filter {
+                    inner: nested_inner,
+                    expression: e2,
+                } => Self::Filter {
+                    inner: nested_inner,
+                    expression: expression & e2,
+                },
+                _ => Self::Filter {
+                    inner: Box::new(inner),
+                    expression,
+                },
+            },
+        }
+    }
+
+    pub fn extend(inner: Self, variable: Variable, expression: Expression) -> Self {
+        if inner.is_empty() {
+            return Self::empty();
+        }
+        Self::Extend {
+            inner: Box::new(inner),
+            variable,
+            expression,
+        }
+    }
+
+    pub fn values(
+        mut variables: Vec<Variable>,
+        mut bindings: Vec<Vec<Option<GroundTerm>>>,
+    ) -> Self {
+        let empty_rows = (0..variables.len())
+            .filter(|row| !bindings.iter().any(|binding| binding.get(*row).is_some()))
+            .collect::<Vec<_>>();
+        if !empty_rows.is_empty() {
+            // We remove empty rows
+            variables = variables
+                .into_iter()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    if empty_rows.contains(&i) {
+                        None
+                    } else {
+                        Some(v)
+                    }
+                })
+                .collect();
+            bindings = bindings
+                .into_iter()
+                .map(|binding| {
+                    binding
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(i, v)| {
+                            if empty_rows.contains(&i) {
+                                None
+                            } else {
+                                Some(v)
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+        }
+        Self::Values {
+            variables,
+            bindings,
+        }
+    }
+
+    pub fn graph(inner: Self, graph_name: NamedNodePattern) -> Self {
+        if inner.is_empty() {
+            return Self::empty();
+        }
+        Self::Graph {
+            inner: Box::new(inner),
+            graph_name,
+        }
+    }
+
+    pub fn order_by(inner: Self, expression: Vec<OrderExpression>) -> Self {
+        if inner.is_empty() {
+            return Self::empty();
+        }
+        if expression.is_empty() {
+            return inner;
+        }
+        Self::OrderBy {
+            inner: Box::new(inner),
+            expression,
+        }
+    }
+
+    pub fn project(inner: Self, variables: Vec<Variable>) -> Self {
+        Self::Project {
+            inner: Box::new(inner),
+            variables,
+        }
+    }
+
+    pub fn distinct(inner: Self) -> Self {
+        if inner.is_empty() {
+            return Self::empty();
+        }
+        Self::Distinct {
+            inner: Box::new(inner),
+        }
+    }
+
+    pub fn reduced(inner: Self) -> Self {
+        if inner.is_empty() {
+            return Self::empty();
+        }
+        Self::Reduced {
+            inner: Box::new(inner),
+        }
+    }
+
+    pub fn slice(inner: Self, offset: u64, limit: Option<u64>) -> Self {
+        if inner.is_empty() {
+            return Self::empty();
+        }
+        if offset == 0 && limit.is_none() {
+            return inner;
+        }
+        Self::Slice {
+            inner: Box::new(inner),
+            offset,
+            limit,
+        }
+    }
+
+    pub fn group(
+        inner: Self,
+        variables: Vec<Variable>,
+        aggregates: Vec<(Variable, AggregateExpression)>,
+    ) -> Self {
+        if inner.is_empty() && !variables.is_empty() {
+            return Self::empty();
+        }
+        Self::Group {
+            inner: Box::new(inner),
+            variables,
+            aggregates,
+        }
+    }
+
+    pub fn service(inner: Self, name: NamedNodePattern, silent: bool) -> Self {
+        Self::Service {
+            inner: Box::new(inner),
+            name,
+            silent,
+        }
+    }
+
+    pub fn lookup_used_variables<'a>(&'a self, callback: &mut impl FnMut(&'a Variable)) {
+        match self {
+            Self::Values { variables, .. } | Self::Project { variables, .. } => {
+                for v in variables {
+                    callback(v);
+                }
+            }
+            Self::QuadPattern {
+                subject,
+                predicate,
+                object,
+                graph_name,
+            } => {
+                lookup_term_pattern_variables(subject, callback);
+                if let NamedNodePattern::Variable(v) = predicate {
+                    callback(v);
+                }
+                lookup_term_pattern_variables(object, callback);
+                if let Some(NamedNodePattern::Variable(v)) = graph_name {
+                    callback(v);
+                }
+            }
+            Self::Path {
+                subject, object, ..
+            } => {
+                lookup_term_pattern_variables(subject, callback);
+                lookup_term_pattern_variables(object, callback);
+            }
+            Self::Graph { graph_name, inner } => {
+                if let NamedNodePattern::Variable(v) = graph_name {
+                    callback(v);
+                }
+                inner.lookup_used_variables(callback);
+            }
+            Self::Filter { inner, expression } => {
+                expression.lookup_used_variables(callback);
+                inner.lookup_used_variables(callback);
+            }
+            Self::Union { inner } => {
+                for child in inner {
+                    child.lookup_used_variables(callback);
+                }
+            }
+            Self::Join { left, right, .. } | Self::Minus { left, right, .. } => {
+                left.lookup_used_variables(callback);
+                right.lookup_used_variables(callback);
+            }
+            #[cfg(feature = "sep-0006")]
+            Self::Lateral { left, right } => {
+                left.lookup_used_variables(callback);
+                right.lookup_used_variables(callback);
+            }
+            Self::LeftJoin {
+                left,
+                right,
+                expression,
+                ..
+            } => {
+                expression.lookup_used_variables(callback);
+                left.lookup_used_variables(callback);
+                right.lookup_used_variables(callback);
+            }
+            Self::Extend {
+                inner,
+                variable,
+                expression,
+            } => {
+                callback(variable);
+                expression.lookup_used_variables(callback);
+                inner.lookup_used_variables(callback);
+            }
+            Self::OrderBy { inner, .. }
+            | Self::Distinct { inner }
+            | Self::Reduced { inner }
+            | Self::Slice { inner, .. } => inner.lookup_used_variables(callback),
+            Self::Service { inner, name, .. } => {
+                if let NamedNodePattern::Variable(v) = name {
+                    callback(v);
+                }
+                inner.lookup_used_variables(callback);
+            }
+            Self::Group {
+                variables,
+                aggregates,
+                ..
+            } => {
+                for v in variables {
+                    callback(v);
+                }
+                for (v, _) in aggregates {
+                    callback(v);
+                }
+            }
+        }
+    }
+
+    /// Returns the variables used by this pattern, in the order they are
+    /// first encountered during a left-to-right, depth-first walk of the
+    /// pattern tree (duplicates removed, keeping the first occurrence).
+    ///
+    /// For [`Join`](Self::Join) nodes specifically, `left` is always visited
+    /// before `right`. This means that after
+    /// [`Optimizer::optimize_query_expression`](crate::Optimizer::optimize_query_expression)
+    /// has run its greedy join-reordering pass, the nested (left-deep) `Join`
+    /// tree it produces will yield variables here in the same order the
+    /// optimizer chose to introduce them -- i.e. this doubles as a view onto
+    /// sparopt's join / variable-elimination order.
+    ///
+    /// This is intended for execution engines that drive their own join
+    /// algorithm (for example a worst-case-optimal / Leapfrog Triejoin
+    /// executor) and want to consume sparopt's structural join-ordering
+    /// decision as an initial seed or tie-breaker for their own
+    /// variable-elimination order, rather than recomputing it from scratch.
+    ///
+    /// Note this reflects the *structure* of the pattern tree as given; it
+    /// is only meaningful as "the optimizer's chosen order" when called on
+    /// the output of [`Optimizer::optimize_query_expression`](crate::Optimizer::optimize_query_expression).
+    pub fn join_order_variables(&self) -> Vec<Variable> {
+        let mut seen = HashSet::new();
+        let mut order = Vec::new();
+        self.lookup_used_variables(&mut |v| {
+            if seen.insert(v) {
+                order.push(v.clone());
+            }
+        });
+        order
+    }
+}
+
+impl From<&AlQueryExpression> for QueryExpression {
+    fn from(query_expression: &AlQueryExpression) -> Self {
+        match query_expression {
+            AlQueryExpression::Bgp { patterns } => patterns
+                .iter()
+                .map(|pattern| Self::QuadPattern {
+                    subject: pattern.subject.clone(),
+                    predicate: pattern.predicate.clone(),
+                    object: pattern.object.clone(),
+                    graph_name: None,
+                })
+                .reduce(|a, b| Self::Join {
+                    left: Box::new(a),
+                    right: Box::new(b),
+                    algorithm: JoinAlgorithm::default(),
+                })
+                .unwrap_or_else(Self::empty_singleton),
+            AlQueryExpression::Path {
+                subject,
+                path,
+                object,
+            } => Self::Path {
+                subject: subject.clone(),
+                path: path.clone(),
+                object: object.clone(),
+            },
+            AlQueryExpression::Join { left, right } => Self::Join {
+                left: Box::new((&**left).into()),
+                right: Box::new((&**right).into()),
+                algorithm: JoinAlgorithm::default(),
+            },
+            AlQueryExpression::LeftJoin {
+                left,
+                right,
+                expression,
+            } => Self::LeftJoin {
+                left: Box::new((&**left).into()),
+                right: Box::new((&**right).into()),
+                expression: expression.as_ref().map_or_else(|| true.into(), Into::into),
+                algorithm: LeftJoinAlgorithm::default(),
+            },
+            #[cfg(feature = "sep-0006")]
+            AlQueryExpression::Lateral { left, right } => Self::Lateral {
+                left: Box::new((&**left).into()),
+                right: Box::new((&**right).into()),
+            },
+            AlQueryExpression::Filter { inner, expr } => Self::Filter {
+                inner: Box::new((&**inner).into()),
+                expression: expr.into(),
+            },
+            AlQueryExpression::Union { left, right } => Self::Union {
+                inner: vec![(&**left).into(), (&**right).into()],
+            },
+            AlQueryExpression::Graph { inner, name } => Self::Graph {
+                graph_name: name.clone(),
+                inner: Box::new((&**inner).into()),
+            },
+            AlQueryExpression::Extend {
+                inner,
+                expression,
+                variable,
+            } => Self::Extend {
+                inner: Box::new((&**inner).into()),
+                expression: expression.into(),
+                variable: variable.clone(),
+            },
+            AlQueryExpression::Minus { left, right } => Self::Minus {
+                left: Box::new((&**left).into()),
+                right: Box::new((&**right).into()),
+                algorithm: MinusAlgorithm::default(),
+            },
+            AlQueryExpression::Values {
+                variables,
+                bindings,
+            } => Self::Values {
+                variables: variables.clone(),
+                bindings: bindings.clone(),
+            },
+            AlQueryExpression::OrderBy { inner, expression } => Self::OrderBy {
+                inner: Box::new(Self::from(&**inner)),
+                expression: expression.iter().map(Into::into).collect(),
+            },
+            AlQueryExpression::Project { inner, variables } => Self::Project {
+                inner: Box::new((&**inner).into()),
+                variables: variables.clone(),
+            },
+            AlQueryExpression::Distinct { inner } => Self::Distinct {
+                inner: Box::new((&**inner).into()),
+            },
+            AlQueryExpression::Reduced { inner } => Self::Distinct {
+                inner: Box::new((&**inner).into()),
+            },
+            AlQueryExpression::Slice {
+                inner,
+                offset,
+                limit,
+            } => Self::Slice {
+                inner: Box::new((&**inner).into()),
+                offset: *offset,
+                limit: *limit,
+            },
+            AlQueryExpression::Group {
+                inner,
+                variables,
+                aggregates,
+            } => Self::Group {
+                inner: Box::new((&**inner).into()),
+                variables: variables.clone(),
+                aggregates: aggregates
+                    .iter()
+                    .map(|(var, expr)| (var.clone(), expr.into()))
+                    .collect(),
+            },
+            AlQueryExpression::Service {
+                inner,
+                name,
+                silent,
+            } => Self::Service {
+                inner: Box::new((&**inner).into()),
+                name: name.clone(),
+                silent: *silent,
+            },
+        }
+    }
+}
+
+impl From<&QueryExpression> for AlQueryExpression {
+    fn from(query_expression: &QueryExpression) -> Self {
+        match query_expression {
+            QueryExpression::QuadPattern {
+                subject,
+                predicate,
+                object,
+                graph_name,
+            } => {
+                let pattern = Self::Bgp {
+                    patterns: vec![TriplePattern {
+                        subject: subject.clone(),
+                        predicate: predicate.clone(),
+                        object: object.clone(),
+                    }],
+                };
+                if let Some(graph_name) = graph_name {
+                    Self::Graph {
+                        inner: Box::new(pattern),
+                        name: graph_name.clone(),
+                    }
+                } else {
+                    pattern
+                }
+            }
+            QueryExpression::Path {
+                subject,
+                path,
+                object,
+            } => Self::Path {
+                subject: subject.clone(),
+                path: path.clone(),
+                object: object.clone(),
+            },
+            QueryExpression::Graph { graph_name, inner } => Self::Graph {
+                inner: Box::new(inner.as_ref().into()),
+                name: graph_name.clone(),
+            },
+            QueryExpression::Join { left, right, .. } => {
+                match (left.as_ref().into(), right.as_ref().into()) {
+                    (Self::Bgp { patterns: mut left }, Self::Bgp { patterns: right }) => {
+                        left.extend(right);
+                        Self::Bgp { patterns: left }
+                    }
+                    (left, right) => Self::Join {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                }
+            }
+            QueryExpression::LeftJoin {
+                left,
+                right,
+                expression,
+                ..
+            } => {
+                let empty_expr = if let Expression::Literal(l) = expression {
+                    *l.datatype() == xsd::BOOLEAN && l.value() == "true"
+                } else {
+                    false
+                };
+                Self::LeftJoin {
+                    left: Box::new(left.as_ref().into()),
+                    right: Box::new(right.as_ref().into()),
+                    expression: if empty_expr {
+                        None
+                    } else {
+                        Some(expression.into())
+                    },
+                }
+            }
+            #[cfg(feature = "sep-0006")]
+            QueryExpression::Lateral { left, right } => {
+                match (left.as_ref().into(), right.as_ref().into()) {
+                    (Self::Bgp { patterns: mut left }, Self::Bgp { patterns: right }) => {
+                        left.extend(right);
+                        Self::Bgp { patterns: left }
+                    }
+                    (left, right) => Self::Lateral {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                }
+            }
+            QueryExpression::Filter { inner, expression } => Self::Filter {
+                inner: Box::new(inner.as_ref().into()),
+                expr: expression.into(),
+            },
+            QueryExpression::Union { inner } => inner
+                .iter()
+                .map(Into::into)
+                .reduce(|a, b| Self::Union {
+                    left: Box::new(a),
+                    right: Box::new(b),
+                })
+                .unwrap_or_else(|| Self::Values {
+                    variables: Vec::new(),
+                    bindings: Vec::new(),
+                }),
+            QueryExpression::Extend {
+                inner,
+                expression,
+                variable,
+            } => Self::Extend {
+                inner: Box::new(inner.as_ref().into()),
+                expression: expression.into(),
+                variable: variable.clone(),
+            },
+            QueryExpression::Minus { left, right, .. } => Self::Minus {
+                left: Box::new(left.as_ref().into()),
+                right: Box::new(right.as_ref().into()),
+            },
+            QueryExpression::Values {
+                variables,
+                bindings,
+            } => Self::Values {
+                variables: variables.clone(),
+                bindings: bindings.clone(),
+            },
+            QueryExpression::OrderBy { inner, expression } => Self::OrderBy {
+                inner: Box::new(inner.as_ref().into()),
+                expression: expression.iter().map(Into::into).collect(),
+            },
+            QueryExpression::Project { inner, variables } => Self::Project {
+                inner: Box::new(inner.as_ref().into()),
+                variables: variables.clone(),
+            },
+            QueryExpression::Distinct { inner } => Self::Distinct {
+                inner: Box::new(inner.as_ref().into()),
+            },
+            QueryExpression::Reduced { inner } => Self::Distinct {
+                inner: Box::new(inner.as_ref().into()),
+            },
+            QueryExpression::Slice {
+                inner,
+                offset,
+                limit,
+            } => Self::Slice {
+                inner: Box::new(inner.as_ref().into()),
+                offset: *offset,
+                limit: *limit,
+            },
+            QueryExpression::Group {
+                inner,
+                variables,
+                aggregates,
+            } => Self::Group {
+                inner: Box::new(inner.as_ref().into()),
+                variables: variables.clone(),
+                aggregates: aggregates
+                    .iter()
+                    .map(|(var, expr)| (var.clone(), expr.into()))
+                    .collect(),
+            },
+            QueryExpression::Service {
+                inner,
+                name,
+                silent,
+            } => Self::Service {
+                inner: Box::new(inner.as_ref().into()),
+                name: name.clone(),
+                silent: *silent,
+            },
+        }
+    }
+}
+
+/// The join algorithm used (c.f. [`QueryExpression::Join`]).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum JoinAlgorithm {
+    HashBuildLeftProbeRight { keys: Vec<Variable> },
+}
+
+impl Default for JoinAlgorithm {
+    fn default() -> Self {
+        Self::HashBuildLeftProbeRight {
+            keys: Vec::default(),
+        }
+    }
+}
+
+/// The left join algorithm used (c.f. [`QueryExpression::LeftJoin`]).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum LeftJoinAlgorithm {
+    HashBuildRightProbeLeft { keys: Vec<Variable> },
+}
+
+impl Default for LeftJoinAlgorithm {
+    fn default() -> Self {
+        Self::HashBuildRightProbeLeft {
+            keys: Vec::default(),
+        }
+    }
+}
+
+/// The left join algorithm used (c.f. [`QueryExpression::Minus`]).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum MinusAlgorithm {
+    HashBuildRightProbeLeft { keys: Vec<Variable> },
+}
+
+impl Default for MinusAlgorithm {
+    fn default() -> Self {
+        Self::HashBuildRightProbeLeft {
+            keys: Vec::default(),
+        }
+    }
+}
+
+/// A set function used in aggregates (c.f. [`QueryExpression::Group`]).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum AggregateExpression {
+    CountSolutions {
+        distinct: bool,
+    },
+    FunctionCall {
+        name: NamedNode,
+        expr: Expression,
+        distinct: bool,
+        scalarvals: BTreeMap<OxString, OxString>,
+    },
+}
+
+impl From<&AlAggregateExpression> for AggregateExpression {
+    fn from(expression: &AlAggregateExpression) -> Self {
+        match expression {
+            AlAggregateExpression::CountSolutions { distinct } => Self::CountSolutions {
+                distinct: *distinct,
+            },
+            AlAggregateExpression::FunctionCall {
+                name,
+                expr,
+                distinct,
+                scalarvals,
+            } => Self::FunctionCall {
+                name: name.clone(),
+                expr: expr.into(),
+                distinct: *distinct,
+                scalarvals: scalarvals.clone(),
+            },
+        }
+    }
+}
+
+impl From<&AggregateExpression> for AlAggregateExpression {
+    fn from(expression: &AggregateExpression) -> Self {
+        match expression {
+            AggregateExpression::CountSolutions { distinct } => Self::CountSolutions {
+                distinct: *distinct,
+            },
+            AggregateExpression::FunctionCall {
+                name,
+                expr,
+                distinct,
+                scalarvals,
+            } => Self::FunctionCall {
+                name: name.clone(),
+                expr: expr.into(),
+                distinct: *distinct,
+                scalarvals: scalarvals.clone(),
+            },
+        }
+    }
+}
+
+/// An ordering comparator used by [`QueryExpression::OrderBy`].
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum OrderExpression {
+    /// Ascending order
+    Asc(Expression),
+    /// Descending order
+    Desc(Expression),
+}
+
+impl From<&AlOrderExpression> for OrderExpression {
+    fn from(expression: &AlOrderExpression) -> Self {
+        match expression {
+            AlOrderExpression::Asc(e) => Self::Asc(e.into()),
+            AlOrderExpression::Desc(e) => Self::Desc(e.into()),
+        }
+    }
+}
+
+impl From<&OrderExpression> for AlOrderExpression {
+    fn from(expression: &OrderExpression) -> Self {
+        match expression {
+            OrderExpression::Asc(e) => Self::Asc(e.into()),
+            OrderExpression::Desc(e) => Self::Desc(e.into()),
+        }
+    }
+}
+
+fn order_pair<T: Hash>(a: T, b: T) -> (T, T) {
+    if hash(&a) <= hash(&b) { (a, b) } else { (b, a) }
+}
+
+fn order_vec<T: Hash>(mut vec: Vec<T>) -> Vec<T> {
+    vec.sort_unstable_by_key(|a| hash(a));
+    vec
+}
+
+fn hash(v: impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    v.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn lookup_term_pattern_variables<'a>(
+    pattern: &'a TermPattern,
+    callback: &mut impl FnMut(&'a Variable),
+) {
+    if let TermPattern::Variable(v) = pattern {
+        callback(v);
+    }
+    #[cfg(feature = "sparql-12")]
+    if let TermPattern::Triple(t) = pattern {
+        lookup_term_pattern_variables(&t.subject, callback);
+        if let NamedNodePattern::Variable(v) = &t.predicate {
+            callback(v);
+        }
+        lookup_term_pattern_variables(&t.object, callback);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn var(name: &str) -> Variable {
+        Variable::new(name.to_owned()).unwrap()
+    }
+
+    fn quad_pattern(subject: &str, predicate: &str, object: &str) -> QueryExpression {
+        QueryExpression::QuadPattern {
+            subject: TermPattern::Variable(var(subject)),
+            predicate: NamedNodePattern::Variable(var(predicate)),
+            object: TermPattern::Variable(var(object)),
+            graph_name: None,
+        }
+    }
+
+    #[test]
+    fn join_order_variables_matches_left_to_right_join_structure() {
+        // { ?s ?p1 ?o1 . ?s ?p2 ?o2 . ?o1 ?p3 ?o3 }
+        // built as a left-deep join tree, mirroring the shape `reorder_joins`
+        // produces: Join { left: Join { left: A, right: B }, right: C }.
+        let a = quad_pattern("s", "p1", "o1");
+        let b = quad_pattern("s", "p2", "o2");
+        let c = quad_pattern("o1", "p3", "o3");
+        let pattern = QueryExpression::Join {
+            left: Box::new(QueryExpression::Join {
+                left: Box::new(a),
+                right: Box::new(b),
+                algorithm: JoinAlgorithm::default(),
+            }),
+            right: Box::new(c),
+            algorithm: JoinAlgorithm::default(),
+        };
+
+        let order = pattern.join_order_variables();
+        assert_eq!(
+            order,
+            vec![
+                var("s"),
+                var("p1"),
+                var("o1"),
+                var("p2"),
+                var("o2"),
+                var("p3"),
+                var("o3"),
+            ]
+        );
+    }
+
+    #[test]
+    fn join_order_variables_deduplicates_keeping_first_occurrence() {
+        // ?s is shared between both sides of the join and must only appear once,
+        // at the position where it is first encountered (left side).
+        let left = quad_pattern("s", "p1", "o1");
+        let right = quad_pattern("s", "p2", "o2");
+        let pattern = QueryExpression::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            algorithm: JoinAlgorithm::default(),
+        };
+
+        let order = pattern.join_order_variables();
+        assert_eq!(
+            order,
+            vec![var("s"), var("p1"), var("o1"), var("p2"), var("o2")]
+        );
+    }
+
+    #[test]
+    fn join_order_variables_is_empty_for_variable_free_pattern() {
+        let pattern = QueryExpression::empty_singleton();
+        assert!(pattern.join_order_variables().is_empty());
+    }
+}

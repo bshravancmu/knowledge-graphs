@@ -1,0 +1,137 @@
+//   Copyright 2023, University of Freiburg,
+//   Chair of Algorithms and Data Structures.
+//   Author: Robin Textor-Falconi <textorr@informatik.uni-freiburg.de>
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+
+#include <boost/asio/experimental/awaitable_operators.hpp>
+#include <chrono>
+
+#include "util/AsyncTestHelpers.h"
+#include "util/http/websocket/MessageSender.h"
+#include "util/http/websocket/QueryHub.h"
+
+using ad_utility::websocket::MessageSender;
+using ad_utility::websocket::OwningQueryId;
+using ad_utility::websocket::QueryHub;
+using ad_utility::websocket::QueryId;
+using ad_utility::websocket::QueryOperation;
+using ad_utility::websocket::QueryRegistry;
+using ad_utility::websocket::QueryStatus;
+using PayloadType = std::pair<std::shared_ptr<const std::string>, size_t>;
+
+using namespace boost::asio::experimental::awaitable_operators;
+using namespace std::string_literals;
+using namespace std::chrono_literals;
+
+using ::testing::Pair;
+using ::testing::Pointee;
+using ::testing::VariantWith;
+
+ASYNC_TEST(MessageSender, destructorCallsSignalEnd) {
+  QueryRegistry queryRegistry;
+  OwningQueryId queryId =
+      queryRegistry.uniqueId("my-query", QueryOperation::QUERY);
+  QueryHub queryHub{ioContext.get_executor()};
+
+  auto distributor =
+      queryHub.createOrAcquireDistributorForReceiving(queryId.toQueryId());
+
+  // Create and immediately destroy a `MessageSender` s.t. we can test the side
+  // effects of the destructor.
+  { MessageSender dummy{std::move(queryId), queryHub}; }
+
+  auto impl = [&]() -> net::awaitable<void> {
+    net::steady_timer timer{ioContext, 2s};
+
+    auto result = co_await (distributor->waitForNextDataPiece(0) ||
+                            timer.async_wait(net::use_awaitable));
+
+    EXPECT_THAT(result, VariantWith<PayloadType>(PayloadType{nullptr, 0}));
+  };
+
+  co_await net::co_spawn(distributor->strand(), impl(), net::deferred);
+}
+
+// _____________________________________________________________________________
+
+ASYNC_TEST(MessageSender, callingOperatorBroadcastsPayload) {
+  QueryRegistry queryRegistry;
+  OwningQueryId queryId =
+      queryRegistry.uniqueId("my-query", QueryOperation::QUERY);
+  QueryHub queryHub{ioContext.get_executor()};
+
+  {
+    auto distributor =
+        queryHub.createOrAcquireDistributorForReceiving(queryId.toQueryId());
+
+    MessageSender updateWrapper{std::move(queryId), queryHub};
+
+    updateWrapper("Still");
+
+    net::steady_timer timer{ioContext, 2s};
+
+    auto impl = [&]() -> net::awaitable<void> {
+      auto result = co_await (distributor->waitForNextDataPiece(0) ||
+                              timer.async_wait(net::use_awaitable));
+
+      EXPECT_THAT(result, VariantWith<PayloadType>(Pair(Pointee("Still"s), 1)));
+      // Push next update.
+      updateWrapper("Dre");
+
+      result = co_await (distributor->waitForNextDataPiece(1) ||
+                         timer.async_wait(net::use_awaitable));
+
+      EXPECT_THAT(result, VariantWith<PayloadType>(Pair(Pointee("Dre"s), 2)));
+    };
+    co_await net::co_spawn(distributor->strand(), impl, net::deferred);
+  }
+
+  // The destructor of `MessageSender` calls `signalEnd` on the distributor
+  // instance asynchronously, so we need to wait for it to be executed before
+  // destroying the backing `QueryHub` instance.
+  co_await net::post(net::use_awaitable);
+}
+
+// _____________________________________________________________________________
+
+ASYNC_TEST(MessageSender, testGetQueryIdGetterWorks) {
+  QueryRegistry queryRegistry;
+  OwningQueryId queryId =
+      queryRegistry.uniqueId("my-query", QueryOperation::QUERY);
+  QueryId reference = queryId.toQueryId();
+  QueryHub queryHub{ioContext.get_executor()};
+
+  {
+    MessageSender messageSender{std::move(queryId), queryHub};
+    EXPECT_EQ(reference, messageSender.getQueryId());
+  }
+  // The destructor of `MessageSender` calls `signalEnd` on the underlying
+  // distributor instance asynchronously, so we need to wait for it to be
+  // executed before destroying the backing `QueryHub` instance.
+  co_await net::post(net::use_awaitable);
+}
+
+// _____________________________________________________________________________
+
+// `sharedStatus()` must hand out the OwningQueryId's own status atomic, so a
+// write through one handle is visible through another.
+ASYNC_TEST(MessageSender, sharedStatusForwardsToOwningQueryId) {
+  QueryRegistry queryRegistry;
+  OwningQueryId queryId =
+      queryRegistry.uniqueId("my-query", QueryOperation::QUERY);
+  QueryHub queryHub{ioContext.get_executor()};
+
+  {
+    MessageSender messageSender{std::move(queryId), queryHub};
+    auto handle = messageSender.sharedStatus();
+    EXPECT_NE(handle, nullptr);
+    EXPECT_EQ(handle->load(), QueryStatus::FAILED);
+
+    handle->store(QueryStatus::OK);
+    EXPECT_EQ(messageSender.sharedStatus()->load(), QueryStatus::OK);
+  }
+  // Wait for the asynchronous `signalEnd` before the `QueryHub` is destroyed.
+  co_await net::post(net::use_awaitable);
+}

@@ -1,0 +1,568 @@
+// Copyright 2025, University of Freiburg,
+// Chair of Algorithms and Data Structures.
+// Author: Christoph Ullinger <ullingec@cs.uni-freiburg.de>
+
+#include <gmock/gmock.h>
+
+#include <variant>
+
+#include "VocabularyTestHelpers.h"
+#include "backports/StartsWithAndEndsWith.h"
+#include "index/vocabulary/SplitVocabularyImpl.h"
+#include "index/vocabulary/Vocabulary.h"
+#include "index/vocabulary/VocabularyType.h"
+
+namespace splitVocabTestHelpers {
+
+using SGV =
+    SplitGeoVocabulary<CompressedVocabulary<VocabularyInternalExternal>>;
+
+[[maybe_unused]] auto testSplitTwoFunction = [](std::string_view s) -> uint8_t {
+  return ql::starts_with(s, "\"a");
+};
+
+constexpr std::array<std::string_view, 2> testTwoFilenameSuffixes{"", ".a"};
+
+using TwoSplitVocabulary =
+    SplitVocabulary<decltype(testSplitTwoFunction), testTwoFilenameSuffixes,
+                    VocabularyInMemory, VocabularyInMemory>;
+
+[[maybe_unused]] auto testSplitThreeFunction =
+    [](std::string_view s) -> uint8_t {
+  if (ql::starts_with(s, "\"")) {
+    if (ql::ends_with(s, "\"^^<http://example.com>")) {
+      return 1;
+    } else if (ql::ends_with(s, "\"^^<blabliblu>")) {
+      return 2;
+    }
+  }
+  return 0;
+};
+
+constexpr std::array<std::string_view, 3> testThreeFilenameSuffixes{".a", ".b",
+                                                                    ".c"};
+
+using ThreeSplitVocabulary =
+    SplitVocabulary<decltype(testSplitThreeFunction), testThreeFilenameSuffixes,
+                    VocabularyInMemory, VocabularyInMemory, VocabularyInMemory>;
+
+}  // namespace splitVocabTestHelpers
+
+namespace {
+using namespace splitVocabTestHelpers;
+using namespace ad_utility;
+const VocabularyType geoSplitVocabType{
+    VocabularyType::Enum::OnDiskCompressedGeoSplit};
+
+// An `absl::Cleanup` that deletes all the files that an `RdfsVocabulary` of the
+// given `type` with the given base `filename` consists of.
+auto getFileCleanup(VocabularyType type, const std::string& filename) {
+  return vocabulary_test::makeVocabFileCleanup(
+      filename, PolymorphicVocabulary::fileSuffixes(type));
+}
+
+// Same as above, for a `TwoSplitVocabulary`, which most of the tests below use.
+auto getFileCleanup(const std::string& filename) {
+  return vocabulary_test::makeVocabFileCleanup<TwoSplitVocabulary>(filename);
+}
+
+// _____________________________________________________________________________
+TEST(Vocabulary, SplitGeoVocab) {
+  // Test check: Is a geo literal?
+  ASSERT_EQ(SGV::getMarkerForWord(
+                "\"POLYGON((1 2, 3 4))\""
+                "^^<http://www.opengis.net/ont/geosparql#wktLiteral>"),
+            1);
+  ASSERT_EQ(SGV::getMarkerForWord(
+                "\"LINESTRING(1 2, 3 4)\""
+                "^^<http://www.opengis.net/ont/geosparql#wktLiteral>"),
+            1);
+  ASSERT_EQ(SGV::getMarkerForWord(""), 0);
+  ASSERT_EQ(SGV::getMarkerForWord("\"abc\""), 0);
+  ASSERT_EQ(SGV::getMarkerForWord("\"\"^^<http://example.com>"), 0);
+
+  // Add marker bit
+  ASSERT_EQ(SGV::addMarker(0, 1), (1ULL << 59));
+  ASSERT_EQ(SGV::addMarker(25, 1), (1ULL << 59) | 25);
+
+  // Get vocab index
+  ASSERT_EQ(SGV::getVocabIndex(0), 0);
+  ASSERT_EQ(SGV::getVocabIndex(1), 1);
+  ASSERT_EQ(SGV::getVocabIndex(1ULL << 59), 0);
+  ASSERT_EQ(SGV::getVocabIndex((1ULL << 59) | 25), 25);
+
+  // Vocab index is out of range
+  EXPECT_ANY_THROW(SGV::addMarker((1ULL << 60) | 42, 5));
+  EXPECT_ANY_THROW(SGV::addMarker(1ULL << 59, 5));
+
+  // Check marker bit
+  ASSERT_TRUE(SGV::isSpecialVocabIndex((1ULL << 59) | 42));
+  ASSERT_TRUE(SGV::isSpecialVocabIndex(1ULL << 59));
+  ASSERT_FALSE(SGV::isSpecialVocabIndex(0));
+  ASSERT_FALSE(SGV::isSpecialVocabIndex(42));
+  ASSERT_FALSE(SGV::isSpecialVocabIndex((1ULL << 59) - 1));
+  ASSERT_FALSE(SGV::isSpecialVocabIndex(1ULL << 58));
+
+  // Geometry info
+  ASSERT_TRUE(SGV::isGeoInfoAvailable());
+}
+
+// _____________________________________________________________________________
+TEST(Vocabulary, SplitVocabularyCustomWithTwoVocabs) {
+  // Tests the SplitVocabulary class with a custom split function that separates
+  // all words in two underlying vocabularies
+  TwoSplitVocabulary sv;
+  ASSERT_FALSE(TwoSplitVocabulary::isGeoInfoAvailable());
+  ASSERT_FALSE(sv.isGeoInfoAvailable());
+
+  ASSERT_EQ(sv.numberOfVocabs, 2);
+  ASSERT_EQ(sv.markerBitMaskSize, 1);
+  ASSERT_EQ(sv.markerBitMask, 1ULL << 59);
+  ASSERT_EQ(sv.markerShift, 59);
+  ASSERT_EQ(sv.vocabIndexBitMask, (1ULL << 59) - 1);
+
+  ASSERT_EQ(sv.addMarker(42, 0), 42);
+  ASSERT_EQ(sv.addMarker(42, 1), (1ULL << 59) | 42);
+  ASSERT_ANY_THROW(sv.addMarker(1ULL << 60, 1));
+  ASSERT_ANY_THROW(sv.addMarker(5, 2));
+
+  ASSERT_EQ(sv.getMarker((1ULL << 59) | 42), 1);
+  ASSERT_EQ(sv.getMarker(42), 0);
+
+  ASSERT_EQ(sv.getVocabIndex((1ULL << 59) | 42), 42);
+  ASSERT_EQ(sv.getVocabIndex(1ULL << 59), 0);
+  ASSERT_EQ(sv.getVocabIndex(0), 0);
+  ASSERT_EQ(sv.getVocabIndex((1ULL << 59) - 1), (1ULL << 59) - 1);
+  ASSERT_EQ(sv.getVocabIndex(42), 42);
+
+  ASSERT_TRUE(sv.isSpecialVocabIndex((1ULL << 59) | 42));
+  ASSERT_TRUE(sv.isSpecialVocabIndex(1ULL << 59));
+  ASSERT_FALSE(sv.isSpecialVocabIndex(42));
+  ASSERT_FALSE(sv.isSpecialVocabIndex(0));
+
+  ASSERT_EQ(sv.getMarkerForWord("\"xyz\""), 0);
+  ASSERT_EQ(sv.getMarkerForWord("<abc>"), 0);
+  ASSERT_EQ(sv.getMarkerForWord("\"abc\""), 1);
+
+  const std::string filename = gtestCurrentTestName();
+  auto cleanup = getFileCleanup(filename);
+  auto ww = sv.makeDiskWriterPtr(filename);
+  ASSERT_EQ((*ww)("\"\"", true), sv.addMarker(0, 0));
+  ASSERT_EQ((*ww)("\"abc\"", true), sv.addMarker(0, 1));
+  ASSERT_EQ((*ww)("\"axyz\"", true), sv.addMarker(1, 1));
+  ASSERT_EQ((*ww)("\"xyz\"", true), sv.addMarker(1, 0));
+  ww->readableName() = "Split Vocab with Two Underlying Vocabs";
+  ww->finish();
+
+  sv.readFromFile(filename);
+  ASSERT_EQ(sv.size(), 4);
+  ASSERT_EQ(sv[1], "\"xyz\"");
+  ASSERT_EQ(sv[(1ULL << 59) | 1], "\"axyz\"");
+
+  // Test access to and content of underlying vocabs
+  std::visit(
+      [](auto& vocab) {
+        ASSERT_EQ(vocab.size(), 2);
+        ASSERT_EQ(vocab[0], "\"\"");
+        ASSERT_EQ(vocab[1], "\"xyz\"");
+      },
+      sv.getUnderlyingMainVocabulary());
+  std::visit(
+      [](auto& vocab) {
+        ASSERT_EQ(vocab.size(), 2);
+        ASSERT_EQ(vocab[0], "\"\"");
+        ASSERT_EQ(vocab[1], "\"xyz\"");
+      },
+      sv.getUnderlyingVocabulary(0));
+  std::visit(
+      [](auto& vocab) {
+        ASSERT_EQ(vocab.size(), 2);
+        ASSERT_EQ(vocab[0], "\"abc\"");
+        ASSERT_EQ(vocab[1], "\"axyz\"");
+      },
+      sv.getUnderlyingVocabulary(1));
+  EXPECT_ANY_THROW(sv.getUnderlyingVocabulary(2));
+
+  // Also test the const variant
+  const auto& um = sv.getUnderlyingMainVocabulary();
+  std::visit(
+      [](auto& vocab) {
+        ASSERT_EQ(vocab.size(), 2);
+        ASSERT_EQ(vocab[0], "\"\"");
+        ASSERT_EQ(vocab[1], "\"xyz\"");
+      },
+      um);
+  const auto& u0 = sv.getUnderlyingVocabulary(0);
+  std::visit(
+      [](auto& vocab) {
+        ASSERT_EQ(vocab.size(), 2);
+        ASSERT_EQ(vocab[0], "\"\"");
+        ASSERT_EQ(vocab[1], "\"xyz\"");
+      },
+      u0);
+  const auto& u1 = sv.getUnderlyingVocabulary(1);
+  std::visit(
+      [](auto& vocab) {
+        ASSERT_EQ(vocab.size(), 2);
+        ASSERT_EQ(vocab[0], "\"abc\"");
+        ASSERT_EQ(vocab[1], "\"axyz\"");
+      },
+      u1);
+
+  const auto& svConstRef = sv;
+  EXPECT_ANY_THROW(svConstRef.getUnderlyingVocabulary(2));
+
+  // There is not GeoInfo because none of the underlying vocabularies is a
+  // `GeoVocabulary`
+  ASSERT_FALSE(sv.getGeoInfo(0).has_value());
+  ASSERT_FALSE(sv.getGeoInfo(1).has_value());
+  ASSERT_FALSE(sv.getGeoInfo(1ULL << 59).has_value());
+  ASSERT_FALSE(sv.getGeoInfo((1ULL << 59) | 1).has_value());
+
+  sv.close();
+}
+
+// _____________________________________________________________________________
+TEST(Vocabulary, SplitVocabularyCustomWithThreeVocabs) {
+  // Tests the SplitVocabulary class with a custom split function that separates
+  // all words in three underlying vocabularies (of different types)
+  ThreeSplitVocabulary sv;
+  ASSERT_FALSE(ThreeSplitVocabulary::isGeoInfoAvailable());
+  ASSERT_FALSE(sv.isGeoInfoAvailable());
+
+  ASSERT_EQ(sv.numberOfVocabs, 3);
+  ASSERT_EQ(sv.markerBitMaskSize, 2);
+  ASSERT_EQ(sv.markerBitMask, 3ULL << 58);
+  ASSERT_EQ(sv.markerShift, 58);
+  ASSERT_EQ(sv.vocabIndexBitMask, (1ULL << 58) - 1);
+
+  ASSERT_EQ(sv.addMarker(42, 0), 42);
+  ASSERT_EQ(sv.addMarker(42, 1), (1ULL << 58) | 42);
+  ASSERT_EQ(sv.addMarker(42, 2), (2ULL << 58) | 42);
+  ASSERT_ANY_THROW(sv.addMarker(1ULL << 60, 1));
+  ASSERT_ANY_THROW(sv.addMarker(5, 3));
+
+  ASSERT_EQ(sv.getMarker((1ULL << 58) | 42), 1);
+  ASSERT_EQ(sv.getMarker((2ULL << 58) | 42), 2);
+  ASSERT_EQ(sv.getMarker(42), 0);
+
+  ASSERT_EQ(sv.getVocabIndex((1ULL << 58) | 42), 42);
+  ASSERT_EQ(sv.getVocabIndex((2ULL << 58) | 42), 42);
+  ASSERT_EQ(sv.getVocabIndex(1ULL << 58), 0);
+  ASSERT_EQ(sv.getVocabIndex(2ULL << 58), 0);
+  ASSERT_EQ(sv.getVocabIndex(0), 0);
+  ASSERT_EQ(sv.getVocabIndex((1ULL << 58) - 1), (1ULL << 58) - 1);
+  ASSERT_EQ(sv.getVocabIndex(42), 42);
+
+  ASSERT_TRUE(sv.isSpecialVocabIndex((1ULL << 58) | 42));
+  ASSERT_TRUE(sv.isSpecialVocabIndex((2ULL << 58) | 42));
+  ASSERT_TRUE(sv.isSpecialVocabIndex(1ULL << 58));
+  ASSERT_FALSE(sv.isSpecialVocabIndex(42));
+  ASSERT_FALSE(sv.isSpecialVocabIndex(0));
+
+  ASSERT_EQ(sv.getMarkerForWord("\"xyz\"^^<http://example.com>"), 1);
+  ASSERT_EQ(sv.getMarkerForWord("\"xyz\"^^<blabliblu>"), 2);
+  ASSERT_EQ(sv.getMarkerForWord("<abc>"), 0);
+  ASSERT_EQ(sv.getMarkerForWord("\"abc\""), 0);
+
+  const std::string filename = gtestCurrentTestName();
+  auto cleanup =
+      vocabulary_test::makeVocabFileCleanup<ThreeSplitVocabulary>(filename);
+  auto ww = sv.makeDiskWriterPtr(filename);
+  ASSERT_EQ((*ww)("\"\"", true), sv.addMarker(0, 0));
+  ASSERT_EQ((*ww)("\"abc\"", true), sv.addMarker(1, 0));
+  ASSERT_EQ((*ww)("\"axyz\"", true), sv.addMarker(2, 0));
+  ASSERT_EQ((*ww)("\"xyz\"^^<blabliblu>", true), sv.addMarker(0, 2));
+  ASSERT_EQ((*ww)("\"xyz\"^^<http://example.com>", true), sv.addMarker(0, 1));
+  ASSERT_EQ((*ww)("\"zzz\"^^<blabliblu>", true), sv.addMarker(1, 2));
+  ww->readableName() = "Split Vocab with Three Underlying Vocabs";
+  ww->finish();
+
+  sv.readFromFile(filename);
+  ASSERT_EQ(sv.size(), 6);
+  ASSERT_EQ(sv[2], "\"axyz\"");
+  ASSERT_EQ(sv[2ULL << 58], "\"xyz\"^^<blabliblu>");
+  ASSERT_EQ(sv[(2ULL << 58) | 1], "\"zzz\"^^<blabliblu>");
+  ASSERT_EQ(sv[1ULL << 58], "\"xyz\"^^<http://example.com>");
+}
+
+// _____________________________________________________________________________
+TEST(Vocabulary, SplitVocabularyItemAt) {
+  HashSet<std::string> s;
+  s.insert("a");
+  s.insert("ab");
+  s.insert(
+      "\"POLYGON((1 2, 3 4))\""
+      "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+  s.insert("ba");
+  s.insert("car");
+  s.insert(
+      "\"LINESTRING(1 2, 3 4)\""
+      "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+
+  RdfsVocabulary v;
+  v.resetToType(geoSplitVocabType);
+  const std::string filename = gtestCurrentTestName();
+  auto cleanup = getFileCleanup(geoSplitVocabType, filename);
+  v.createFromSet(s, filename);
+
+  ASSERT_EQ(v[VocabIndex::make(0)], "a");
+  ASSERT_EQ(v[VocabIndex::make(1)], "ab");
+  ASSERT_EQ(v[VocabIndex::make(2)], "ba");
+  ASSERT_EQ(v[VocabIndex::make(3)], "car");
+
+  // Out of range indices
+  EXPECT_ANY_THROW(v[VocabIndex::make(42)]);
+  EXPECT_ANY_THROW(v[VocabIndex::make((1ULL << 59) | 42)]);
+
+  auto idx = VocabIndex::make(1ULL << 59);
+  ASSERT_EQ(v[idx],
+            "\"LINESTRING(1 2, 3 4)\""
+            "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+  idx = VocabIndex::make(static_cast<uint64_t>(1) << 59 | 1);
+  ASSERT_EQ(v[idx],
+            "\"POLYGON((1 2, 3 4))\""
+            "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+}
+
+// _____________________________________________________________________________
+TEST(Vocabulary, SplitVocabularyWordWriterAndGetPosition) {
+  // The word writer in the Vocabulary class runs the SplitGeoVocabulary word
+  // writer. Its task is to split words to two different vocabularies for geo
+  // and non-geo words. This split is tested here.
+  RdfsVocabulary vocabulary;
+  vocabulary.resetToType(geoSplitVocabType);
+  const std::string filename = gtestCurrentTestName();
+  auto cleanup = getFileCleanup(geoSplitVocabType, filename);
+  auto wordCallback = vocabulary.makeWordWriterPtr(filename);
+  ASSERT_TRUE(vocabulary.isGeoInfoAvailable());
+
+  // Call word writer
+  ASSERT_EQ((*wordCallback)("\"a\"", true), 0);
+  ASSERT_EQ((*wordCallback)("\"ab\"", true), 1);
+  ASSERT_EQ(
+      (*wordCallback)("\"LINESTRING(1 2, 3 4)\""
+                      "^^<http://www.opengis.net/ont/geosparql#wktLiteral>",
+                      true),
+      (1ULL << 59));
+  ASSERT_EQ((*wordCallback)("\"ba\"", true), 2);
+  ASSERT_EQ((*wordCallback)("\"car\"@en", true), 3);
+  ASSERT_EQ(
+      (*wordCallback)("\"POLYGON((1 2, 3 4))\""
+                      "^^<http://www.opengis.net/ont/geosparql#wktLiteral>",
+                      true),
+      (1ULL << 59) | 1);
+
+  wordCallback->finish();
+
+  vocabulary.readFromFile(filename);
+
+  // Check that the resulting vocabulary is correct
+  VocabIndex idx;
+  ASSERT_TRUE(vocabulary.getId("\"a\"", &idx));
+  ASSERT_EQ(idx.get(), 0);
+  ASSERT_EQ(vocabulary[VocabIndex::make(0)], "\"a\"");
+  ASSERT_TRUE(vocabulary.getId("\"ab\"", &idx));
+  ASSERT_EQ(idx.get(), 1);
+  ASSERT_EQ(vocabulary[VocabIndex::make(1)], "\"ab\"");
+  ASSERT_TRUE(vocabulary.getId("\"ba\"", &idx));
+  ASSERT_EQ(idx.get(), 2);
+  ASSERT_EQ(vocabulary[VocabIndex::make(2)], "\"ba\"");
+  ASSERT_TRUE(vocabulary.getId("\"car\"@en", &idx));
+  ASSERT_EQ(idx.get(), 3);
+  ASSERT_EQ(vocabulary[VocabIndex::make(3)], "\"car\"@en");
+
+  ASSERT_TRUE(
+      vocabulary.getId("\"LINESTRING(1 2, 3 4)\""
+                       "^^<http://www.opengis.net/ont/geosparql#wktLiteral>",
+                       &idx));
+  ASSERT_EQ(idx.get(), 1ULL << 59);
+  ASSERT_EQ(vocabulary[VocabIndex::make(1ULL << 59)],
+            "\"LINESTRING(1 2, 3 4)\""
+            "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+
+  ASSERT_TRUE(
+      vocabulary.getId("\"POLYGON((1 2, 3 4))\""
+                       "^^<http://www.opengis.net/ont/geosparql#wktLiteral>",
+                       &idx));
+  ASSERT_EQ(idx.get(), (1ULL << 59) | 1);
+  ASSERT_EQ(vocabulary[VocabIndex::make((1ULL << 59) | 1)],
+            "\"POLYGON((1 2, 3 4))\""
+            "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+
+  ASSERT_FALSE(vocabulary.getId("\"xyz\"", &idx));
+  ASSERT_ANY_THROW(vocabulary[VocabIndex::make(42)]);
+
+  // Check that `getPositionOfWord` returns correct boundaries:
+  //  - Non-existing normal word, at the end
+  auto [l1, u1] = vocabulary.getPositionOfWord("\"xyz\"");
+  ASSERT_EQ(l1, VocabIndex::make(4));
+  ASSERT_EQ(u1, VocabIndex::make(4));
+
+  //  - Non-existing normal word, not at the end
+  auto [l2, u2] = vocabulary.getPositionOfWord("\"0\"");
+  ASSERT_EQ(l2, VocabIndex::make(0));
+  ASSERT_EQ(u2, VocabIndex::make(0));
+
+  //  - Existing normal word
+  auto [l3, u3] = vocabulary.getPositionOfWord("\"car\"@en");
+  ASSERT_EQ(l3, VocabIndex::make(3));
+  ASSERT_EQ(u3, VocabIndex::make(4));
+
+  //  - Non-existing split word, not at the end
+  auto [l4, u4] = vocabulary.getPositionOfWord(
+      "\"POLYGON((0 0, 3 4))\""
+      "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+  ASSERT_EQ(l4, VocabIndex::make((1ULL << 59) | 1));
+  ASSERT_EQ(u4, VocabIndex::make((1ULL << 59) | 1));
+
+  //  - Non-existing split word, at the end
+  auto [l5, u5] = vocabulary.getPositionOfWord(
+      "\"POLYGON((9 9, 9 9))\""
+      "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+  ASSERT_EQ(l5, VocabIndex::make((1ULL << 59) | 2));
+  ASSERT_EQ(u5, VocabIndex::make((1ULL << 59) | 2));
+
+  //  - Existing split word
+  auto [l6, u6] = vocabulary.getPositionOfWord(
+      "\"POLYGON((1 2, 3 4))\""
+      "^^<http://www.opengis.net/ont/geosparql#wktLiteral>");
+  ASSERT_EQ(l6, VocabIndex::make((1ULL << 59) | 1));
+  ASSERT_EQ(u6, VocabIndex::make((1ULL << 59) | 2));
+
+  //  - Non-existing prefix of an existing split word
+  auto [l7, u7] = vocabulary.getPositionOfWord("\"POLYGON((1 2, 3 4))");
+  ASSERT_EQ(l7, VocabIndex::make(4));
+  ASSERT_EQ(u7, VocabIndex::make(4));
+}
+
+// _____________________________________________________________________________
+TEST(Vocabulary, SplitVocabularyScanAll) {
+  // A `SplitVocabulary` distributes its words over multiple underlying
+  // vocabularies (here: words starting with `"a` go into the second vocab).
+  // `scanAll` must still enumerate all of them.
+  TwoSplitVocabulary sv;
+  const std::string filename = gtestCurrentTestName();
+  auto cleanup = getFileCleanup(filename);
+  auto ww = sv.makeDiskWriterPtr(filename);
+  (*ww)("\"\"", true);
+  (*ww)("\"abc\"", true);
+  (*ww)("\"axyz\"", true);
+  (*ww)("\"xyz\"", true);
+  ww->finish();
+  sv.readFromFile(filename);
+
+  // `scanAll` yields all words of all underlying vocabularies, together with
+  // their marker-encoded global index (main vocabulary first, then the second
+  // one). Each yielded index must round-trip through `operator[]`.
+  std::vector<std::pair<uint64_t, std::string>> scanned;
+  for (const IndexAndWord& indexAndWord : sv.scanAll()) {
+    EXPECT_EQ(sv[indexAndWord.index_], indexAndWord.word_);
+    scanned.emplace_back(indexAndWord.index_, std::string{indexAndWord.word_});
+  }
+  using P = std::pair<uint64_t, std::string>;
+  EXPECT_THAT(scanned,
+              ::testing::ElementsAre(P{sv.addMarker(0, 0), "\"\""},
+                                     P{sv.addMarker(1, 0), "\"xyz\""},
+                                     P{sv.addMarker(0, 1), "\"abc\""},
+                                     P{sv.addMarker(1, 1), "\"axyz\""}));
+}
+
+// _____________________________________________________________________________
+TEST(Vocabulary, SplitVocabularyWordWriterDestructor) {
+  // Create a `SplitVocabulary::WordWriter` and destruct it without a call to
+  // `finish()`.
+  const std::string filename1 = absl::StrCat(gtestCurrentTestName(), ".1");
+  auto cleanup1 = getFileCleanup(filename1);
+  TwoSplitVocabulary sv1;
+  auto wordWriter1 = sv1.makeDiskWriterPtr(filename1);
+  (*wordWriter1)("\"abc\"", true);
+  ASSERT_FALSE(wordWriter1->finishWasCalled());
+  wordWriter1.reset();
+
+  // Create a `SplitVocabulary::WordWriter` and destruct it after an explicit
+  // call to `finish()`.
+  const std::string filename2 = absl::StrCat(gtestCurrentTestName(), ".2");
+  auto cleanup2 = getFileCleanup(filename2);
+  TwoSplitVocabulary sv2;
+  auto wordWriter2 = sv2.makeDiskWriterPtr(filename2);
+  (*wordWriter2)("\"abc\"", true);
+  wordWriter2->finish();
+  ASSERT_TRUE(wordWriter2->finishWasCalled());
+  wordWriter2.reset();
+}
+
+// Test that the indices of a `GeoVocabulary` with a geo cell grid (cell index
+// in the upper bits) pass correctly through a `SplitGeoVocabulary`: they carry
+// the marker bit, and the past-the-end bounds come from
+// `GeoVocabulary::endIndex`.
+TEST(SplitVocabulary, geoCellGridIndicesThroughSplitVocabulary) {
+  using SGV = SplitGeoVocabulary<VocabularyInMemory>;
+  ad_utility::GeoCellGrid grid{2};
+  const std::string fn = absl::StrCat(gtestCurrentTestName(), ".dat");
+  auto cleanup = vocabulary_test::makeVocabFileCleanup<SGV>(fn);
+  auto wkt = [](std::string_view content) {
+    return absl::StrCat("\"", content, GEO_LITERAL_SUFFIX);
+  };
+
+  std::string iri = "<http://example.org/a>";
+  std::string wkt3 = wkt("POINT(170 -80)");   // cell 3
+  std::string wkt12 = wkt("POINT(-170 80)");  // cell 12
+
+  // The comparator orders all non-WKT words first, then the WKT literals by
+  // cell index. Here it is written by hand, in a follow-up change the
+  // `TripleComponentComparator` produces this order.
+  auto comparator = [&grid](std::string_view a, std::string_view b) {
+    auto key = [&grid](std::string_view w) {
+      bool isWkt = ad_utility::isWktLiteral(w);
+      return std::tuple{isWkt, isWkt ? grid.cellIndexFromWktLiteral(w) : 0, w};
+    };
+    return key(a) < key(b);
+  };
+
+  // Write the words in the comparator's order.
+  {
+    SGV writeVocab;
+    writeVocab.setGeoCellGrid(grid);
+    auto ww = writeVocab.makeDiskWriterPtr(fn);
+    ww->readableName() = "test";
+    EXPECT_EQ((*ww)(iri, false), 0u);
+    EXPECT_EQ((*ww)(wkt3, false),
+              SGV::addMarker(grid.indexFromCellAndPosition(3, 0), 1));
+    EXPECT_EQ((*ww)(wkt12, false),
+              SGV::addMarker(grid.indexFromCellAndPosition(12, 1), 1));
+    ww->finish();
+  }
+
+  SGV vocab;
+  EXPECT_FALSE(vocab.getGeoCellGrid().has_value());
+  vocab.setGeoCellGrid(grid);
+  vocab.open(fn);
+  EXPECT_EQ(vocab.getGeoCellGrid(), std::optional{grid});
+
+  // Retrieval by marked index.
+  EXPECT_EQ(vocab[SGV::addMarker(grid.indexFromCellAndPosition(3, 0), 1)],
+            wkt3);
+  EXPECT_EQ(vocab[SGV::addMarker(grid.indexFromCellAndPosition(12, 1), 1)],
+            wkt12);
+  EXPECT_EQ(vocab[0], iri);
+
+  // An index beyond the past-the-end index of the geo vocabulary is rejected,
+  // even if its position part is valid.
+  EXPECT_ANY_THROW(vocab[SGV::addMarker(
+      grid.indexFromCellAndPosition(grid.sentinelCell(), 0), 1)]);
+
+  // Exact lookup returns the index and its successor as bounds.
+  auto [lo3, hi3] = vocab.getPositionOfWord(wkt3, comparator);
+  EXPECT_EQ(lo3, SGV::addMarker(grid.indexFromCellAndPosition(3, 0), 1));
+  EXPECT_EQ(hi3, lo3 + 1);
+
+  // A WKT literal that is not in the vocabulary and larger than all entries
+  // gets past-the-end bounds that are larger than every valid index.
+  std::string wktMissing = wkt("NOTAGEOMETRY");  // sentinel cell
+  auto [loM, hiM] = vocab.getPositionOfWord(wktMissing, comparator);
+  EXPECT_EQ(loM, hiM);
+  EXPECT_GT(loM, SGV::addMarker(grid.indexFromCellAndPosition(12, 1), 1));
+}
+
+}  // namespace

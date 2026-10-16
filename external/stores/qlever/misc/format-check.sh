@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+
+printf "Checking sources for code style\n"
+SOURCE_FILES=()
+find ./src/ ./test/ ./benchmark/ -regextype egrep -regex '.*\.(h|c)(pp|xx)?$' -print0 > sourcelist
+while IFS=  read -r -d $'\0'; do
+    SOURCE_FILES+=("$REPLY")
+done <sourcelist
+
+ERROR=0
+for source in "${SOURCE_FILES[@]}" ;do
+	clang-format-18 -output-replacements-xml $source | grep "<replacement " &> /dev/null
+	HAS_WRONG_FILES=$?
+	if [ $HAS_WRONG_FILES -ne 1 ] ; then
+		# Print an error and exit
+		printf "\x1b[31mError: "
+		printf "The source file \x1b[m$source\x1b[31m does not match the code style\n"
+		printf "Use clang-format with the .clang-format provided in the QLever\n"
+		printf "repository's root to ensure all code files are formatted "
+		printf "properly. We currently use clang-format 18\n"
+		printf "(See '.github/workflows/format-check.yml' for instructions on how to install it.)\n"
+		printf "\x1b[m"
+		ERROR=1
+	fi
+done
+
+if [ $ERROR -eq 0 ]; then
+	printf "\x1b[32mCongratulations! All sources match the code style\x1b[m\n"
+else
+	exit 1
+fi

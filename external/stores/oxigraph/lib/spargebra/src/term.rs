@@ -1,0 +1,807 @@
+//! Data structures for basic concepts like IRI, literal or triples used in SPARQL.
+
+pub use oxrdf::{BlankNode, Literal, NamedNode, NamedOrBlankNode, Term, Triple, Variable};
+use std::fmt;
+use std::fmt::Write;
+
+/// The union of [IRIs](https://www.w3.org/TR/rdf11-concepts/#dfn-iri), [literals](https://www.w3.org/TR/rdf11-concepts/#dfn-literal) and [triples](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple).
+///
+/// The default string formatter is returning an N-Triples, Turtle, and SPARQL compatible representation.
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum GroundTerm {
+    NamedNode(NamedNode),
+    Literal(Literal),
+    #[cfg(feature = "sparql-12")]
+    Triple(Box<GroundTriple>),
+}
+
+impl fmt::Display for GroundTerm {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NamedNode(node) => node.fmt(f),
+            Self::Literal(literal) => literal.fmt(f),
+            #[cfg(feature = "sparql-12")]
+            Self::Triple(triple) => write!(
+                f,
+                "<<( {} {} {} )>>",
+                triple.subject, triple.predicate, triple.object
+            ),
+        }
+    }
+}
+
+impl From<NamedNode> for GroundTerm {
+    #[inline]
+    fn from(node: NamedNode) -> Self {
+        Self::NamedNode(node)
+    }
+}
+
+impl From<Literal> for GroundTerm {
+    #[inline]
+    fn from(literal: Literal) -> Self {
+        Self::Literal(literal)
+    }
+}
+
+#[cfg(feature = "sparql-12")]
+impl From<GroundTriple> for GroundTerm {
+    #[inline]
+    fn from(triple: GroundTriple) -> Self {
+        Self::Triple(Box::new(triple))
+    }
+}
+
+impl From<GroundTerm> for Term {
+    #[inline]
+    fn from(term: GroundTerm) -> Self {
+        match term {
+            GroundTerm::NamedNode(t) => t.into(),
+            GroundTerm::Literal(l) => l.into(),
+            #[cfg(feature = "sparql-12")]
+            GroundTerm::Triple(t) => Triple::from(*t).into(),
+        }
+    }
+}
+
+/// A [RDF triple](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple) without blank nodes.
+///
+/// The default string formatter is returning a N-Quads representation.
+///
+/// ```
+/// use spargebra::term::{GroundTriple, NamedNode};
+///
+/// assert_eq!(
+///     "<http://example.com/s> <http://example.com/p> <http://example.com/o>",
+///     GroundTriple {
+///         subject: NamedNode::new("http://example.com/s")?.into(),
+///         predicate: NamedNode::new("http://example.com/p")?,
+///         object: NamedNode::new("http://example.com/o")?.into(),
+///     }
+///     .to_string()
+/// );
+/// # Result::<_,oxrdf::IriParseError>::Ok(())
+/// ```
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct GroundTriple {
+    pub subject: NamedNode,
+    pub predicate: NamedNode,
+    pub object: GroundTerm,
+}
+
+impl fmt::Display for GroundTriple {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} {}", self.subject, self.predicate, self.object)
+    }
+}
+
+impl From<GroundTriple> for Triple {
+    #[inline]
+    fn from(triple: GroundTriple) -> Self {
+        Self {
+            subject: triple.subject.into(),
+            predicate: triple.predicate,
+            object: triple.object.into(),
+        }
+    }
+}
+
+/// A possible graph name.
+///
+/// It is the union of [IRIs](https://www.w3.org/TR/rdf11-concepts/#dfn-iri) and the [default graph name](https://www.w3.org/TR/rdf11-concepts/#dfn-default-graph).
+#[derive(Eq, PartialEq, Debug, Clone, Hash, Default)]
+pub enum GraphName {
+    NamedNode(NamedNode),
+    #[default]
+    DefaultGraph,
+}
+
+impl GraphName {
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        match self {
+            Self::NamedNode(node) => write!(f, "{node}"),
+            Self::DefaultGraph => f.write_str("default"),
+        }
+    }
+}
+
+impl fmt::Display for GraphName {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NamedNode(node) => node.fmt(f),
+            Self::DefaultGraph => f.write_str("DEFAULT"),
+        }
+    }
+}
+
+impl From<NamedNode> for GraphName {
+    #[inline]
+    fn from(node: NamedNode) -> Self {
+        Self::NamedNode(node)
+    }
+}
+
+/// A [RDF triple](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple) in an [RDF dataset](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-dataset).
+///
+/// The default string formatter is returning a N-Quads representation.
+///
+/// ```
+/// use spargebra::term::{NamedNode, Quad};
+///
+/// assert_eq!(
+///     "<http://example.com/s> <http://example.com/p> <http://example.com/o> <http://example.com/g>",
+///     Quad {
+///         subject: NamedNode::new("http://example.com/s")?.into(),
+///         predicate: NamedNode::new("http://example.com/p")?,
+///         object: NamedNode::new("http://example.com/o")?.into(),
+///         graph_name: NamedNode::new("http://example.com/g")?.into(),
+///     }.to_string()
+/// );
+/// # Result::<_,oxrdf::IriParseError>::Ok(())
+/// ```
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct Quad {
+    pub subject: NamedOrBlankNode,
+    pub predicate: NamedNode,
+    pub object: Term,
+    pub graph_name: GraphName,
+}
+
+impl Quad {
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        if self.graph_name != GraphName::DefaultGraph {
+            f.write_str("(graph ")?;
+            self.graph_name.fmt_sse(f)?;
+            f.write_str(" (")?;
+        }
+        write!(
+            f,
+            "(triple {} {} {})",
+            self.subject, self.predicate, self.object
+        )?;
+        if self.graph_name != GraphName::DefaultGraph {
+            f.write_str("))")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Quad {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.graph_name == GraphName::DefaultGraph {
+            write!(f, "{} {} {}", self.subject, self.predicate, self.object)
+        } else {
+            write!(
+                f,
+                "{} {} {} {}",
+                self.subject, self.predicate, self.object, self.graph_name
+            )
+        }
+    }
+}
+
+/// A [RDF triple](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-triple) in an [RDF dataset](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-dataset) without blank nodes.
+///
+/// The default string formatter is returning a N-Quads representation.
+///
+/// ```
+/// use spargebra::term::{NamedNode, GroundQuad};
+///
+/// assert_eq!(
+///     "<http://example.com/s> <http://example.com/p> <http://example.com/o> <http://example.com/g>",
+///     GroundQuad {
+///         subject: NamedNode::new("http://example.com/s")?.into(),
+///         predicate: NamedNode::new("http://example.com/p")?,
+///         object: NamedNode::new("http://example.com/o")?.into(),
+///         graph_name: NamedNode::new("http://example.com/g")?.into(),
+///     }.to_string()
+/// );
+/// # Result::<_,oxrdf::IriParseError>::Ok(())
+/// ```
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct GroundQuad {
+    pub subject: NamedNode,
+    pub predicate: NamedNode,
+    pub object: GroundTerm,
+    pub graph_name: GraphName,
+}
+
+impl GroundQuad {
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        if self.graph_name != GraphName::DefaultGraph {
+            f.write_str("(graph ")?;
+            self.graph_name.fmt_sse(f)?;
+            f.write_str(" (")?;
+        }
+        write!(
+            f,
+            "(triple {} {} {})",
+            self.subject, self.predicate, self.object
+        )?;
+        if self.graph_name != GraphName::DefaultGraph {
+            f.write_str("))")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for GroundQuad {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.graph_name == GraphName::DefaultGraph {
+            write!(f, "{} {} {}", self.subject, self.predicate, self.object)
+        } else {
+            write!(
+                f,
+                "{} {} {} {}",
+                self.subject, self.predicate, self.object, self.graph_name
+            )
+        }
+    }
+}
+
+/// The union of [IRIs](https://www.w3.org/TR/rdf11-concepts/#dfn-iri) and [variables](https://www.w3.org/TR/sparql11-query/#sparqlQueryVariables).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum NamedNodePattern {
+    NamedNode(NamedNode),
+    Variable(Variable),
+}
+
+impl NamedNodePattern {
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        match self {
+            Self::NamedNode(node) => write!(f, "{node}"),
+            Self::Variable(var) => write!(f, "{var}"),
+        }
+    }
+}
+
+impl fmt::Display for NamedNodePattern {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NamedNode(node) => node.fmt(f),
+            Self::Variable(var) => var.fmt(f),
+        }
+    }
+}
+
+impl From<NamedNode> for NamedNodePattern {
+    #[inline]
+    fn from(node: NamedNode) -> Self {
+        Self::NamedNode(node)
+    }
+}
+
+impl From<Variable> for NamedNodePattern {
+    #[inline]
+    fn from(var: Variable) -> Self {
+        Self::Variable(var)
+    }
+}
+
+/// The union of [terms](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-term) and [variables](https://www.w3.org/TR/sparql11-query/#sparqlQueryVariables) without blank nodes.
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum TermPattern {
+    NamedNode(NamedNode),
+    Literal(Literal),
+    Variable(Variable),
+    #[cfg(feature = "sparql-12")]
+    Triple(Box<TriplePattern>),
+}
+
+impl TermPattern {
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        match self {
+            Self::NamedNode(term) => write!(f, "{term}"),
+            Self::Literal(term) => write!(f, "{term}"),
+            Self::Variable(var) => write!(f, "{var}"),
+            #[cfg(feature = "sparql-12")]
+            Self::Triple(triple) => triple.fmt_sse(f),
+        }
+    }
+}
+
+impl fmt::Display for TermPattern {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NamedNode(term) => term.fmt(f),
+            Self::Literal(term) => term.fmt(f),
+            Self::Variable(var) => var.fmt(f),
+            #[cfg(feature = "sparql-12")]
+            Self::Triple(triple) => write!(f, "<<( {triple} )>>"),
+        }
+    }
+}
+
+impl From<NamedNode> for TermPattern {
+    #[inline]
+    fn from(node: NamedNode) -> Self {
+        Self::NamedNode(node)
+    }
+}
+
+impl From<Literal> for TermPattern {
+    #[inline]
+    fn from(literal: Literal) -> Self {
+        Self::Literal(literal)
+    }
+}
+
+#[cfg(feature = "sparql-12")]
+impl From<TriplePattern> for TermPattern {
+    #[inline]
+    fn from(triple: TriplePattern) -> Self {
+        Self::Triple(Box::new(triple))
+    }
+}
+
+impl From<Variable> for TermPattern {
+    #[inline]
+    fn from(var: Variable) -> Self {
+        Self::Variable(var)
+    }
+}
+
+impl From<GroundTerm> for TermPattern {
+    #[inline]
+    fn from(term: GroundTerm) -> Self {
+        match term {
+            GroundTerm::NamedNode(node) => node.into(),
+            GroundTerm::Literal(literal) => literal.into(),
+            #[cfg(feature = "sparql-12")]
+            GroundTerm::Triple(triple) => TriplePattern::from(*triple).into(),
+        }
+    }
+}
+
+impl From<NamedNodePattern> for TermPattern {
+    #[inline]
+    fn from(element: NamedNodePattern) -> Self {
+        match element {
+            NamedNodePattern::NamedNode(node) => node.into(),
+            NamedNodePattern::Variable(var) => var.into(),
+        }
+    }
+}
+
+/// The union of [terms](https://www.w3.org/TR/rdf11-concepts/#dfn-rdf-term) and [variables](https://www.w3.org/TR/sparql11-query/#sparqlQueryVariables).
+///
+/// It is used in [`ConstructQuery`](crate::query::ConstructQuery).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum TermTemplate {
+    NamedNode(NamedNode),
+    BlankNode(BlankNode),
+    Literal(Literal),
+    #[cfg(feature = "sparql-12")]
+    Triple(Box<TripleTemplate>),
+    Variable(Variable),
+}
+
+impl TermTemplate {
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        match self {
+            Self::NamedNode(term) => write!(f, "{term}"),
+            Self::BlankNode(term) => write!(f, "{term}"),
+            Self::Literal(term) => write!(f, "{term}"),
+            #[cfg(feature = "sparql-12")]
+            Self::Triple(triple) => triple.fmt_sse(f),
+            Self::Variable(var) => write!(f, "{var}"),
+        }
+    }
+}
+
+impl fmt::Display for TermTemplate {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NamedNode(term) => term.fmt(f),
+            Self::BlankNode(term) => term.fmt(f),
+            Self::Literal(term) => term.fmt(f),
+            #[cfg(feature = "sparql-12")]
+            Self::Triple(triple) => write!(f, "<<( {triple} )>>"),
+            Self::Variable(var) => var.fmt(f),
+        }
+    }
+}
+
+impl From<NamedNode> for TermTemplate {
+    #[inline]
+    fn from(node: NamedNode) -> Self {
+        Self::NamedNode(node)
+    }
+}
+
+impl From<BlankNode> for TermTemplate {
+    #[inline]
+    fn from(node: BlankNode) -> Self {
+        Self::BlankNode(node)
+    }
+}
+
+impl From<Literal> for TermTemplate {
+    #[inline]
+    fn from(literal: Literal) -> Self {
+        Self::Literal(literal)
+    }
+}
+
+#[cfg(feature = "sparql-12")]
+impl From<TripleTemplate> for TermTemplate {
+    #[inline]
+    fn from(triple: TripleTemplate) -> Self {
+        Self::Triple(Box::new(triple))
+    }
+}
+
+impl From<Variable> for TermTemplate {
+    fn from(var: Variable) -> Self {
+        Self::Variable(var)
+    }
+}
+
+impl From<NamedOrBlankNode> for TermTemplate {
+    #[inline]
+    fn from(subject: NamedOrBlankNode) -> Self {
+        match subject {
+            NamedOrBlankNode::NamedNode(node) => node.into(),
+            NamedOrBlankNode::BlankNode(node) => node.into(),
+        }
+    }
+}
+
+impl From<Term> for TermTemplate {
+    #[inline]
+    fn from(term: Term) -> Self {
+        match term {
+            Term::NamedNode(node) => node.into(),
+            Term::BlankNode(node) => node.into(),
+            Term::Literal(literal) => literal.into(),
+            #[cfg(feature = "sparql-12")]
+            Term::Triple(t) => TripleTemplate::from(*t).into(),
+        }
+    }
+}
+
+impl From<NamedNodePattern> for TermTemplate {
+    #[inline]
+    fn from(element: NamedNodePattern) -> Self {
+        match element {
+            NamedNodePattern::NamedNode(node) => node.into(),
+            NamedNodePattern::Variable(var) => var.into(),
+        }
+    }
+}
+
+impl From<TermPattern> for TermTemplate {
+    #[inline]
+    fn from(element: TermPattern) -> Self {
+        match element {
+            TermPattern::NamedNode(node) => node.into(),
+            TermPattern::Literal(literal) => literal.into(),
+            #[cfg(feature = "sparql-12")]
+            TermPattern::Triple(t) => TripleTemplate::from(*t).into(),
+            TermPattern::Variable(variable) => variable.into(),
+        }
+    }
+}
+
+/// The union of [IRIs](https://www.w3.org/TR/rdf11-concepts/#dfn-iri), [default graph name](https://www.w3.org/TR/rdf11-concepts/#dfn-default-graph) and [variables](https://www.w3.org/TR/sparql11-query/#sparqlQueryVariables).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub enum GraphNamePattern {
+    NamedNode(NamedNode),
+    DefaultGraph,
+    Variable(Variable),
+}
+
+impl GraphNamePattern {
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        match self {
+            Self::NamedNode(node) => write!(f, "{node}"),
+            Self::DefaultGraph => f.write_str("default"),
+            Self::Variable(var) => write!(f, "{var}"),
+        }
+    }
+}
+
+impl fmt::Display for GraphNamePattern {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NamedNode(node) => node.fmt(f),
+            Self::DefaultGraph => f.write_str("DEFAULT"),
+            Self::Variable(var) => var.fmt(f),
+        }
+    }
+}
+
+impl From<NamedNode> for GraphNamePattern {
+    #[inline]
+    fn from(node: NamedNode) -> Self {
+        Self::NamedNode(node)
+    }
+}
+
+impl From<Variable> for GraphNamePattern {
+    #[inline]
+    fn from(var: Variable) -> Self {
+        Self::Variable(var)
+    }
+}
+
+impl From<GraphName> for GraphNamePattern {
+    #[inline]
+    fn from(graph_name: GraphName) -> Self {
+        match graph_name {
+            GraphName::NamedNode(node) => node.into(),
+            GraphName::DefaultGraph => Self::DefaultGraph,
+        }
+    }
+}
+
+impl From<NamedNodePattern> for GraphNamePattern {
+    #[inline]
+    fn from(graph_name: NamedNodePattern) -> Self {
+        match graph_name {
+            NamedNodePattern::NamedNode(node) => node.into(),
+            NamedNodePattern::Variable(var) => var.into(),
+        }
+    }
+}
+
+/// A [triple pattern](https://www.w3.org/TR/sparql11-query/#defn_TriplePattern).
+///
+/// Note that `spargebra` follows SPARQL 1.2 and converts blank node to variables in patterns.
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct TriplePattern {
+    pub subject: TermPattern,
+    pub predicate: NamedNodePattern,
+    pub object: TermPattern,
+}
+
+impl TriplePattern {
+    pub(crate) fn new(
+        subject: impl Into<TermPattern>,
+        predicate: impl Into<NamedNodePattern>,
+        object: impl Into<TermPattern>,
+    ) -> Self {
+        Self {
+            subject: subject.into(),
+            predicate: predicate.into(),
+            object: object.into(),
+        }
+    }
+
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        f.write_str("(triple ")?;
+        self.subject.fmt_sse(f)?;
+        f.write_str(" ")?;
+        self.predicate.fmt_sse(f)?;
+        f.write_str(" ")?;
+        self.object.fmt_sse(f)?;
+        f.write_str(")")
+    }
+}
+
+impl fmt::Display for TriplePattern {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} {}", self.subject, self.predicate, self.object)
+    }
+}
+
+#[cfg(feature = "sparql-12")]
+impl From<GroundTriple> for TriplePattern {
+    #[inline]
+    fn from(triple: GroundTriple) -> Self {
+        Self {
+            subject: triple.subject.into(),
+            predicate: triple.predicate.into(),
+            object: triple.object.into(),
+        }
+    }
+}
+
+/// A triple with variables.
+///
+/// It is used in [`ConstructQuery`](crate::query::ConstructQuery).
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct TripleTemplate {
+    pub subject: TermTemplate,
+    pub predicate: NamedNodePattern,
+    pub object: TermTemplate,
+}
+
+impl TripleTemplate {
+    pub(crate) fn new(
+        subject: impl Into<TermTemplate>,
+        predicate: impl Into<NamedNodePattern>,
+        object: impl Into<TermTemplate>,
+    ) -> Self {
+        Self {
+            subject: subject.into(),
+            predicate: predicate.into(),
+            object: object.into(),
+        }
+    }
+
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        f.write_str("(triple ")?;
+        self.subject.fmt_sse(f)?;
+        f.write_str(" ")?;
+        self.predicate.fmt_sse(f)?;
+        f.write_str(" ")?;
+        self.object.fmt_sse(f)?;
+        f.write_str(")")
+    }
+}
+
+impl fmt::Display for TripleTemplate {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {} {}", self.subject, self.predicate, self.object)
+    }
+}
+
+impl From<Triple> for TripleTemplate {
+    #[inline]
+    fn from(triple: Triple) -> Self {
+        Self {
+            subject: triple.subject.into(),
+            predicate: triple.predicate.into(),
+            object: triple.object.into(),
+        }
+    }
+}
+
+#[cfg(feature = "sparql-12")]
+impl From<TriplePattern> for TripleTemplate {
+    #[inline]
+    fn from(triple: TriplePattern) -> Self {
+        Self {
+            subject: triple.subject.into(),
+            predicate: triple.predicate,
+            object: triple.object.into(),
+        }
+    }
+}
+
+/// A [triple pattern](https://www.w3.org/TR/sparql11-query/#defn_TriplePattern) in a specific graph.
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct QuadPattern {
+    pub subject: TermPattern,
+    pub predicate: NamedNodePattern,
+    pub object: TermPattern,
+    pub graph_name: GraphNamePattern,
+}
+
+impl QuadPattern {
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        if self.graph_name != GraphNamePattern::DefaultGraph {
+            f.write_str("(graph ")?;
+            self.graph_name.fmt_sse(f)?;
+            f.write_str(" (")?;
+        }
+        f.write_str("(triple ")?;
+        self.subject.fmt_sse(f)?;
+        f.write_str(" ")?;
+        self.predicate.fmt_sse(f)?;
+        f.write_str(" ")?;
+        self.object.fmt_sse(f)?;
+        f.write_str(")")?;
+        if self.graph_name != GraphNamePattern::DefaultGraph {
+            f.write_str("))")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for QuadPattern {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.graph_name == GraphNamePattern::DefaultGraph {
+            write!(f, "{} {} {}", self.subject, self.predicate, self.object)
+        } else {
+            write!(
+                f,
+                "GRAPH {} {{ {} {} {} }}",
+                self.graph_name, self.subject, self.predicate, self.object
+            )
+        }
+    }
+}
+
+/// A [`TripleTemplate`] in a specific graph
+#[derive(Eq, PartialEq, Debug, Clone, Hash)]
+pub struct QuadTemplate {
+    pub subject: TermTemplate,
+    pub predicate: NamedNodePattern,
+    pub object: TermTemplate,
+    pub graph_name: GraphNamePattern,
+}
+
+impl QuadTemplate {
+    pub(crate) fn new(
+        subject: impl Into<TermTemplate>,
+        predicate: impl Into<NamedNodePattern>,
+        object: impl Into<TermTemplate>,
+        graph_name: impl Into<GraphNamePattern>,
+    ) -> Self {
+        Self {
+            subject: subject.into(),
+            predicate: predicate.into(),
+            object: object.into(),
+            graph_name: graph_name.into(),
+        }
+    }
+
+    /// Formats using the [SPARQL S-Expression syntax](https://jena.apache.org/documentation/notes/sse.html).
+    pub(crate) fn fmt_sse(&self, f: &mut impl Write) -> fmt::Result {
+        if self.graph_name != GraphNamePattern::DefaultGraph {
+            f.write_str("(graph ")?;
+            self.graph_name.fmt_sse(f)?;
+            f.write_str(" (")?;
+        }
+        f.write_str("(triple ")?;
+        self.subject.fmt_sse(f)?;
+        f.write_str(" ")?;
+        self.predicate.fmt_sse(f)?;
+        f.write_str(" ")?;
+        self.object.fmt_sse(f)?;
+        f.write_str(")")?;
+        if self.graph_name != GraphNamePattern::DefaultGraph {
+            f.write_str("))")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for QuadTemplate {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.graph_name == GraphNamePattern::DefaultGraph {
+            write!(f, "{} {} {}", self.subject, self.predicate, self.object)
+        } else {
+            write!(
+                f,
+                "GRAPH {} {{ {} {} {} }}",
+                self.graph_name, self.subject, self.predicate, self.object
+            )
+        }
+    }
+}

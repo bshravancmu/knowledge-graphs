@@ -1,0 +1,171 @@
+//  Copyright 2021, University of Freiburg,
+//  Chair of Algorithms and Data Structures.
+//  Author: Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
+
+#ifndef QLEVER_PROGRAMOPTIONSHELPERS_H
+#define QLEVER_PROGRAMOPTIONSHELPERS_H
+
+#include <boost/program_options.hpp>
+#include <vector>
+
+#include "global/RuntimeParameters.h"
+#include "index/TextScoringEnum.h"
+#include "index/vocabulary/VocabularyType.h"
+#include "util/Concepts.h"
+#include "util/EnumWithStringsProgramOptions.h"
+#include "util/MemorySize/MemorySize.h"
+#include "util/Parameters.h"
+namespace ad_utility {
+
+// Shared body for the boost::program_options `validate` overloads whose only
+// per-type difference is how a single option string is converted to the target
+// type. `convertFromString(s)` must return the value to store in `v`.
+CPP_template(typename ConvertFromString)(
+    requires ql::concepts::invocable<
+        ConvertFromString,
+        const std::string&>) void validateFromString(boost::any& v,
+                                                     const std::vector<
+                                                         std::string>& values,
+                                                     ConvertFromString
+                                                         convertFromString) {
+  using namespace boost::program_options;
+  // Make sure no previous assignment to `v` was made.
+  validators::check_first_occurrence(v);
+  // Extract the single option string (throws if there is more than one).
+  const std::string& s = validators::get_single_string(values);
+  v = convertFromString(s);
+}
+
+// An implicit wrapper that can be implicitly converted to and from `size_t`.
+// When using it as a target value in `boost::program_options` it will only
+// accept positive values because of the `validate` function below.
+class NonNegative {
+ public:
+  operator size_t() const { return _value; }
+  NonNegative(size_t value) : _value{value} {}
+  NonNegative() = default;
+
+ private:
+  size_t _value;
+};
+
+CPP_template(typename Stream, typename NN)(
+    requires ad_utility::SimilarTo<NN, NonNegative>) Stream&
+operator<<(Stream& stream, NN&& nonNegative) {
+  return stream << static_cast<size_t>(nonNegative);
+}
+
+// This function is required  to use the `NonNegative` class in the
+// `boost::program_options`. It throws an exception when parsing a negative
+// value.
+inline void validate(boost::any& v, const std::vector<std::string>& values,
+                     NonNegative*, int) {
+  using namespace boost::program_options;
+  validators::check_first_occurrence(v);
+
+  std::string const& s = validators::get_single_string(values);
+  if (s.empty() || s[0] == '-') {
+    throw std::runtime_error("Expected a positive number but got " + s + ".");
+  }
+
+  v = NonNegative{boost::lexical_cast<size_t>(s)};
+}
+
+// This function is required  to use `std::optional` in
+// `boost::program_options`.
+template <typename T>
+void validate(boost::any& v, const std::vector<std::string>& values,
+              std::optional<T>*, int) {
+  // First parse as a T
+  T* dummy = nullptr;
+  using namespace boost::program_options;
+  validate(v, values, dummy, 0);
+
+  // Wrap the T inside std::optional
+  AD_CONTRACT_CHECK(!v.empty());
+  v = std::optional<T>(boost::any_cast<T>(v));
+}
+
+// This function is required  to use `MemorySize` in `boost::program_options`.
+inline void validate(boost::any& v, const std::vector<std::string>& values,
+                     MemorySize*, int) {
+  validateFromString(v, values,
+                     [](const std::string& s) { return MemorySize::parse(s); });
+}
+
+/// Create `boost::program_options::value`s (command-line options) from
+/// `ad_utility::Parameters`
+template <typename Parameters>
+class ParameterToProgramOptionFactory {
+ private:
+  Parameters* _parameters;
+
+ public:
+  // Construct from a pointer to `ad_utility::Parameters`
+  explicit ParameterToProgramOptionFactory(Parameters* parameters)
+      : _parameters{parameters} {
+    AD_CONTRACT_CHECK(_parameters != nullptr);
+  }
+
+  // Return a `boost::program_options::value` that is connected to the
+  // parameter identified by `ParameterPtr` (a pointer-to-member into
+  // `Parameters`). The current value of the parameter is used as the default,
+  // and parsing the option from the command line writes back into the
+  // parameter via the attached notifier.
+  template <auto ParameterPtr>
+  auto getProgramOption() {
+    // Read the current value of the parameter; it will become the default
+    // value of the command-line option. The read lock is bound to a named
+    // local so it is held across both reads below.
+    auto lock = globalRuntimeParameters.rlock();
+    auto defaultValue = std::invoke(ParameterPtr, *lock).get();
+    // This is needed for types that boost can't convert to string.
+    auto defaultValueAsString = std::invoke(ParameterPtr, *lock).toString();
+
+    // The underlying type for the parameter.
+    using Type = decltype(defaultValue);
+
+    // The function that is called when the command-line option is called.
+    // It sets the parameter to the parsed value.
+    auto setParameterToValue{[](const Type& value) {
+      std::invoke(ParameterPtr, *globalRuntimeParameters.wlock()).set(value);
+    }};
+
+    return boost::program_options::value<Type>()
+        ->default_value(defaultValue, defaultValueAsString)
+        ->notifier(setParameterToValue);
+  }
+};
+
+// This function is required  to use `VocabularyEnum` in
+// `boost::program_options`.
+inline void validate(boost::any& v, const std::vector<std::string>& values,
+                     VocabularyType*, int) {
+  validateFromString(v, values, [](const std::string& s) {
+    return VocabularyType::fromString(s);
+  });
+}
+
+// This function is required to use `DeduplicationMode` in
+// `boost::program_options`.
+inline void validate(boost::any& v, const std::vector<std::string>& values,
+                     DeduplicationMode*, int) {
+  validateFromString(v, values, [](const std::string& s) {
+    return DeduplicationModeFromString{}(s);
+  });
+}
+
+}  // namespace ad_utility
+
+namespace qlever {
+// This function is required  to use `TextScoringMetric` in
+// `boost::program_options`.
+inline void validate(boost::any& v, const std::vector<std::string>& values,
+                     TextScoringMetric*, int) {
+  ad_utility::validateFromString(v, values, [](const std::string& s) {
+    return getTextScoringMetricFromString(s);
+  });
+}
+}  // namespace qlever
+
+#endif  // QLEVER_PROGRAMOPTIONSHELPERS_H

@@ -1,0 +1,10 @@
+text_country	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?c WHERE { <word:country> <in-text> ?c }
+text_database-research	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?c WHERE { <word:database> <in-text> ?c . <word:research> <in-text> ?c }
+text_microsoft-computer	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?c WHERE { <word:microsoft> <in-text> ?c . <word:computer> <in-text> ?c }
+text_entmircosoft-computer	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?c WHERE { fb:m.04sv4 <in-text> ?c . <word:computer> <in-text> ?c }
+text_car-manufact*	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?c WHERE { <word:car> <in-text> ?c . <word:manufact*> <in-text> ?c }
+text_entity-ow-semantic-search	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?e WHERE { ?e <in-text> ?c . <word:semantic> <in-text> ?c . <word:search> <in-text> ?c }
+text_entity-ow-international	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?e WHERE { ?e <in-text> ?c . <word:international> <in-text> ?c  }
+text_entity-ow-power-source	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?e WHERE { ?e <in-text> ?c . <word:power> <in-text> ?c  . <word:source> <in-text> ?c  }
+text_entity-ow-micro*	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?e WHERE { ?e <in-text> ?c . <word:micro*> <in-text> ?c }
+text_entity-ow-open*-prob	PREFIX fb: <http://rdf.freebase.com/ns/> SELECT ?e WHERE { ?e <in-text> ?c . <word:open*> <in-text> ?c  . <word:prob*> <in-text> ?c  }
