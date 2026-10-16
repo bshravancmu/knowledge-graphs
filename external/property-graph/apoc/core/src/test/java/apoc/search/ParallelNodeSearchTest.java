@@ -1,0 +1,221 @@
+/*
+ * Copyright (c) "Neo4j"
+ * Neo4j Sweden AB [http://neo4j.com]
+ *
+ * This file is part of Neo4j.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package apoc.search;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import apoc.util.TestUtil;
+import apoc.util.Util;
+import com.neo4j.test.extension.EnterpriseDbmsExtension;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.neo4j.graphdb.GraphDatabaseService;
+import org.neo4j.test.extension.Inject;
+
+@EnterpriseDbmsExtension(createDatabasePerTest = false)
+class ParallelNodeSearchTest {
+
+    @Inject
+    GraphDatabaseService db;
+
+    @BeforeAll
+    void initDb() {
+        TestUtil.registerProcedure(db, ParallelNodeSearch.class);
+        db.executeTransactionally(Util.readResourceFile("movies.cypher"));
+    }
+
+    @Test
+    void testMultiSearchNode() {
+        String query =
+                "call apoc.search.node('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','CONTAINS','her') yield node as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(6L, row.get("c")));
+        query =
+                "call apoc.search.node('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','STARTS WITH','Tom') yield node as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(4L, row.get("c")));
+        query =
+                "call apoc.search.node('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','ENDS WITH','s') yield node as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(29L, row.get("c")));
+    }
+
+    @Test
+    void testMultiSearchNodeAll() {
+        String query =
+                "call apoc.search.nodeAll('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','CONTAINS','her') yield node as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(6L, row.get("c")));
+        query =
+                "call apoc.search.nodeAll('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','STARTS WITH','Tom') yield node as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(4L, row.get("c")));
+        query =
+                "call apoc.search.nodeAll('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','ENDS WITH','s') yield node as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(29L, row.get("c")));
+    }
+
+    @Test
+    void testMultiSearchNodeReduced() {
+        String query =
+                "call apoc.search.nodeReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','CONTAINS','her') yield id as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(6L, row.get("c")));
+        query =
+                "call apoc.search.nodeReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','STARTS WITH','Tom') yield values as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(4L, row.get("c")));
+        query =
+                "call apoc.search.nodeReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','ENDS WITH','s') yield labels as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(29L, row.get("c")));
+    }
+
+    @Test
+    void testMultiSearchNodeAllReduced() {
+        String query =
+                "call apoc.search.nodeAllReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','CONTAINS','her') yield labels as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(6L, row.get("c")));
+        query =
+                "call apoc.search.nodeAllReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','STARTS WITH','Tom') yield values as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(4L, row.get("c")));
+        query =
+                "call apoc.search.nodeAllReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','ENDS WITH','s') yield id as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(29L, row.get("c")));
+    }
+
+    @Test
+    void testMultiSearchNodeAllReducedMapParam() {
+        String query =
+                "call apoc.search.nodeAllReduced({Person: 'name', Movie: ['title','tagline']},'CONTAINS','her') yield labels as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(6L, row.get("c")));
+        query =
+                "call apoc.search.nodeAllReduced({Person: 'name', Movie: ['title','tagline']},'STARTS WITH','Tom') yield values as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(4L, row.get("c")));
+        query =
+                "call apoc.search.nodeAllReduced({Person: 'name', Movie: ['title','tagline']},'ENDS WITH','s') yield id as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(29L, row.get("c")));
+    }
+
+    @Test
+    void testMultiSearchNodeNumberComparison() {
+        String query =
+                "call apoc.search.nodeAllReduced({Person: 'born', Movie: ['released']},'>',2000) yield labels as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(12L, row.get("c")));
+    }
+
+    @Test
+    void testMultiSearchNodeNumberExactComparison() {
+        String query =
+                "call apoc.search.nodeAllReduced({Person: 'born', Movie: ['released']},'=',2000) yield labels as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(3L, row.get("c")));
+        query =
+                "call apoc.search.nodeAllReduced({Person: 'born', Movie: ['released']},'exact',2000) yield labels as n return count(n) as c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(3L, row.get("c")));
+    }
+
+    @Test
+    void testMultiSearchReduced() {
+        String query =
+                "CALL apoc.search.multiSearchReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','CONTAINS','her') YIELD id RETURN count(id) AS c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(6L, row.get("c")));
+        query =
+                "CALL apoc.search.multiSearchReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','STARTS WITH','Tom') YIELD values RETURN count(values) AS c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(4L, row.get("c")));
+        query =
+                "CALL apoc.search.multiSearchReduced('{Person: \"name\",Movie: [\"title\",\"tagline\"]}','ENDS WITH','s') YIELD labels RETURN count(labels) AS c";
+        TestUtil.testCall(db, query, (row) -> assertEquals(29L, row.get("c")));
+    }
+
+    @Test
+    void testMultiSearchReducedMergesMultiplePropertyMatches() {
+        db.executeTransactionally("CREATE (:SearchTest {alpha: 'hello world', beta: 'hello there'})");
+        try {
+            TestUtil.testCall(
+                    db,
+                    "CALL apoc.search.multiSearchReduced({SearchTest: ['alpha', 'beta']}, 'contains', 'hello')"
+                            + " YIELD labels, values RETURN labels, values",
+                    row -> {
+                        assertEquals(java.util.List.of("SearchTest"), row.get("labels"));
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> values = (Map<String, Object>) row.get("values");
+                        assertEquals(2, values.size());
+                        assertEquals("hello world", values.get("alpha"));
+                        assertEquals("hello there", values.get("beta"));
+                    });
+        } finally {
+            db.executeTransactionally("MATCH (n:SearchTest) DELETE n");
+        }
+    }
+
+    @Test
+    void testSearchDoesntAllowCypherInjectionViaLabel() {
+        long personsBefore = TestUtil.singleResultFirstColumn(db, "MATCH (n:Person) RETURN count(n) AS c");
+
+        // a backtick in a label key, together with an injected clause commented out with `//`,
+        // would break out of the backtick-quoted `MATCH (n:`label`)` if backticks aren't escaped
+        String maliciousLabel =
+                "Person`) WHERE 1=0 WITH 1 AS x MATCH (m) DETACH DELETE m RETURN id(m) AS id, 0 AS value //";
+        Map<String, Object> labelProps = Map.of(maliciousLabel, "name");
+
+        TestUtil.testCall(
+                db,
+                "CALL apoc.search.nodeAllReduced($labelProps, 'exact', 'x') YIELD id RETURN count(id) AS c",
+                Map.of("labelProps", labelProps),
+                row -> assertEquals(0L, row.get("c")));
+
+        // the injected `DETACH DELETE` must not have executed
+        long personsAfter = TestUtil.singleResultFirstColumn(db, "MATCH (n:Person) RETURN count(n) AS c");
+        assertEquals(personsBefore, personsAfter);
+    }
+
+    @Test
+    void testSearchDoesntAllowCypherInjectionViaProperty() {
+        long personsBefore = TestUtil.singleResultFirstColumn(db, "MATCH (n:Person) RETURN count(n) AS c");
+
+        // same injection, but via the property-name position instead of the label position
+        String maliciousProp =
+                "name`) WHERE 1=0 WITH 1 AS x MATCH (m) DETACH DELETE m RETURN id(m) AS id, 0 AS value //";
+        Map<String, Object> labelProps = Map.of("Person", maliciousProp);
+
+        TestUtil.testCall(
+                db,
+                "CALL apoc.search.nodeAllReduced($labelProps, 'exact', 'x') YIELD id RETURN count(id) AS c",
+                Map.of("labelProps", labelProps),
+                row -> assertEquals(0L, row.get("c")));
+
+        // the injected `DETACH DELETE` must not have executed
+        long personsAfter = TestUtil.singleResultFirstColumn(db, "MATCH (n:Person) RETURN count(n) AS c");
+        assertEquals(personsBefore, personsAfter);
+    }
+
+    @Test
+    void testNodeReducedMergesMultiplePropertyMatches() {
+        db.executeTransactionally("CREATE (:SearchTest {alpha: 'hello world', beta: 'hello there'})");
+        try {
+            TestUtil.testCall(
+                    db,
+                    "CALL apoc.search.nodeReduced({SearchTest: ['alpha', 'beta']}, 'contains', 'hello')"
+                            + " YIELD labels, values RETURN labels, values",
+                    row -> {
+                        assertEquals(java.util.List.of("SearchTest"), row.get("labels"));
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> values = (Map<String, Object>) row.get("values");
+                        assertEquals(2, values.size());
+                        assertEquals("hello world", values.get("alpha"));
+                        assertEquals("hello there", values.get("beta"));
+                    });
+        } finally {
+            db.executeTransactionally("MATCH (n:SearchTest) DELETE n");
+        }
+    }
+}

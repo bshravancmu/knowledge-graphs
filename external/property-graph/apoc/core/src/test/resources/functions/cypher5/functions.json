@@ -1,0 +1,1564 @@
+[
+  {
+    "isDeprecated": false,
+    "aggregating": true,
+    "signature": "apoc.agg.graph(path :: ANY) :: MAP",
+    "name": "apoc.agg.graph",
+    "description": "Returns all distinct `NODE` and `RELATIONSHIP` values collected into a `MAP` with the keys `nodes` and `relationships`.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "path",
+        "description": "A path to return nodes and relationships from.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": true,
+    "signature": "apoc.agg.product(value :: INTEGER | FLOAT) :: INTEGER | FLOAT",
+    "name": "apoc.agg.product",
+    "description": "Returns the product of all non-null `INTEGER` and `FLOAT` values in the collection.",
+    "returnDescription": "INTEGER | FLOAT",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "value",
+        "description": "A value to be multiplied in the aggregate.",
+        "isDeprecated": false,
+        "type": "INTEGER | FLOAT"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.contains(coll :: LIST<ANY>, value :: ANY) :: BOOLEAN",
+    "name": "apoc.coll.contains",
+    "description": "Returns whether or not the given value exists in the given collection.",
+    "returnDescription": "BOOLEAN",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to search for the given value.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "value",
+        "description": "The value in the list to check for the existence of.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.containsAll(coll1 :: LIST<ANY>, coll2 :: LIST<ANY>) :: BOOLEAN",
+    "name": "apoc.coll.containsAll",
+    "description": "Returns whether or not all of the given values exist in the given collection.",
+    "returnDescription": "BOOLEAN",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll1",
+        "description": "The list to search for the given values in.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "coll2",
+        "description": "The list of values in the given list to check for the existence of.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.fill(item :: STRING, count :: INTEGER) :: LIST<ANY>",
+    "name": "apoc.coll.fill",
+    "description": "Returns a `LIST<ANY>` with the given count of items.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "item",
+        "description": "The item to be present in the returned list.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "count",
+        "description": "The number of times the given item should appear in the returned list.",
+        "isDeprecated": false,
+        "type": "INTEGER"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.flatten(coll :: LIST<ANY>, recursive = false :: BOOLEAN) :: LIST<ANY>",
+    "name": "apoc.coll.flatten",
+    "description": "Flattens the given `LIST<ANY>` (to flatten nested `LIST<ANY>` values, set recursive to true).",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to flatten.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "recursive",
+        "description": "Whether nested list items should also be flattened.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=false, type=BOOLEAN}",
+        "type": "BOOLEAN"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.indexOf(coll :: LIST<ANY>, value :: ANY) :: INTEGER",
+    "name": "apoc.coll.indexOf",
+    "description": "Returns the index for the first occurrence of the specified value in the `LIST<ANY>`.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to find the given value in.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "value",
+        "description": "The value to find the first occurrence of in the given list.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.insert(coll :: LIST<ANY>, index :: INTEGER, value :: ANY) :: LIST<ANY>",
+    "name": "apoc.coll.insert",
+    "description": "Inserts a value into the specified index in the `LIST<ANY>`.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to insert a value into.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "index",
+        "description": "The position in the list to insert the given value.",
+        "isDeprecated": false,
+        "type": "INTEGER"
+      },
+      {
+        "name": "value",
+        "description": "The value to be inserted.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.max(values :: LIST<ANY>) :: ANY",
+    "name": "apoc.coll.max",
+    "description": "Returns the maximum of all values in the given `LIST<ANY>`.",
+    "returnDescription": "ANY",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "values",
+        "description": "The list to find the maximum in.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.min(values :: LIST<ANY>) :: ANY",
+    "name": "apoc.coll.min",
+    "description": "Returns the minimum of all values in the given `LIST<ANY>`.",
+    "returnDescription": "ANY",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "values",
+        "description": "The list to find the minimum in.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.occurrences(coll :: LIST<ANY>, item :: ANY) :: INTEGER",
+    "name": "apoc.coll.occurrences",
+    "description": "Returns the count of the given item in the collection.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to collect the count of the given value from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "item",
+        "description": "The value to count in the given list.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.pairWithOffset(coll :: LIST<ANY>, offset :: INTEGER) :: LIST<ANY>",
+    "name": "apoc.coll.pairWithOffset",
+    "description": "Returns a `LIST<ANY>` of pairs defined by the offset.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to create pairs from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "offset",
+        "description": "The offset to make each pair with from the given list.",
+        "isDeprecated": false,
+        "type": "INTEGER"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.pairs(list :: LIST<ANY>) :: LIST<ANY>",
+    "name": "apoc.coll.pairs",
+    "description": "Returns a `LIST<ANY>` of adjacent elements in the `LIST<ANY>` ([1,2],[2,3],[3,null]).",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "list",
+        "description": "The list to create pairs from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.pairsMin(list :: LIST<ANY>) :: LIST<ANY>",
+    "name": "apoc.coll.pairsMin",
+    "description": "Returns `LIST<ANY>` values of adjacent elements in the `LIST<ANY>` ([1,2],[2,3]), skipping the final element.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "list",
+        "description": "The list to create pairs from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.partition(coll :: LIST<ANY>, batchSize :: INTEGER) :: LIST<ANY>",
+    "name": "apoc.coll.partition",
+    "description": "Partitions the original `LIST<ANY>` into a new `LIST<ANY>` of the given batch size.\nThe final `LIST<ANY>` may be smaller than the given batch size.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to partition into smaller sublists.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "batchSize",
+        "description": "The max size of each partitioned sublist.",
+        "isDeprecated": false,
+        "type": "INTEGER"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.randomItem(coll :: LIST<ANY>) :: ANY",
+    "name": "apoc.coll.randomItem",
+    "description": "Returns a random item from the `LIST<ANY>`, or null on `LIST<NOTHING>` or `LIST<NULL>`.",
+    "returnDescription": "ANY",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to return a random item from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.remove(coll :: LIST<ANY>, index :: INTEGER, length = 1 :: INTEGER) :: LIST<ANY>",
+    "name": "apoc.coll.remove",
+    "description": "Removes a range of values from the `LIST<ANY>`, beginning at position index for the given length of values.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to remove values from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "index",
+        "description": "The starting index in the list to begin removing values from.",
+        "isDeprecated": false,
+        "type": "INTEGER"
+      },
+      {
+        "name": "length",
+        "description": "The number of values to remove.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=1, type=INTEGER}",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.sort(coll :: LIST<ANY>) :: LIST<ANY>",
+    "name": "apoc.coll.sort",
+    "description": "Sorts the given `LIST<ANY>` into ascending order.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list to be sorted.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.sortNodes(coll :: LIST<NODE>, prop :: STRING) :: LIST<ANY>",
+    "name": "apoc.coll.sortNodes",
+    "description": "Sorts the given `LIST<NODE>` by the property of the nodes into descending order.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list of nodes to be sorted.",
+        "isDeprecated": false,
+        "type": "LIST<NODE>"
+      },
+      {
+        "name": "prop",
+        "description": "The property key on the node to be used to sort the list by.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.stdev(list :: LIST<INTEGER | FLOAT>, isBiasCorrected = true :: BOOLEAN) :: INTEGER | FLOAT",
+    "name": "apoc.coll.stdev",
+    "description": "Returns sample or population standard deviation with `isBiasCorrected` true or false respectively.",
+    "returnDescription": "INTEGER | FLOAT",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "list",
+        "description": "A list to collect the standard deviation from.",
+        "isDeprecated": false,
+        "type": "LIST<INTEGER | FLOAT>"
+      },
+      {
+        "name": "isBiasCorrected",
+        "description": "Will perform a sample standard deviation if `isBiasCorrected`, otherwise a population standard deviation is performed.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=true, type=BOOLEAN}",
+        "type": "BOOLEAN"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.sum(coll :: LIST<INTEGER | FLOAT>) :: FLOAT",
+    "name": "apoc.coll.sum",
+    "description": "Returns the sum of all the `INTEGER | FLOAT` in the `LIST<INTEGER | FLOAT>`.",
+    "returnDescription": "FLOAT",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list of numbers to create a sum from.",
+        "isDeprecated": false,
+        "type": "LIST<INTEGER | FLOAT>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.sumLongs(coll :: LIST<INTEGER | FLOAT>) :: INTEGER",
+    "name": "apoc.coll.sumLongs",
+    "description": "Returns the sum of all the `INTEGER | FLOAT` in the `LIST<INTEGER | FLOAT>`.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list of numbers to create a sum from after each is cast to a java Long value.",
+        "isDeprecated": false,
+        "type": "LIST<INTEGER | FLOAT>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.toSet(coll :: LIST<ANY>) :: LIST<ANY>",
+    "name": "apoc.coll.toSet",
+    "description": "Returns a unique `LIST<ANY>` from the given `LIST<ANY>`.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "coll",
+        "description": "The list of values to remove all duplicates from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.unionAll(list1 :: LIST<ANY>, list2 :: LIST<ANY>) :: LIST<ANY>",
+    "name": "apoc.coll.unionAll",
+    "description": "Returns the full union of the two given `LIST<ANY>` values (duplicates included).",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "list1",
+        "description": "The list of values to compare against `list2` and form a union from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "list2",
+        "description": "The list of values to compare against `list1` and form a union from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.coll.zip(list1 :: LIST<ANY>, list2 :: LIST<ANY>) :: LIST<ANY>",
+    "name": "apoc.coll.zip",
+    "description": "Returns the two given `LIST<ANY>` values zipped together as a `LIST<LIST<ANY>>`.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "list1",
+        "description": "The list to zip together with `list2`.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "list2",
+        "description": "The list to zip together with `list1`.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.convert.toList(value :: ANY) :: LIST<ANY>",
+    "name": "apoc.convert.toList",
+    "description": "Converts the given value into a `LIST<ANY>`.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "value",
+        "description": "The value to convert into a list.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.convert.toSet(list :: ANY) :: LIST<ANY>",
+    "name": "apoc.convert.toSet",
+    "description": "Converts the given value into a set represented in Cypher as a `LIST<ANY>`.",
+    "returnDescription": "LIST<ANY>",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "list",
+        "description": "The list to convert into a set.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": true,
+    "aggregating": false,
+    "signature": "apoc.create.uuid() :: STRING",
+    "name": "apoc.create.uuid",
+    "description": "Returns a UUID.",
+    "returnDescription": "STRING",
+    "deprecatedBy": "Neo4j randomUUID() function",
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": []
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.create.virtual.fromNode(node :: NODE, propertyNames :: LIST<STRING>, config = {} :: MAP) :: NODE",
+    "name": "apoc.create.virtual.fromNode",
+    "description": "Returns a virtual `NODE` from the given existing `NODE`. The virtual `NODE` only contains the requested properties.",
+    "returnDescription": "NODE",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "node",
+        "description": "The node to generate a virtual node from.",
+        "isDeprecated": false,
+        "type": "NODE"
+      },
+      {
+        "name": "propertyNames",
+        "description": "The properties to copy to the virtual node.",
+        "isDeprecated": false,
+        "type": "LIST<STRING>"
+      },
+      {
+        "name": "config",
+        "description": "{ wrapNodeIds = false :: BOOLEAN }",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value={}, type=MAP}",
+        "type": "MAP"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.date.convertFormat(temporal :: STRING, currentFormat :: STRING, convertTo = yyyy-MM-dd :: STRING) :: STRING",
+    "name": "apoc.date.convertFormat",
+    "description": "Converts a `STRING` of one type of date format into a `STRING` of another type of date format.",
+    "returnDescription": "STRING",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "temporal",
+        "description": "A string representation of a temporal value.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "currentFormat",
+        "description": "The format the given temporal is formatted as.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "convertTo",
+        "description": "The format to convert the given temporal value to.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=yyyy-MM-dd, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.date.currentTimestamp() :: INTEGER",
+    "name": "apoc.date.currentTimestamp",
+    "description": "Returns the current Unix epoch timestamp in milliseconds.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": []
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.date.field(time :: INTEGER, unit = d :: STRING, timezone = UTC :: STRING) :: INTEGER",
+    "name": "apoc.date.field",
+    "description": "Returns the value of one field from the given date time.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "time",
+        "description": "The timestamp in ms since epoch to return a field from.",
+        "isDeprecated": false,
+        "type": "INTEGER"
+      },
+      {
+        "name": "unit",
+        "description": "The unit of the field to return the value of.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=d, type=STRING}",
+        "type": "STRING"
+      },
+      {
+        "name": "timezone",
+        "description": "The timezone the given timestamp is in.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=UTC, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.date.fields(date :: STRING, pattern = yyyy-MM-dd HH:mm:ss :: STRING) :: MAP",
+    "name": "apoc.date.fields",
+    "description": "Splits the given date into fields returning a `MAP` containing the values of each field.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "date",
+        "description": "A string representation of a temporal value.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "pattern",
+        "description": "The format the given temporal is formatted as.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=yyyy-MM-dd HH:mm:ss, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.date.format(time :: INTEGER, unit = ms :: STRING, format = yyyy-MM-dd HH:mm:ss :: STRING, timezone =  :: STRING) :: STRING",
+    "name": "apoc.date.format",
+    "description": "Returns a `STRING` representation of the time value.\nThe time unit (default: ms), date format (default: ISO), and time zone (default: current time zone) can all be changed.",
+    "returnDescription": "STRING",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "time",
+        "description": "The timestamp since epoch to format.",
+        "isDeprecated": false,
+        "type": "INTEGER"
+      },
+      {
+        "name": "unit",
+        "description": "The unit of the given timestamp.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=ms, type=STRING}",
+        "type": "STRING"
+      },
+      {
+        "name": "format",
+        "description": "The format to convert the given temporal value to.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=yyyy-MM-dd HH:mm:ss, type=STRING}",
+        "type": "STRING"
+      },
+      {
+        "name": "timezone",
+        "description": "The timezone the given timestamp is in.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.date.fromISO8601(time :: STRING) :: INTEGER",
+    "name": "apoc.date.fromISO8601",
+    "description": "Converts the given date `STRING` (ISO8601) to an `INTEGER` representing the time value in milliseconds.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "time",
+        "description": "The datetime to convert to ms.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.date.parse(time :: STRING, unit = ms :: STRING, format = yyyy-MM-dd HH:mm:ss :: STRING, timezone =  :: STRING) :: INTEGER",
+    "name": "apoc.date.parse",
+    "description": "Parses the given date `STRING` from a specified format into the specified time unit.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "time",
+        "description": "The datetime to convert.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "unit",
+        "description": "The conversion unit.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=ms, type=STRING}",
+        "type": "STRING"
+      },
+      {
+        "name": "format",
+        "description": "The format the given datetime is in.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=yyyy-MM-dd HH:mm:ss, type=STRING}",
+        "type": "STRING"
+      },
+      {
+        "name": "timezone",
+        "description": "The timezone the given datetime is in.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.date.toISO8601(time :: INTEGER, unit = ms :: STRING) :: STRING",
+    "name": "apoc.date.toISO8601",
+    "description": "Returns a `STRING` representation of a specified time value in the ISO8601 format.",
+    "returnDescription": "STRING",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "time",
+        "description": "The timestamp since epoch to format.",
+        "isDeprecated": false,
+        "type": "INTEGER"
+      },
+      {
+        "name": "unit",
+        "description": "The unit of the given timestamp.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=ms, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.map.clean(map :: MAP, keys :: LIST<STRING>, values :: LIST<ANY>) :: MAP",
+    "name": "apoc.map.clean",
+    "description": "Filters the keys and values contained in the given `LIST<ANY>` values.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "map",
+        "description": "The map to clean.",
+        "isDeprecated": false,
+        "type": "MAP"
+      },
+      {
+        "name": "keys",
+        "description": "The list of property keys to be removed.",
+        "isDeprecated": false,
+        "type": "LIST<STRING>"
+      },
+      {
+        "name": "values",
+        "description": "The list of values to be removed.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.map.fromLists(keys :: LIST<STRING>, values :: LIST<ANY>) :: MAP",
+    "name": "apoc.map.fromLists",
+    "description": "Creates a `MAP` from the keys and values in the given `LIST<ANY>` values.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "keys",
+        "description": "A list of keys to create a map from.",
+        "isDeprecated": false,
+        "type": "LIST<STRING>"
+      },
+      {
+        "name": "values",
+        "description": "A list of values associated with the keys to create a map from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.map.fromNodes(label :: STRING, prop :: STRING) :: MAP",
+    "name": "apoc.map.fromNodes",
+    "description": "Returns a `MAP` of the given prop to the node of the given label.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "label",
+        "description": "The node labels from which the map will be created.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "prop",
+        "description": "The property name to map the returned nodes by.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.map.fromPairs(pairs :: LIST<LIST<ANY>>) :: MAP",
+    "name": "apoc.map.fromPairs",
+    "description": "Creates a `MAP` from the given `LIST<LIST<ANY>>` of key-value pairs.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "pairs",
+        "description": "A list of pairs to create a map from.",
+        "isDeprecated": false,
+        "type": "LIST<LIST<ANY>>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.map.fromValues(values :: LIST<ANY>) :: MAP",
+    "name": "apoc.map.fromValues",
+    "description": "Creates a `MAP` from the alternating keys and values in the given `LIST<ANY>`.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "values",
+        "description": "A list of keys and values listed pairwise to create a map from.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.map.groupBy(values :: LIST<ANY>, key :: STRING) :: MAP",
+    "name": "apoc.map.groupBy",
+    "description": "Creates a `MAP` of the `LIST<ANY>` keyed by the given property, with single values.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "values",
+        "description": "A list of map values to be grouped.",
+        "isDeprecated": false,
+        "type": "LIST<ANY>"
+      },
+      {
+        "name": "key",
+        "description": "The key to group the map values by.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.map.merge(map1 :: MAP, map2 :: MAP) :: MAP",
+    "name": "apoc.map.merge",
+    "description": "Merges the two given `MAP` values into one `MAP`.",
+    "returnDescription": "MAP",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "map1",
+        "description": "The first map to merge with the second map.",
+        "isDeprecated": false,
+        "type": "MAP"
+      },
+      {
+        "name": "map2",
+        "description": "The second map to merge with the first map.",
+        "isDeprecated": false,
+        "type": "MAP"
+      }
+    ]
+  },
+  {
+    "isDeprecated": true,
+    "aggregating": false,
+    "signature": "apoc.map.setEntry(map :: MAP, key :: STRING, value :: ANY) :: MAP",
+    "name": "apoc.map.setEntry",
+    "description": "Adds or updates the given entry in the `MAP`.",
+    "returnDescription": "MAP",
+    "deprecatedBy": "apoc.map.setKey",
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "map",
+        "description": "The map to be updated.",
+        "isDeprecated": false,
+        "type": "MAP"
+      },
+      {
+        "name": "key",
+        "description": "The key to add or update the map with.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "value",
+        "description": "The value to set the given key to.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.math.cosh(value :: FLOAT) :: FLOAT",
+    "name": "apoc.math.cosh",
+    "description": "Returns the hyperbolic cosine.",
+    "returnDescription": "FLOAT",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "value",
+        "description": "An angle in radians.",
+        "isDeprecated": false,
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.math.coth(value :: FLOAT) :: FLOAT",
+    "name": "apoc.math.coth",
+    "description": "Returns the hyperbolic cotangent.",
+    "returnDescription": "FLOAT",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "value",
+        "description": "An angle in radians.",
+        "isDeprecated": false,
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.math.sinh(value :: FLOAT) :: FLOAT",
+    "name": "apoc.math.sinh",
+    "description": "Returns the hyperbolic sine of the given value.",
+    "returnDescription": "FLOAT",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "value",
+        "description": "An angle in radians.",
+        "isDeprecated": false,
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.math.tanh(value :: FLOAT) :: FLOAT",
+    "name": "apoc.math.tanh",
+    "description": "Returns the hyperbolic tangent of the given value.",
+    "returnDescription": "FLOAT",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "value",
+        "description": "An angle in radians.",
+        "isDeprecated": false,
+        "type": "FLOAT"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.meta.cypher.isType(value :: ANY, type :: STRING) :: BOOLEAN",
+    "name": "apoc.meta.cypher.isType",
+    "description": "Returns true if the given value matches the given type.",
+    "returnDescription": "BOOLEAN",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "value",
+        "description": "An object to check the type of.",
+        "isDeprecated": false,
+        "type": "ANY"
+      },
+      {
+        "name": "type",
+        "description": "The verification type.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.meta.cypher.type(value :: ANY) :: STRING",
+    "name": "apoc.meta.cypher.type",
+    "description": "Returns the type name of the given value.",
+    "returnDescription": "STRING",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "value",
+        "description": "An object to get the type of.",
+        "isDeprecated": false,
+        "type": "ANY"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.node.degree(node :: NODE, relTypes =  :: STRING) :: INTEGER",
+    "name": "apoc.node.degree",
+    "description": "Returns the total degrees of the given `NODE`.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "node",
+        "description": "The node to count the total number of relationships on.",
+        "isDeprecated": false,
+        "type": "NODE"
+      },
+      {
+        "name": "relTypes",
+        "description": "The relationship types to restrict the count to. Relationship types are represented using APOC's rel-direction-pattern syntax; `[<]RELATIONSHIP_TYPE1[>]|[<]RELATIONSHIP_TYPE2[>]|...`.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.node.degree.in(node :: NODE, relTypes =  :: STRING) :: INTEGER",
+    "name": "apoc.node.degree.in",
+    "description": "Returns the total number of incoming `RELATIONSHIP` values connected to the given `NODE`.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "node",
+        "description": "The node for which to count the total number of incoming relationships.",
+        "isDeprecated": false,
+        "type": "NODE"
+      },
+      {
+        "name": "relTypes",
+        "description": "The relationship type to restrict the count to.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.node.degree.out(node :: NODE, relTypes =  :: STRING) :: INTEGER",
+    "name": "apoc.node.degree.out",
+    "description": "Returns the total number of outgoing `RELATIONSHIP` values from the given `NODE`.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "node",
+        "description": "The node for which to count the total number of outgoing relationships.",
+        "isDeprecated": false,
+        "type": "NODE"
+      },
+      {
+        "name": "relTypes",
+        "description": "The relationship type to restrict the count to.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.node.relationship.exists(node :: NODE, relTypes =  :: STRING) :: BOOLEAN",
+    "name": "apoc.node.relationship.exists",
+    "description": "Returns a `BOOLEAN` based on whether the given `NODE` has a connecting `RELATIONSHIP` (or whether the given `NODE` has a connecting `RELATIONSHIP` of the given type and direction).",
+    "returnDescription": "BOOLEAN",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "node",
+        "description": "The node to check for the specified relationship types.",
+        "isDeprecated": false,
+        "type": "NODE"
+      },
+      {
+        "name": "relTypes",
+        "description": "The relationship types to check for on the given node. Relationship types are represented using APOC's rel-direction-pattern syntax; `[<]RELATIONSHIP_TYPE1[>]|[<]RELATIONSHIP_TYPE2[>]|...`.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.nodes.isDense(node :: NODE) :: BOOLEAN",
+    "name": "apoc.nodes.isDense",
+    "description": "Returns true if the given `NODE` is a dense node.",
+    "returnDescription": "BOOLEAN",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "node",
+        "description": "The node to check for being dense or not.",
+        "isDeprecated": false,
+        "type": "NODE"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.temporal.format(temporal :: ANY, format = yyyy-MM-dd :: STRING) :: STRING",
+    "name": "apoc.temporal.format",
+    "description": "Formats the given temporal value into the given time format.",
+    "returnDescription": "STRING",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "temporal",
+        "description": "A temporal value to be formatted.",
+        "isDeprecated": false,
+        "type": "ANY"
+      },
+      {
+        "name": "format",
+        "description": "The format to return the temporal value in.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=yyyy-MM-dd, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.temporal.formatDuration(input :: ANY, format :: STRING) :: STRING",
+    "name": "apoc.temporal.formatDuration",
+    "description": "Formats the given duration into the given time format.",
+    "returnDescription": "STRING",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "input",
+        "description": "The duration value to be formatted into a string.",
+        "isDeprecated": false,
+        "type": "ANY"
+      },
+      {
+        "name": "format",
+        "description": "The format to return the duration in.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.temporal.toZonedTemporal(time :: STRING, format = yyyy-MM-dd HH:mm:ss :: STRING, timezone = UTC :: STRING) :: ZONED DATETIME",
+    "name": "apoc.temporal.toZonedTemporal",
+    "description": "Parses the given date `STRING` using the specified format into the given time zone.",
+    "returnDescription": "ZONED DATETIME",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "time",
+        "description": "The date string to be parsed.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "format",
+        "description": "The format of the given date string.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=yyyy-MM-dd HH:mm:ss, type=STRING}",
+        "type": "STRING"
+      },
+      {
+        "name": "timezone",
+        "description": "The timezone the given string is in.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=UTC, type=STRING}",
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.text.indexOf(text :: STRING, lookup :: STRING, from = 0 :: INTEGER, to = -1 :: INTEGER) :: INTEGER",
+    "name": "apoc.text.indexOf",
+    "description": "Returns the first occurrence of the lookup `STRING` in the given `STRING`, or -1 if not found.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "text",
+        "description": "The string to search for the lookup string in.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "lookup",
+        "description": "The lookup string to search for in the given string.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "from",
+        "description": "The index at which to start the search.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=0, type=INTEGER}",
+        "type": "INTEGER"
+      },
+      {
+        "name": "to",
+        "description": "The index at which to stop the search.",
+        "isDeprecated": false,
+        "default": "DefaultParameterValue{value=-1, type=INTEGER}",
+        "type": "INTEGER"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.text.join(texts :: LIST<STRING>, delimiter :: STRING) :: STRING",
+    "name": "apoc.text.join",
+    "description": "Joins the given `STRING` values using the given delimiter.",
+    "returnDescription": "STRING",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "texts",
+        "description": "The list of strings to be concatenated using the given delimiter.",
+        "isDeprecated": false,
+        "type": "LIST<STRING>"
+      },
+      {
+        "name": "delimiter",
+        "description": "The given delimiter to join the given strings with.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": true,
+    "aggregating": false,
+    "signature": "apoc.text.levenshteinDistance(text1 :: STRING, text2 :: STRING) :: INTEGER",
+    "name": "apoc.text.levenshteinDistance",
+    "description": "Compares the given `STRING` values using the Levenshtein distance algorithm.",
+    "returnDescription": "INTEGER",
+    "deprecatedBy": "apoc.text.distance",
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "text1",
+        "description": "The first string to be compared against the second.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "text2",
+        "description": "The second string to be compared against the first.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": true,
+    "aggregating": false,
+    "signature": "apoc.text.regreplace(text :: STRING, regex :: STRING, replacement :: STRING) :: STRING",
+    "name": "apoc.text.regreplace",
+    "description": "Finds and replaces all matches found by the given regular expression with the given replacement.",
+    "returnDescription": "STRING",
+    "deprecatedBy": "apoc.text.replace",
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "text",
+        "description": "The string to be modified.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "regex",
+        "description": "The regular expression pattern to replace in the original string.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "replacement",
+        "description": "The value to be inserted in the original string.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  },
+  {
+    "isDeprecated": false,
+    "aggregating": false,
+    "signature": "apoc.text.replace(text :: STRING, regex :: STRING, replacement :: STRING) :: STRING",
+    "name": "apoc.text.replace",
+    "description": "Finds and replaces all matches found by the given regular expression with the given replacement.",
+    "returnDescription": "STRING",
+    "deprecatedBy": null,
+    "category": "",
+    "isBuiltIn": false,
+    "argumentDescription": [
+      {
+        "name": "text",
+        "description": "The string to be modified.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "regex",
+        "description": "The regular expression pattern to replace in the original string.",
+        "isDeprecated": false,
+        "type": "STRING"
+      },
+      {
+        "name": "replacement",
+        "description": "The value to be inserted in the original string.",
+        "isDeprecated": false,
+        "type": "STRING"
+      }
+    ]
+  }
+]

@@ -1,0 +1,687 @@
+/*
+ * Copyright (c) "Neo4j"
+ * Neo4j Sweden AB [http://neo4j.com]
+ *
+ * This file is part of Neo4j.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package apoc.it.core;
+
+import static apoc.export.cypher.ExportCypherTest.ExportCypherResults.*;
+import static apoc.util.Util.map;
+import static apoc.util.s3.S3TestUtil.assertStringFileEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import apoc.HelperProcedures;
+import apoc.cypher.Cypher;
+import apoc.export.cypher.ExportCypher;
+import apoc.export.cypher.ExportCypherTestUtils;
+import apoc.graph.Graphs;
+import apoc.schema.Schemas;
+import apoc.util.TestUtil;
+import apoc.util.s3.S3BaseTest;
+import apoc.util.s3.S3TestUtil;
+import com.neo4j.test.extension.EnterpriseDbmsExtension;
+import java.util.Map;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
+import org.neo4j.graphdb.GraphDatabaseService;
+import org.neo4j.test.extension.Inject;
+
+@EnterpriseDbmsExtension
+class ExportCypherS3Test extends S3BaseTest {
+
+    private static final Map<String, Object> exportConfig =
+            map("useOptimizations", map("type", "none"), "separateFiles", true, "format", "neo4j-admin");
+
+    @Inject
+    GraphDatabaseService db;
+
+    @BeforeAll
+    void setUpAll() {
+        S3BaseTest.baseBeforeClass();
+        TestUtil.registerProcedure(
+                db, ExportCypher.class, Graphs.class, Schemas.class, Cypher.class, HelperProcedures.class);
+    }
+
+    @BeforeEach
+    void setUp(TestInfo testInfo) {
+        String methodName = testInfo.getTestMethod().map(m -> m.getName()).orElse("");
+        ExportCypherTestUtils.setUp(db, methodName);
+    }
+
+    @AfterAll
+    static void teardownAll() {
+        S3BaseTest.tearDown();
+    }
+
+    // -- Whole file test -- //
+    @Test
+    void testExportAllCypherDefault() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{useOptimizations: { type: 'none'}, format: 'neo4j-shell'})",
+                map("s3", s3Url),
+                (r) -> assertResults(s3Url, r, "database"));
+        assertStringFileEquals(EXPECTED_NEO4J_SHELL, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherForCypherShell() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,$config)",
+                map("s3", s3Url, "config", map("useOptimizations", map("type", "none"), "format", "cypher-shell")),
+                (r) -> assertResults(s3Url, r, "database"));
+        assertStringFileEquals(EXPECTED_CYPHER_SHELL, s3Url);
+    }
+
+    @Test
+    void testExportQueryCypherForNeo4j() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n) OPTIONAL MATCH p = (n)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map("useOptimizations", map("type", "none"), "format", "neo4j-shell")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_NEO4J_SHELL, s3Url);
+    }
+
+    @Test
+    void testExportGraphCypher() {
+        String fileName = "graph.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.graph.fromDB('test',{}) yield graph "
+                        + "CALL apoc.export.cypher.graph(graph, $s3,$exportConfig) "
+                        + "YIELD nodes, relationships, properties, file, source,format, time "
+                        + "RETURN *",
+                map("s3", s3Url, "exportConfig", map("useOptimizations", map("type", "none"), "format", "neo4j-shell")),
+                (r) -> assertResults(s3Url, r, "graph"));
+        assertStringFileEquals(EXPECTED_NEO4J_SHELL, s3Url);
+    }
+
+    // -- Separate files tests -- //
+    @Test
+    void testExportAllCypherNodes() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,$exportConfig)",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> assertResults(s3Url, r, "database"));
+        getUrlAndAssertEquals(EXPECTED_NODES, "all.nodes.cypher");
+    }
+
+    @Test
+    void testExportAllCypherRelationships() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,$exportConfig)",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> assertResults(s3Url, r, "database"));
+        getUrlAndAssertEquals(EXPECTED_RELATIONSHIPS, "all.relationships.cypher");
+    }
+
+    @Test
+    void testExportAllCypherSchema() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,$exportConfig)",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> assertResults(s3Url, r, "database"));
+        getUrlAndAssertEquals(EXPECTED_SCHEMA, "all.schema.cypher");
+    }
+
+    @Test
+    void testExportAllCypherCleanUp() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,$exportConfig)",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> assertResults(s3Url, r, "database"));
+        getUrlAndAssertEquals(EXPECTED_CLEAN_UP, "all.cleanup.cypher");
+    }
+
+    @Test
+    void testExportGraphCypherNodes() {
+        String fileName = "graph.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.graph.fromDB('test',{}) yield graph "
+                        + "CALL apoc.export.cypher.graph(graph, $s3,$exportConfig) "
+                        + "YIELD nodes, relationships, properties, file, source,format, time "
+                        + "RETURN *",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> assertResults(s3Url, r, "graph"));
+        getUrlAndAssertEquals(EXPECTED_NODES, "graph.nodes.cypher");
+    }
+
+    @Test
+    void testExportGraphCypherRelationships() {
+        String fileName = "graph.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.graph.fromDB('test',{}) yield graph "
+                        + "CALL apoc.export.cypher.graph(graph, $s3,$exportConfig) "
+                        + "YIELD nodes, relationships, properties, file, source, format, time "
+                        + "RETURN *",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> assertResults(s3Url, r, "graph"));
+        getUrlAndAssertEquals(EXPECTED_RELATIONSHIPS, "graph.relationships.cypher");
+    }
+
+    @Test
+    void testExportGraphCypherSchema() {
+        String fileName = "graph.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.graph.fromDB('test',{}) yield graph "
+                        + "CALL apoc.export.cypher.graph(graph, $s3,$exportConfig) "
+                        + "YIELD nodes, relationships, properties, file, source,format, time "
+                        + "RETURN *",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> assertResults(s3Url, r, "graph"));
+        getUrlAndAssertEquals(EXPECTED_SCHEMA, "graph.schema.cypher");
+    }
+
+    @Test
+    void testExportGraphCypherCleanUp() {
+        String fileName = "graph.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.graph.fromDB('test',{}) yield graph "
+                        + "CALL apoc.export.cypher.graph(graph, $s3,$exportConfig) "
+                        + "YIELD nodes, relationships, properties, file, source,format, time "
+                        + "RETURN *",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> assertResults(s3Url, r, "graph"));
+        getUrlAndAssertEquals(EXPECTED_CLEAN_UP, "graph.cleanup.cypher");
+    }
+
+    private void assertResults(String fileName, Map<String, Object> r, final String source) {
+        assertEquals(3L, r.get("nodes"));
+        assertEquals(1L, r.get("relationships"));
+        assertEquals(6L, r.get("properties"));
+        assertEquals(fileName, r.get("file"));
+        assertEquals(source + ": nodes(3), rels(1)", r.get("source"));
+        assertEquals("cypher", r.get("format"));
+        assertTrue(((long) r.get("time")) >= 0); // Should get time greater than 0
+    }
+
+    @Test
+    void testExportQueryCypherPlainFormat() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n) OPTIONAL MATCH p = (n)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map("useOptimizations", map("type", "none"), "format", "plain")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_PLAIN, s3Url);
+    }
+
+    @Test
+    void testExportQueryCypherFormatUpdateAll() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n) OPTIONAL MATCH p = (n)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map(
+                                "useOptimizations",
+                                map("type", "none"),
+                                "format",
+                                "neo4j-shell",
+                                "cypherFormat",
+                                "updateAll")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_NEO4J_MERGE, s3Url);
+    }
+
+    @Test
+    void testExportQueryCypherFormatAddStructure() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n) OPTIONAL MATCH p = (n)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map(
+                                "useOptimizations",
+                                map("type", "none"),
+                                "format",
+                                "neo4j-shell",
+                                "cypherFormat",
+                                "addStructure")),
+                (r) -> {});
+        assertStringFileEquals(
+                EXPECTED_NODES_MERGE_ON_CREATE_SET
+                        + EXPECTED_SCHEMA_EMPTY
+                        + EXPECTED_RELATIONSHIPS
+                        + EXPECTED_CLEAN_UP_EMPTY,
+                s3Url);
+    }
+
+    @Test
+    void testExportQueryCypherFormatUpdateStructure() {
+        String fileName = "all.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n) OPTIONAL MATCH p = (n)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map(
+                                "useOptimizations",
+                                map("type", "none"),
+                                "format",
+                                "neo4j-shell",
+                                "cypherFormat",
+                                "updateStructure")),
+                (r) -> {});
+        assertStringFileEquals(
+                EXPECTED_NODES_EMPTY
+                        + EXPECTED_SCHEMA_EMPTY
+                        + EXPECTED_RELATIONSHIPS_MERGE_ON_CREATE_SET
+                        + EXPECTED_CLEAN_UP_EMPTY,
+                s3Url);
+    }
+
+    @Test
+    void testExportSchemaCypher() {
+        String fileName = "onlySchema.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.schema($s3,$exportConfig)",
+                map("s3", s3Url, "exportConfig", exportConfig),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_ONLY_SCHEMA_NEO4J_SHELL, s3Url);
+    }
+
+    @Test
+    void testExportSchemaCypherShell() {
+        String fileName = "onlySchema.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.schema($s3,$exportConfig)",
+                map(
+                        "s3",
+                        s3Url,
+                        "exportConfig",
+                        map("useOptimizations", map("type", "none"), "format", "cypher-shell")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_ONLY_SCHEMA_CYPHER_SHELL, s3Url);
+    }
+
+    @Test
+    void testExportCypherNodePoint() {
+        db.executeTransactionally("CREATE (f:Test {name:'foo'," + "place2d:point({ x: 2.3, y: 4.5 }),"
+                + "place3d1:point({ x: 2.3, y: 4.5 , z: 1.2})})"
+                + "-[:FRIEND_OF {place2d:point({ longitude: 56.7, latitude: 12.78 })}]->"
+                + "(:Bar {place3d:point({ longitude: 12.78, latitude: 56.7, height: 100 })})");
+        String fileName = "temporalPoint.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n:Test)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map("useOptimizations", map("type", "none"), "format", "neo4j-shell")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_CYPHER_POINT, s3Url);
+    }
+
+    @Test
+    void testExportCypherNodeDate() {
+        db.executeTransactionally("CREATE (f:Test {name:'foo', " + "date:date('2018-10-30'), "
+                + "datetime:datetime('2018-10-30T12:50:35.556+0100'), "
+                + "localTime:localdatetime('20181030T19:32:24')})"
+                + "-[:FRIEND_OF {date:date('2018-10-30')}]->"
+                + "(:Bar {datetime:datetime('2018-10-30T12:50:35.556')})");
+        String fileName = "temporalDate.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n:Test)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map("useOptimizations", map("type", "none"), "format", "neo4j-shell")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_CYPHER_DATE, s3Url);
+    }
+
+    @Test
+    void testExportCypherNodeTime() {
+        db.executeTransactionally("CREATE (f:Test {name:'foo', " + "local:localtime('12:50:35.556'),"
+                + "t:time('125035.556+0100')})"
+                + "-[:FRIEND_OF {t:time('125035.556+0100')}]->"
+                + "(:Bar {datetime:datetime('2018-10-30T12:50:35.556+0100')})");
+        String fileName = "temporalTime.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n:Test)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map("useOptimizations", map("type", "none"), "format", "neo4j-shell")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_CYPHER_TIME, s3Url);
+    }
+
+    @Test
+    void testExportCypherNodeDuration() {
+        db.executeTransactionally("CREATE (f:Test {name:'foo', " + "duration:duration('P5M1.5D')})"
+                + "-[:FRIEND_OF {duration:duration('P5M1.5D')}]->"
+                + "(:Bar {duration:duration('P5M1.5D')})");
+        String fileName = "temporalDuration.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (n:Test)-[r]-(m) RETURN n,r,m";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map("useOptimizations", map("type", "none"), "format", "neo4j-shell")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_CYPHER_DURATION, s3Url);
+    }
+
+    @Test
+    void testExportWithAscendingLabels() {
+        db.executeTransactionally("CREATE (f:User:User1:User0:User12 {name:'Alan'})");
+        String fileName = "ascendingLabels.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        String query = "MATCH (f:User) WHERE f.name='Alan' RETURN f";
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.query($query,$s3,$config)",
+                map(
+                        "s3",
+                        s3Url,
+                        "query",
+                        query,
+                        "config",
+                        map("useOptimizations", map("type", "none"), "format", "neo4j-shell")),
+                (r) -> {});
+        assertStringFileEquals(EXPECTED_CYPHER_LABELS_ASCENDEND, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherDefaultWithUnwindBatchSizeOptimized() {
+        String fileName = "allDefaultOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{useOptimizations: { type: 'unwind_batch', unwindBatchSize: 2}, format: 'neo4j-shell'})",
+                map("s3", s3Url),
+                (r) -> assertResultsOptimized(s3Url, r));
+        assertStringFileEquals(EXPECTED_NEO4J_OPTIMIZED_BATCH_SIZE, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherDefaultOptimized() {
+        String fileName = "allDefaultOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3, $exportConfig)",
+                map("s3", s3Url, "exportConfig", map("format", "neo4j-shell")),
+                (r) -> assertResultsOptimized(s3Url, r));
+        assertStringFileEquals(EXPECTED_NEO4J_OPTIMIZED, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherDefaultSeparatedFilesOptimized() {
+        String fileName = "allDefaultOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3, $exportConfig)",
+                map("s3", s3Url, "exportConfig", map("separateFiles", true, "format", "neo4j-shell")),
+                (r) -> assertResultsOptimized(s3Url, r));
+        getUrlAndAssertEquals(EXPECTED_NODES_OPTIMIZED, "allDefaultOptimized.nodes.cypher");
+        getUrlAndAssertEquals(EXPECTED_RELATIONSHIPS_OPTIMIZED, "allDefaultOptimized.relationships.cypher");
+        getUrlAndAssertEquals(EXPECTED_SCHEMA, "allDefaultOptimized.schema.cypher");
+        getUrlAndAssertEquals(EXPECTED_CLEAN_UP, "allDefaultOptimized.cleanup.cypher");
+    }
+
+    @Test
+    void testExportAllCypherCypherShellWithUnwindBatchSizeOptimized() {
+        String fileName = "allCypherShellOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'cypher-shell', useOptimizations: {type: 'unwind_batch'}})",
+                map("s3", s3Url),
+                (r) -> assertResultsOptimized(s3Url, r));
+        assertStringFileEquals(EXPECTED_CYPHER_SHELL_OPTIMIZED_BATCH_SIZE, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherCypherShellOptimized() {
+        String fileName = "allCypherShellOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'cypher-shell'})",
+                map("s3", s3Url),
+                (r) -> assertResultsOptimized(s3Url, r));
+        assertStringFileEquals(EXPECTED_CYPHER_SHELL_OPTIMIZED, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherPlainWithUnwindBatchSizeOptimized() {
+        String fileName = "allPlainOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'plain', useOptimizations: { type: 'unwind_batch', unwindBatchSize: 2}})",
+                map("s3", s3Url),
+                (r) -> assertResultsOptimized(s3Url, r));
+        assertStringFileEquals(EXPECTED_PLAIN_OPTIMIZED_BATCH_SIZE, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherPlainAddStructureWithUnwindBatchSizeOptimized() {
+        String fileName = "allPlainAddStructureOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'plain', cypherFormat: 'addStructure', useOptimizations: { type: 'unwind_batch', unwindBatchSize: 2}})",
+                map("s3", s3Url),
+                (r) -> assertResultsOptimized(s3Url, r));
+        assertStringFileEquals(EXPECTED_PLAIN_ADD_STRUCTURE_UNWIND, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherPlainUpdateStructureWithUnwindBatchSizeOptimized() {
+        String fileName = "allPlainUpdateStructureOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'plain', cypherFormat: 'updateStructure', useOptimizations: { type: 'unwind_batch', unwindBatchSize: 2}})",
+                map("s3", s3Url),
+                (r) -> {
+                    assertEquals(0L, r.get("nodes"));
+                    assertEquals(2L, r.get("relationships"));
+                    assertEquals(2L, r.get("properties"));
+                    assertEquals(s3Url, r.get("file"));
+                    assertEquals("cypher", r.get("format"));
+                    assertTrue(((long) r.get("time")) >= 0); // Should get time greater than 0
+                });
+        assertStringFileEquals(EXPECTED_PLAIN_UPDATE_STRUCTURE_UNWIND, s3Url);
+    }
+
+    @Test
+    void testExportAllCypherPlainUpdateAllWithUnwindBatchSizeOptimized() {
+        String fileName = "allPlainUpdateAllOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'plain', cypherFormat: 'updateAll', useOptimizations: { type: 'unwind_batch', unwindBatchSize: 2}})",
+                map("s3", s3Url),
+                (r) -> assertResultsOptimized(s3Url, r));
+        assertStringFileEquals(EXPECTED_UPDATE_ALL_UNWIND, s3Url);
+    }
+
+    @Test
+    void testExportQueryCypherShellWithUnwindBatchSizeWithBatchSizeOptimized() {
+        String fileName = "allPlainOptimized.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'cypher-shell', useOptimizations: { type: 'unwind_batch', unwindBatchSize: 2}, batchSize: 2})",
+                map("s3", s3Url),
+                (r) -> assertResultsOptimized(s3Url, r));
+        assertStringFileEquals(EXPECTED_QUERY_CYPHER_SHELL_OPTIMIZED_UNWIND, s3Url);
+    }
+
+    @Test
+    void testExportQueryCypherShellWithUnwindBatchSizeWithBatchSizeOddDataset() {
+        String fileName = "allPlainOdd.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'cypher-shell', useOptimizations: { type: 'unwind_batch', unwindBatchSize: 2}, batchSize: 2})",
+                map("s3", s3Url),
+                (r) -> assertResultsOdd(s3Url, r));
+        assertStringFileEquals(EXPECTED_QUERY_CYPHER_SHELL_OPTIMIZED_ODD, s3Url);
+    }
+
+    @Test
+    void testExportQueryCypherShellUnwindBatchParamsWithOddDataset() {
+        String fileName = "allPlainOdd.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'cypher-shell', useOptimizations: { type: 'unwind_batch_params', unwindBatchSize: 2}, batchSize:2})",
+                map("s3", s3Url),
+                (r) -> assertResultsOdd(s3Url, r));
+        assertStringFileEquals(EXPECTED_QUERY_CYPHER_SHELL_PARAMS_OPTIMIZED_ODD, s3Url);
+    }
+
+    @Test
+    void testExportQueryCypherShellUnwindBatchParamsWithOddBatchSizeOddDataset() {
+        db.executeTransactionally("CREATE (:Bar {name:'bar3',age:35}), (:Bar {name:'bar4',age:36})");
+        String fileName = "allPlainOddNew.cypher";
+        String s3Url = s3Container.getUrl(fileName);
+        TestUtil.testCall(
+                db,
+                "CALL apoc.export.cypher.all($s3,{format:'cypher-shell', useOptimizations: { type: 'unwind_batch_params', unwindBatchSize: 2}, batchSize:3})",
+                map("s3", s3Url),
+                (r) -> {});
+        db.executeTransactionally("MATCH (n:Bar {name:'bar3',age:35}), (n1:Bar {name:'bar4',age:36}) DELETE n, n1");
+        assertStringFileEquals(EXPECTED_QUERY_PARAMS_ODD, s3Url);
+    }
+
+    private void getUrlAndAssertEquals(String expected, String fileName) {
+        final String urlFile = s3Container.getUrl(fileName);
+        S3TestUtil.assertStringFileEquals(expected, urlFile);
+    }
+
+    private void assertResultsOptimized(String fileName, Map<String, Object> r) {
+        assertEquals(7L, r.get("nodes"));
+        assertEquals(2L, r.get("relationships"));
+        assertEquals(13L, r.get("properties"));
+        assertEquals(fileName, r.get("file"));
+        assertEquals("database" + ": nodes(7), rels(2)", r.get("source"));
+        assertEquals("cypher", r.get("format"));
+        assertTrue(((long) r.get("time")) >= 0); // Should get time greater than 0
+    }
+
+    private void assertResultsOdd(String fileName, Map<String, Object> r) {
+        assertEquals(7L, r.get("nodes"));
+        assertEquals(1L, r.get("relationships"));
+        assertEquals(13L, r.get("properties"));
+        assertEquals(fileName, r.get("file"));
+        assertEquals("database" + ": nodes(7), rels(1)", r.get("source"));
+        assertEquals("cypher", r.get("format"));
+        assertTrue(((long) r.get("time")) >= 0); // Should get time greater than 0
+    }
+}

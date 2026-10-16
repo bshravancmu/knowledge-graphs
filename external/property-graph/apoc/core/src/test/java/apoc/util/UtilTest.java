@@ -1,0 +1,234 @@
+/*
+ * Copyright (c) "Neo4j"
+ * Neo4j Sweden AB [http://neo4j.com]
+ *
+ * This file is part of Neo4j.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package apoc.util;
+
+import static apoc.util.MapUtil.map;
+import static java.lang.String.format;
+import static java.util.Arrays.asList;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.neo4j.test.extension.EnterpriseDbmsExtension;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import org.apache.commons.lang3.tuple.Pair;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.neo4j.configuration.GraphDatabaseSettings;
+import org.neo4j.graphdb.GraphDatabaseService;
+import org.neo4j.graphdb.Label;
+import org.neo4j.graphdb.Node;
+import org.neo4j.graphdb.QueryExecutionException;
+import org.neo4j.graphdb.ResultTransformer;
+import org.neo4j.graphdb.Transaction;
+import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.logging.NullLog;
+import org.neo4j.test.TestDatabaseManagementServiceBuilder;
+import org.neo4j.test.extension.ExtensionCallback;
+import org.neo4j.test.extension.Inject;
+
+@EnterpriseDbmsExtension
+class UtilTest {
+
+    @Inject
+    GraphDatabaseService db;
+
+    @Inject
+    GraphDatabaseAPI dbAPI;
+
+    @ExtensionCallback
+    void configure(TestDatabaseManagementServiceBuilder builder) {
+        builder.setConfig(
+                GraphDatabaseSettings.procedure_unrestricted,
+                List.of(
+                        "apoc.nodes.link",
+                        "apoc.node.relationship.exists",
+                        "apoc.node.relationships.exist",
+                        "apoc.nodes.connected",
+                        "apoc.nodes.isDense"));
+    }
+
+    private static Node node;
+
+    @BeforeAll
+    void setUp() {
+        TestUtil.registerProcedure(db, Utils.class);
+        try (Transaction tx = db.beginTx()) {
+            node = tx.createNode(Label.label("User"));
+            node.setProperty("name", "foo");
+            tx.commit();
+        }
+    }
+
+    @Test
+    void testSubMap() {
+        assertEquals(map("b", "c"), Util.subMap(map("a.b", "c"), "a"));
+        assertEquals(map("b", "c"), Util.subMap(map("a.b", "c"), "a."));
+        assertEquals(map(), Util.subMap(map("a.b", "c"), "x"));
+    }
+
+    @Test
+    void testPartitionList() {
+        List<Object> list = asList(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+        assertEquals(1, Util.partitionSubList(list, 0).count());
+        assertEquals(1, Util.partitionSubList(list, 1).count());
+        assertEquals(2, Util.partitionSubList(list, 2).count());
+        assertEquals(3, Util.partitionSubList(list, 3).count());
+        assertEquals(4, Util.partitionSubList(list, 4).count());
+        assertEquals(5, Util.partitionSubList(list, 5).count());
+        assertEquals(5, Util.partitionSubList(list, 6).count());
+        assertEquals(5, Util.partitionSubList(list, 7).count());
+        assertEquals(5, Util.partitionSubList(list, 8).count());
+        assertEquals(5, Util.partitionSubList(list, 9).count());
+        assertEquals(10, Util.partitionSubList(list, 10).count());
+        assertEquals(10, Util.partitionSubList(list, 11).count());
+        assertEquals(10, Util.partitionSubList(list, 20).count());
+    }
+
+    @Test
+    void cleanPassword() {
+        String url = "http://%slocalhost:7474/path?query#ref";
+        assertEquals(format(url, ""), Util.cleanUrl(format(url, "user:pass@")));
+    }
+
+    @Test
+    void mergeNullMaps() {
+        assertNotNull(Util.merge(null, null));
+    }
+
+    @Test
+    void testValidateQuery() {
+        QueryExecutionException e =
+                assertThrows(QueryExecutionException.class, () -> Util.validateQuery(db, "MATCH (n) RETURN m"));
+        assertTrue(e.getMessage().contains("Variable `m` not defined"));
+    }
+
+    @Test
+    void testSanitize() {
+        assertEquals("``", Util.sanitize("`"));
+        assertEquals("``", Util.sanitize("\u0060"));
+        assertEquals("``", Util.sanitize("``"));
+        assertEquals("````", Util.sanitize("```"));
+        assertEquals("````", Util.sanitize("\u0060\u0060\u0060"));
+        assertEquals("````", Util.sanitize("\\u0060\\u0060\\u0060"));
+        assertEquals("Hello``", Util.sanitize("Hello`"));
+        assertEquals("Hi````there", Util.sanitize("Hi````there"));
+        assertEquals("Hi``````there", Util.sanitize("Hi`````there"));
+        assertEquals("``a``b``c``", Util.sanitize("`a`b`c`"));
+        assertEquals("``a``b``c``d``", Util.sanitize("\u0060a`b`c\u0060d\u0060"));
+        assertEquals("``a``b``c``d``", Util.sanitize("\\u0060a`b`c\\u0060d\\u0060"));
+        assertEquals("Foo ``", Util.sanitize("Foo \\u0060"));
+        assertEquals("ABC", Util.sanitize("ABC"));
+        assertEquals("A C", Util.sanitize("A C"));
+        assertEquals("A`` C", Util.sanitize("A` C"));
+        assertEquals("ALabel", Util.sanitize("ALabel"));
+        assertEquals("A Label", Util.sanitize("A Label"));
+        assertEquals("A ``Label", Util.sanitize("A `Label"));
+        assertEquals("``A ``Label", Util.sanitize("`A `Label"));
+        assertEquals("``A ``Label", Util.sanitize("`A `Label"));
+        assertEquals("Spring Data Neo4j⚡️RX", Util.sanitize("Spring Data Neo4j⚡️RX"));
+        assertEquals("Foo ``", Util.sanitize("Foo \u0060"));
+        assertEquals("Foo``bar", Util.sanitize("Foo\\`bar"));
+        assertEquals("Foo\\``bar", Util.sanitize("Foo\\\\`bar"));
+        assertEquals("ᑖ", Util.sanitize("ᑖ"));
+        assertEquals("⚡️", Util.sanitize("⚡️"));
+        assertEquals("uᑖ", Util.sanitize("\\u0075\\u1456"));
+        assertEquals("ᑖ", Util.sanitize("\u1456"));
+        assertEquals("something\\u005C\\u00751456", Util.sanitize("something\\u005C\\u00751456"));
+        assertEquals("``", Util.sanitize("\u005C\\u0060"));
+        assertEquals("\\u005C\\u00750060", Util.sanitize("\\u005Cu0060"));
+        assertEquals("\\``", Util.sanitize("\\u005C\\u0060"));
+        assertEquals("x\\y", Util.sanitize("x\\y"));
+        assertEquals("x\\y", Util.sanitize("x\\\\y"));
+        assertEquals("x\\\\y", Util.sanitize("x\\\\\\\\y"));
+        assertEquals("x``y", Util.sanitize("x\\`y"));
+        assertEquals("Foo ``", Util.sanitize("Foo \\u0060"));
+    }
+
+    @Test
+    void testMerge() {
+        try {
+            final ResultTransformer<Object> resultTransformer =
+                    res -> res.next().get("count");
+            try (final Transaction transaction = db.beginTx()) {
+                Util.mergeNode(transaction, Label.label("Test"), null, Pair.of("foo", "bar"));
+                transaction.commit();
+                final long count = (long) db.executeTransactionally(
+                        "MATCH (n:Test{foo: 'bar'}) RETURN count(n) AS count", Map.of(), resultTransformer);
+                assertEquals(1, count);
+            }
+            try (final Transaction transaction = db.beginTx()) {
+                Util.mergeNode(transaction, Label.label("Test"), Label.label("Bar"), Pair.of("foo", "bar1"));
+                transaction.commit();
+                final long count = (long) db.executeTransactionally(
+                        "MATCH (n:Test:Bar{foo: 'bar1'}) RETURN count(n) AS count", Map.of(), resultTransformer);
+                assertEquals(1, count);
+            }
+            final long count = (long)
+                    db.executeTransactionally("MATCH (n:Test) RETURN count(n) AS count", Map.of(), resultTransformer);
+            assertEquals(2, count);
+        } finally {
+            db.executeTransactionally("MATCH (n:Test) DETACH DELETE n");
+        }
+    }
+
+    @Test
+    void testIsWritableInstance() {
+        assertTrue(Util.isWriteableInstance(dbAPI));
+    }
+
+    @Test
+    void testWithBackOffRetriesWithSuccess() {
+        AtomicInteger counter = new AtomicInteger();
+        long start = System.currentTimeMillis();
+        int result = Util.withBackOffRetries(() -> testFunction(counter), 100, 2000, NullLog.getInstance());
+        long time = System.currentTimeMillis() - start;
+
+        assertEquals(4, result);
+
+        // The method should be run directly, after 200ms, after 400ms and after 800 ms when it will succeed
+        // So the total time should be roughly 1400 ms. Allow generous slack for CI scheduling jitter.
+        assertTrue(time > 1200 && time < 1900, "Expected time to be in the interval 1200 ms - 1900 ms but was " + time);
+    }
+
+    @Test
+    void testWithBackOffRetriesWithError() {
+        AtomicInteger counter = new AtomicInteger();
+        long start = System.currentTimeMillis();
+        assertThrows(
+                RuntimeException.class,
+                () -> Util.withBackOffRetries(() -> testFunction(counter), 100, 300, NullLog.getInstance()));
+
+        // The method should be run directly, after 200ms and after 400ms when it will fail
+        // So the total time should be roughly 600 ms. Allow generous slack for CI scheduling jitter.
+        long time = System.currentTimeMillis() - start;
+        assertTrue(time > 500 && time < 900, "Expected time to be in the interval 500 ms - 900 ms but was " + time);
+    }
+
+    private int testFunction(AtomicInteger counter) {
+        int value = counter.incrementAndGet();
+        if (value % 4 != 0) {
+            throw new RuntimeException("Unexpected i");
+        }
+        return value;
+    }
+}

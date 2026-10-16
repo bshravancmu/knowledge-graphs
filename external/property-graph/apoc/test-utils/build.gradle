@@ -1,0 +1,125 @@
+import org.gradle.api.internal.artifacts.DefaultExcludeRule
+
+plugins {
+  id 'maven-publish'
+}
+
+description = 'APOC :: Test Utils'
+
+javadoc {
+  failOnError = false
+  options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+dependencies {
+  def withoutServers = {
+    exclude group: 'org.eclipse.jetty'
+    exclude group: 'org.eclipse.jetty.aggregate'
+    exclude group: 'org.apache.hive', module: 'hive-service'
+  }
+
+  // The logger will come from the :common project via slf4j-simple
+  def withoutLoggers = {
+    exclude group: 'org.slf4j', module: 'slf4j-log4j12'
+    exclude group: 'org.slf4j', module: 'slf4j-reload4j'
+  }
+
+  api group: 'org.hamcrest', name: 'hamcrest', version: '3.0'
+  api group: 'org.neo4j.community', name: 'it-test-support', version: neo4jVersionEffective // , classifier: "tests"
+  api group: 'org.neo4j', name: 'log-test-utils', version: neo4jVersionEffective // , classifier: "tests"
+  api group: 'org.neo4j.driver', name: 'neo4j-java-driver', version: '6.0.2'
+  api group: 'org.apache.hadoop', name: 'hadoop-hdfs', version: '3.4.2', withoutServers.andThen(withoutLoggers)
+  // If updated check if the transitive dependency to javax.servlet.jsp:jsp-api:2.1 has also updated
+  // and remove the manual licensing check for it in licenses-3rdparties.gradle
+  api group: 'org.apache.hadoop', name: 'hadoop-common', version: '3.4.2', withoutServers.andThen(withoutLoggers)
+  api group: 'org.apache.hadoop', name: 'hadoop-minicluster', version: '3.4.2', withoutServers.andThen(withoutLoggers)
+  api group: 'org.testcontainers', name: 'testcontainers', version: testContainersVersion
+  api group: 'org.testcontainers', name: 'testcontainers-neo4j', version: testContainersVersion
+  api group: 'org.testcontainers', name: 'testcontainers-elasticsearch', version: testContainersVersion
+  api group: 'org.testcontainers', name: 'testcontainers-couchbase', version: testContainersVersion
+  api group: 'org.testcontainers', name: 'testcontainers-mysql', version: testContainersVersion
+  api group: 'org.testcontainers', name: 'testcontainers-postgresql', version: testContainersVersion
+  api group: 'org.testcontainers', name: 'testcontainers-cassandra', version: testContainersVersion
+  api group: 'org.testcontainers', name: 'testcontainers-localstack', version: testContainersVersion
+  api group: 'org.apache.arrow', name: 'arrow-vector', version: apacheArrowVersion
+  api group: 'org.apache.arrow', name: 'arrow-memory-netty', version: apacheArrowVersion
+
+  implementation project(":common")
+  implementation group: 'org.neo4j', name: 'neo4j-common', version: neo4jVersionEffective, classifier: "tests"
+  implementation group: 'org.neo4j', name: 'neo4j-kernel', version: neo4jVersionEffective, classifier: "tests"
+  implementation group: 'org.neo4j', name: 'neo4j-io', version: neo4jVersionEffective, classifier: "tests"
+  implementation group: 'org.gradle', name: 'gradle-tooling-api', version: '7.3'
+  implementation group: 'org.jetbrains', name: 'annotations', version: "17.0.0"
+  implementation group: 'software.amazon.awssdk', name: 's3', version: awsSdkVersion
+  implementation('tools.jackson.dataformat:jackson-dataformat-csv:3.1.0')
+}
+
+configurations.configureEach {
+  exclude group: 'io.airlift', module: 'aircompressor' // CVE-2025-67721 - no fix available, unreachable
+  exclude group: 'commons-lang', module: 'commons-lang' // CVE-2025-48924 - no fix for v2, use commons-lang3
+  exclude group: 'org.jsonschema2pojo', module: 'jsonschema2pojo-core' // CVE-2025-3588 - no fix available
+}
+
+publishing {
+  repositories {
+    maven {
+      name = 'pipeline'
+      url = "file://${project(':core').buildDir}/repo"
+    }
+    if (System.getenv("CODEARTIFACT_PUBLISH_URL") ?: "" != "") {
+      maven {
+        name = 'codeartifact-publish'
+        url = System.getenv('CODEARTIFACT_PUBLISH_URL')
+        credentials {
+          username = System.getenv('CODEARTIFACT_USERNAME')
+          password = System.getenv('CODEARTIFACT_TOKEN')
+        }
+      }
+    }
+  }
+  publications {
+    shadow(MavenPublication) { publication ->
+      artifactId = "apoc-test-utils"
+      artifact(mySourcesJar)
+      artifact(myJavadocJar)
+
+      from components.java
+
+      versionMapping {
+        usage('java-api') {
+          fromResolutionOf('runtimeClasspath')
+        }
+        usage('java-runtime') {
+          fromResolutionResult()
+        }
+      }
+      pom {
+        name = 'neo4j-apoc-test-utils'
+        description = 'Test utils for Neo4j Procedures'
+        url = 'http://github.com/neo4j/apoc'
+        licenses {
+          license {
+            name = 'The Apache Software License, Version 2.0'
+            url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+            comments = 'Note that this license is for the project itself, and not for its dependencies.'
+            distribution = 'repo'
+          }
+        }
+        developers {
+          developer {
+            id = 'neo4j'
+            name = 'The Neo4j Team'
+            url = 'https://neo4j.com/'
+            organization = 'Neo4j Inc.'
+            organizationUrl = 'https://neo4j.com/'
+          }
+        }
+        scm {
+          connection = 'scm:git:git://github.com/neo4j/apoc.git'
+          developerConnection = 'scm:git:git@github.com:neo4j/apoc.git'
+          url = 'https://github.com/neo4j/apoc'
+        }
+      }
+    }
+  }
+}

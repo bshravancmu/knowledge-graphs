@@ -1,0 +1,330 @@
+/*
+ * Copyright (c) "Neo4j"
+ * Neo4j Sweden AB [http://neo4j.com]
+ *
+ * This file is part of Neo4j.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package apoc.meta;
+
+import apoc.meta.tablesforlabels.OrderedLabels;
+import apoc.meta.tablesforlabels.PropertyContainerProfile;
+import apoc.meta.tablesforlabels.PropertyTracker;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
+import org.neo4j.graphdb.*;
+import org.neo4j.procedure.Description;
+
+public class Tables4LabelsProfile {
+    Map<OrderedLabels, PropertyContainerProfile> labelMap;
+    Map<String, PropertyContainerProfile> relMap;
+    Map<OrderedLabels, Long> obsByNode;
+    Map<String, Long> obsByRelType;
+
+    /**
+     * DAO class that the stored procedure returns
+     */
+    public class NodeTypePropertiesEntry {
+        @Description("The type of the node.")
+        public String nodeType;
+
+        @Description("The labels on the node.")
+        public List<String> nodeLabels;
+
+        @Description("The name of the property.")
+        public String propertyName;
+
+        @Description("The types this property has.")
+        public List<String> propertyTypes;
+
+        @Description("Whether or not this property exists on all nodes of the given type.")
+        public boolean mandatory;
+
+        @Description("The number of times this property was observed.")
+        public long propertyObservations;
+
+        @Description("The number of times the label was seen.")
+        public long totalObservations;
+
+        public NodeTypePropertiesEntry(
+                String nodeType,
+                List<String> nodeLabels,
+                String propertyName,
+                List<String> propertyTypes,
+                boolean mandatory,
+                long propertyObservations,
+                long totalObservations) {
+            this.nodeType = nodeType;
+            this.nodeLabels = nodeLabels;
+            this.propertyName = propertyName;
+            this.propertyTypes = propertyTypes;
+            this.mandatory = mandatory;
+            this.propertyObservations = propertyObservations;
+            this.totalObservations = totalObservations;
+        }
+    }
+
+    public class RelTypePropertiesEntry {
+        @Description("The type of the relationship.")
+        public String relType;
+
+        @Description("The labels belonging to the start node.")
+        public List<String> sourceNodeLabels;
+
+        @Description("The labels belonging to the end node.")
+        public List<String> targetNodeLabels;
+
+        @Description("The name of the property.")
+        public String propertyName;
+
+        @Description("The types this property has.")
+        public List<String> propertyTypes;
+
+        @Description("Whether or not this property exists on all nodes of the given type.")
+        public boolean mandatory;
+
+        @Description("The number of times this property was observed.")
+        public long propertyObservations;
+
+        @Description("The number of times the label was seen.")
+        public long totalObservations;
+
+        public RelTypePropertiesEntry(
+                String relType,
+                List<String> sourceNodeLabels,
+                List<String> targetNodeLabels,
+                String propertyName,
+                List<String> propertyTypes,
+                boolean mandatory,
+                long propertyObservations,
+                long totalObservations) {
+            this.relType = relType;
+            this.sourceNodeLabels = sourceNodeLabels;
+            this.targetNodeLabels = targetNodeLabels;
+            this.propertyName = propertyName;
+            this.propertyTypes = propertyTypes;
+            this.mandatory = mandatory;
+            this.propertyObservations = propertyObservations;
+            this.totalObservations = totalObservations;
+        }
+    }
+
+    public Tables4LabelsProfile() {
+        labelMap = new LinkedHashMap(100);
+        relMap = new LinkedHashMap(100);
+        obsByNode = new LinkedHashMap(100);
+        obsByRelType = new LinkedHashMap(100);
+    }
+
+    public PropertyContainerProfile getNodeProfile(OrderedLabels ol) {
+        if (labelMap.containsKey(ol)) {
+            return labelMap.get(ol);
+        } else {
+            PropertyContainerProfile p = new PropertyContainerProfile();
+            labelMap.put(ol, p);
+            return p;
+        }
+    }
+
+    public PropertyContainerProfile getRelProfile(String relType) {
+        if (relMap.containsKey(relType)) {
+            return relMap.get(relType);
+        } else {
+            PropertyContainerProfile p = new PropertyContainerProfile();
+            relMap.put(relType, p);
+            return p;
+        }
+    }
+
+    public Long sawNode(OrderedLabels labels) {
+        if (obsByNode.containsKey(labels)) {
+            Long val = obsByNode.get(labels) + 1;
+            obsByNode.put(labels, val);
+            return val;
+        } else {
+            obsByNode.put(labels, 1L);
+            return 1L;
+        }
+    }
+
+    public Long sawRel(String typeName) {
+        if (obsByRelType.containsKey(typeName)) {
+            Long val = obsByRelType.get(typeName) + 1;
+            obsByRelType.put(typeName, val);
+            return val;
+        } else {
+            obsByRelType.put(typeName, 1L);
+            return 1L;
+        }
+    }
+
+    public static String labelJoin(Iterable<Label> labels) {
+        return StreamSupport.stream(labels.spliterator(), true).map(Label::name).collect(Collectors.joining("@@@"));
+    }
+
+    public static class decipherRelMap {
+        public static List<String> getSourceLabels(String relMapIdentifier) {
+            String[] components = relMapIdentifier.split("###");
+            List<String> sourceNodeLabels = Arrays.asList(components[0].split("@@@"));
+            return sourceNodeLabels;
+        }
+
+        public static List<String> getTargetLabels(String relMapIdentifier) {
+            String[] components = relMapIdentifier.split("###");
+            List<String> targetNodeLabels = Arrays.asList(components[1].split("@@@"));
+            return targetNodeLabels;
+        }
+
+        public static String getRelType(String relMapIdentifier) {
+            String[] components = relMapIdentifier.split("###");
+            String relTypeName = components[2];
+            return relTypeName;
+        }
+    }
+
+    public void observe(Node n, MetaConfig config) {
+        OrderedLabels labels = new OrderedLabels(n.getLabels());
+        PropertyContainerProfile localNodeProfile = getNodeProfile(labels);
+
+        // Only descend and look at properties if it's in our match list.
+        if (config.matches(n.getLabels())) {
+            sawNode(labels);
+            localNodeProfile.observe(n, true);
+        }
+
+        // Even if the node isn't in our match list, do rel processing.  This
+        // is because our profiling is "node-first" to get to the relationships,
+        // and if we don't do it this way, it's possible to denylist nodes and
+        // thereby miss relationships that were of interest.
+        for (RelationshipType type : n.getRelationshipTypes()) {
+            String typeName = type.name();
+
+            if (!config.matches(type)) {
+                continue;
+            }
+
+            int out = n.getDegree(type, Direction.OUTGOING);
+            if (out == 0) continue;
+
+            try (ResourceIterable<Relationship> rels = n.getRelationships(Direction.OUTGOING, type)) {
+                for (Relationship r : rels) {
+                    Iterable relStartNode = r.getStartNode().getLabels();
+                    Iterable relEndNode = r.getEndNode().getLabels();
+
+                    String relIdentifier = labelJoin(relStartNode) + "###" + labelJoin(relEndNode) + "###" + typeName;
+
+                    PropertyContainerProfile localRelProfile = getRelProfile(relIdentifier);
+                    long seenSoFar = sawRel(relIdentifier);
+                    boolean isNode = false;
+
+                    if (seenSoFar > config.getMaxRels()) {
+                        // We've seen more than the maximum sample size for this rel, so
+                        // we don't need to keep looking.
+                        continue;
+                    }
+
+                    localRelProfile.observe(r, isNode);
+                }
+            }
+        }
+    }
+
+    public Tables4LabelsProfile finished() {
+        for (PropertyContainerProfile prof : labelMap.values()) {
+            prof.finished();
+        }
+
+        for (PropertyContainerProfile prof : relMap.values()) {
+            prof.finished();
+        }
+
+        return this;
+    }
+
+    public Stream<NodeTypePropertiesEntry> asNodeStream() {
+        Set<OrderedLabels> labels = labelMap.keySet();
+        List<NodeTypePropertiesEntry> results = new ArrayList<>(100);
+
+        for (OrderedLabels ol : labels) {
+            PropertyContainerProfile prof = labelMap.get(ol);
+            Long totalObservations = obsByNode.get(ol);
+
+            // Base case: the node never had any properties.
+            if (prof.propertyNames().size() == 0) {
+                results.add(new NodeTypePropertiesEntry(
+                        ol.asNodeType(), ol.nodeLabels(), null, null, false, 0L, totalObservations));
+                continue;
+            }
+
+            for (String propertyName : prof.propertyNames()) {
+                PropertyTracker tracker = prof.trackerFor(propertyName);
+
+                NodeTypePropertiesEntry entry = new NodeTypePropertiesEntry(
+                        ol.asNodeType(),
+                        ol.nodeLabels(),
+                        propertyName,
+                        tracker.propertyTypes(),
+                        tracker.mandatory,
+                        tracker.observations,
+                        totalObservations);
+
+                results.add(entry);
+            }
+        }
+
+        return results.stream();
+    }
+
+    public Stream<RelTypePropertiesEntry> asRelStream() {
+        Set<String> relTypes = relMap.keySet();
+        List<RelTypePropertiesEntry> results = new ArrayList<>(100);
+
+        for (String relType : relTypes) {
+            PropertyContainerProfile prof = relMap.get(relType);
+            Long totalObservations = obsByRelType.get(relType);
+
+            // Base case: the rel type never had any properties.
+            if (prof.propertyNames().size() == 0) {
+                results.add(new RelTypePropertiesEntry(
+                        ":`" + decipherRelMap.getRelType(relType) + "`",
+                        decipherRelMap.getSourceLabels(relType),
+                        decipherRelMap.getTargetLabels(relType),
+                        null,
+                        null,
+                        false,
+                        0L,
+                        totalObservations));
+                continue;
+            }
+
+            for (String propertyName : prof.propertyNames()) {
+                PropertyTracker tracker = prof.trackerFor(propertyName);
+
+                results.add(new RelTypePropertiesEntry(
+                        ":`" + decipherRelMap.getRelType(relType) + "`",
+                        decipherRelMap.getSourceLabels(relType),
+                        decipherRelMap.getTargetLabels(relType),
+                        propertyName,
+                        tracker.propertyTypes(),
+                        tracker.mandatory,
+                        tracker.observations,
+                        totalObservations));
+            }
+        }
+
+        return results.stream();
+    }
+}
