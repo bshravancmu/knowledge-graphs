@@ -1,0 +1,12 @@
+asv
+black
+coverage[toml]
+coveralls
+flake8
+mock
+mypy
+pytest
+pytest-cov
+virtualenv
+isort
+pre-commit

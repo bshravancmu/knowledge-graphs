@@ -1,0 +1,449 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any
+
+from splink.internals.charts import (
+    MatchWeightsChart,
+    MatchWeightsHistogramChart,
+    MUParametersInteractiveHistoryChart,
+    ParameterEstimateComparisonsChart,
+    TFAdjustmentChart,
+    WaterfallChart,
+)
+from splink.internals.cluster_studio import (
+    SamplingMethods,
+    render_splink_cluster_studio_html,
+)
+from splink.internals.comparison_vector_distribution import (
+    comparison_vector_distribution_sql,
+)
+from splink.internals.match_weights_histogram import histogram_data
+from splink.internals.misc import ensure_is_list
+from splink.internals.pipeline import CTEPipeline
+from splink.internals.splink_comparison_viewer import (
+    comparison_viewer_table_sqls,
+    render_splink_comparison_viewer_html,
+)
+from splink.internals.splink_dataframe import SplinkDataFrame
+from splink.internals.term_frequencies import (
+    tf_chart_data,
+)
+from splink.internals.waterfall_chart import records_to_waterfall_data
+
+if TYPE_CHECKING:
+    from splink.internals.linker import Linker
+
+
+class LinkerVisualisations:
+    """Visualisations to help you understand and diagnose your linkage model.
+    Accessed via `linker.visualisations`.
+
+    Most of the visualisations return a `SplinkChart` object.
+
+    Display and basic HTML export work without Altair. Use `to_html(inline=True)`
+    or `save("chart.html", inline=True)` to include the packaged JavaScript runtime.
+    Notebook display needs browser access to the pinned CDN and trusted JavaScript
+    output. In Databricks, use `displayHTML(splink_chart.to_html(inline=True))`.
+
+    `splink_chart.altair_chart` provides explicit conversion when Altair is installed.
+    Altair themes and renderers apply only after this conversion. Advanced save
+    formats/options also require Altair; image export may
+    additionally require `vl-convert-python` as documented by Altair.
+
+    For example:
+
+    ```py
+    splink_chart = linker.visualisations.match_weights_chart()
+
+    # Save to various formats
+    # HTML saves natively; advanced formats delegate to Altair
+    splink_chart.save("mychart.png")
+    splink_chart.save("mychart.html")
+    splink_chart.save("mychart.svg")
+    splink_chart.save("mychart.json")
+
+    # Save an offline html
+    splink_chart.save_offline_chart("offline_chart.html")
+
+    # Get chart spec as dict
+    chart_spec = splink_chart.chart_dict
+
+    # Get Altair chart
+    altair_chart = splink_chart.altair_chart
+    ```
+
+
+    To save the chart as a self-contained html file with all scripts
+    inlined so it can be viewed offline:
+
+    ```py
+    c = linker.visualisations.match_weights_chart()
+    c.save_offline_chart("test_chart.html")
+    ```
+
+    View resultant html file in Jupyter (or just load it in your browser)
+
+    ```py
+    from IPython.display import IFrame
+    IFrame(src="./test_chart.html", width=1000, height=500)
+    ```
+    """
+
+    def __init__(self, linker: Linker):
+        self._linker = linker
+
+    def match_weights_chart(self) -> MatchWeightsChart:
+        """Display a chart of the (partial) match weights of the linkage model
+
+        Examples:
+            ```py
+            splink_chart = linker.visualisations.match_weights_chart()
+            splink_chart.save("mychart.png")
+            ```
+        Returns:
+            SplinkChart: A SplinkChart object
+        """
+        return self._linker._settings_obj.match_weights_chart()
+
+    def m_u_parameters_chart(
+        self,
+    ) -> MUParametersInteractiveHistoryChart:
+        """Display a chart of the m and u parameters of the linkage model
+
+        Examples:
+            ```py
+            splink_chart = linker.visualisations.m_u_parameters_chart()
+            splink_chart.save("mychart.png")
+            ```
+
+        Returns:
+            SplinkChart: A SplinkChart object
+        """
+
+        return self._linker._settings_obj.m_u_parameters_chart()
+
+    def match_weights_histogram(
+        self,
+        df_predict: SplinkDataFrame,
+        target_bins: int = 30,
+        width: int = 600,
+        height: int = 250,
+    ) -> MatchWeightsHistogramChart:
+        """Generate a histogram that shows the distribution of match weights in
+        `df_predict`
+
+        Args:
+            df_predict (SplinkDataFrame): Output of `linker.inference.predict()`
+            target_bins (int, optional): Target number of bins in histogram. Defaults to
+                30.
+            width (int, optional): Width of output. Defaults to 600.
+            height (int, optional): Height of output chart. Defaults to 250.
+
+        Examples:
+            ```py
+            df_predict = linker.inference.predict(threshold_match_weight=-2)
+            linker.visualisations.match_weights_histogram(df_predict)
+            ```
+        Returns:
+            SplinkChart: A SplinkChart object
+
+        """
+        df = histogram_data(self._linker, df_predict, target_bins)
+        recs = df.as_record_list()
+        chart = MatchWeightsHistogramChart(recs)
+        chart.set_width_height(width=width, height=height)
+        return chart
+
+    def parameter_estimate_comparisons_chart(
+        self, include_m: bool = True, include_u: bool = False
+    ) -> ParameterEstimateComparisonsChart:
+        """Show a chart that shows how parameter estimates have differed across
+        the different estimation methods you have used.
+
+        For example, if you have run two EM estimation sessions, blocking on
+        different variables, and both result in parameter estimates for
+        first_name, this chart will enable easy comparison of the different
+        estimates
+
+        Args:
+            include_m (bool, optional): Show different estimates of m values. Defaults
+                to True.
+            include_u (bool, optional): Show different estimates of u values. Defaults
+                to False.
+
+        Examples:
+            ```py
+            linker.training.estimate_parameters_using_expectation_maximisation(
+                blocking_rule=block_on("first_name"),
+            )
+
+            linker.training.estimate_parameters_using_expectation_maximisation(
+                blocking_rule=block_on("surname"),
+            )
+
+            linker.visualisations.parameter_estimate_comparisons_chart()
+            ```
+
+        Returns:
+            SplinkChart: A SplinkChart object
+
+        """
+        records = self._linker._settings_obj._parameter_estimates_as_records
+
+        to_retain = []
+        if include_m:
+            to_retain.append("m")
+        if include_u:
+            to_retain.append("u")
+
+        records = [r for r in records if r["m_or_u"] in to_retain]
+        return ParameterEstimateComparisonsChart(records)
+
+    def tf_adjustment_chart(
+        self,
+        output_column_name: str,
+        n_most_freq: int = 10,
+        n_least_freq: int = 10,
+        vals_to_include: str | list[str] | None = None,
+    ) -> TFAdjustmentChart:
+        """Display a chart showing the impact of term frequency adjustments on a
+        specific comparison level.
+        Each value
+
+        Args:
+            output_column_name (str): Name of an output column for which term frequency
+                 adjustment has been applied.
+            n_most_freq (int, optional): Number of most frequent values to show. If this
+                 or `n_least_freq` set to None, all values will be shown.
+                Default to 10.
+            n_least_freq (int, optional): Number of least frequent values to show. If
+                this or `n_most_freq` set to None, all values will be shown.
+                Default to 10.
+            vals_to_include (list, optional): Specific values for which to show term
+                frequency adjustments.
+                Defaults to None.
+
+        Examples:
+            ```py
+            linker.visualisations.tf_adjustment_chart("first_name")
+            ```
+
+        Returns:
+            TFAdjustmentChart: A SplinkChart object
+        """
+        comparison = self._linker._settings_obj._get_comparison_by_output_column_name(
+            output_column_name
+        )
+        # Select levels with TF adjustments
+        tf_comparison_records = [
+            detailed_rec
+            for detailed_rec in comparison._as_detailed_records
+            if detailed_rec.has_tf_adjustments
+        ]
+        if not tf_comparison_records:
+            raise ValueError(
+                f"Comparison with output_column_name {output_column_name} does not"
+                f" have term frequency adjustment activated"
+            )
+
+        vals_to_include = (
+            [] if vals_to_include is None else ensure_is_list(vals_to_include)
+        )
+
+        main_chart_data, hist_data = tf_chart_data(
+            self._linker,
+            tf_comparison_records,
+            n_most_freq,
+            n_least_freq,
+            vals_to_include,
+        )
+
+        return TFAdjustmentChart(main_chart_data, hist_data, tf_comparison_records)
+
+    def waterfall_chart(
+        self,
+        records: list[dict[str, Any]],
+        filter_nulls: bool = True,
+        remove_sensitive_data: bool = False,
+    ) -> WaterfallChart:
+        """Visualise how the final match weight is computed for the provided pairwise
+        record comparisons.
+
+        Records must be provided as a list of dictionaries. This would usually be
+        obtained from `df.as_record_list(limit=n)` where `df` is a SplinkDataFrame.
+
+        Examples:
+            ```py
+            df = linker.inference.predict(threshold_match_weight=2)
+            records = df.as_record_list(limit=10)
+            linker.visualisations.waterfall_chart(records)
+            ```
+
+        Args:
+            records (List[dict]): Usually be obtained from `df.as_record_list(limit=n)`
+                where `df` is a SplinkDataFrame.
+            filter_nulls (bool, optional): Whether the visualisation shows null
+                comparisons, which have no effect on final match weight. Defaults to
+                True.
+            remove_sensitive_data (bool, optional): When True, The waterfall chart will
+                contain match weights only, and all of the (potentially sensitive) data
+                from the input tables will be removed prior to the chart being created.
+
+
+        Returns:
+            SplinkChart: A SplinkChart object
+
+        """
+        self._linker._raise_error_if_necessary_waterfall_columns_not_computed()
+
+        data = records_to_waterfall_data(
+            records, self._linker._settings_obj, remove_sensitive_data
+        )
+
+        return WaterfallChart(
+            data,
+            filter_nulls,
+        )
+
+    def comparison_viewer_dashboard(
+        self,
+        df_predict: SplinkDataFrame,
+        out_path: str,
+        overwrite: bool = False,
+        num_example_rows: int = 2,
+        minimum_comparison_vector_count: int = 0,
+        return_html_as_string: bool = False,
+    ) -> str | None:
+        """Generate an interactive html visualization of the linker's predictions and
+        save to `out_path`.  For more information see
+        [this video](https://www.youtube.com/watch?v=DNvCMqjipis)
+
+
+        Args:
+            df_predict (SplinkDataFrame): The outputs of `linker.inference.predict()`
+            out_path (str): The path (including filename) to save the html file to.
+            overwrite (bool, optional): Overwrite the html file if it already exists?
+                Defaults to False.
+            num_example_rows (int, optional): Number of example rows per comparison
+                vector. Defaults to 2.
+            minimum_comparison_vector_count (int, optional): The minimum number
+                of times that a comparison vector has to occur for it to
+                be included in the dashboard. This can reduce the size of
+                the produced html file by eliminating the rarest comparison
+                vectors. Defaults to 0 (all comparison vectors are included).
+            return_html_as_string: If True, return the html as a string
+
+        Examples:
+            ```py
+            df_predictions = linker.inference.predict()
+            linker.visualisations.comparison_viewer_dashboard(
+                df_predictions, "scv.html", True, 2
+            )
+            ```
+
+            Optionally, in Jupyter, you can display the results inline
+            Otherwise you can just load the html file in your browser
+
+            ```py
+            from IPython.display import IFrame
+            IFrame(src="./scv.html", width="100%", height=1200)
+            ```
+
+        """
+        self._linker._raise_error_if_necessary_waterfall_columns_not_computed()
+        pipeline = CTEPipeline([df_predict])
+        sql = comparison_vector_distribution_sql(self._linker)
+        pipeline.enqueue_sql(sql, "__splink__df_comparison_vector_distribution")
+
+        sqls = comparison_viewer_table_sqls(
+            self._linker,
+            num_example_rows,
+            minimum_comparison_vector_count,
+        )
+        pipeline.enqueue_list_of_sqls(sqls)
+
+        df = self._linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        rendered = render_splink_comparison_viewer_html(
+            df.as_record_list(),
+            self._linker._settings_obj._as_completed_dict(),
+            out_path,
+            overwrite,
+        )
+        if return_html_as_string:
+            return rendered
+        return None
+
+    def cluster_studio_dashboard(
+        self,
+        df_predict: SplinkDataFrame,
+        df_clustered: SplinkDataFrame,
+        out_path: str,
+        sampling_method: SamplingMethods = "random",
+        sample_size: int = 10,
+        cluster_ids: list[str] | None = None,
+        cluster_names: list[str] | None = None,
+        overwrite: bool = False,
+        return_html_as_string: bool = False,
+        _df_cluster_metrics: SplinkDataFrame | None = None,
+    ) -> str | None:
+        """Generate an interactive html visualization of the predicted cluster and
+        save to `out_path`.
+
+        Args:
+            df_predict (SplinkDataFrame): The outputs of `linker.inference.predict()`
+            df_clustered (SplinkDataFrame): The outputs of
+                `linker.clustering.cluster_pairwise_predictions_at_threshold()`
+            out_path (str): The path (including filename) to save the html file to.
+            sampling_method (str, optional): `random`, `by_cluster_size` or
+                `lowest_density_clusters_by_size`. Defaults to `random`.
+            sample_size (int, optional): Number of clusters to show in the dahboard.
+                Defaults to 10.
+            cluster_ids (list): The IDs of the clusters that will be displayed in the
+                dashboard.  If provided, ignore the `sampling_method` and `sample_size`
+                arguments. Defaults to None.
+            overwrite (bool, optional): Overwrite the html file if it already exists?
+                Defaults to False.
+            cluster_names (list, optional): If provided, the dashboard will display
+                these names in the selection box. Ony works in conjunction with
+                `cluster_ids`.  Defaults to None.
+            return_html_as_string: If True, return the html as a string
+
+        Examples:
+            ```py
+            df_p = linker.inference.predict()
+            df_c = linker.clustering.cluster_pairwise_predictions_at_threshold(
+                df_p, 0.5
+            )
+
+            linker.visualisations.cluster_studio_dashboard(
+                df_p, df_c, "cluster_studio.html", cluster_ids=[0, 4, 7]
+            )
+            ```
+
+            Optionally, in Jupyter, you can display the results inline
+            Otherwise you can just load the html file in your browser
+
+            ```py
+            from IPython.display import IFrame
+            IFrame(src="./cluster_studio.html", width="100%", height=1200)
+            ```
+        """
+        self._linker._raise_error_if_necessary_waterfall_columns_not_computed()
+
+        rendered = render_splink_cluster_studio_html(
+            self._linker,
+            df_predict,
+            df_clustered,
+            out_path,
+            sampling_method=sampling_method,
+            sample_size=sample_size,
+            cluster_ids=cluster_ids,
+            overwrite=overwrite,
+            cluster_names=cluster_names,
+            _df_cluster_metrics=_df_cluster_metrics,
+        )
+
+        if return_html_as_string:
+            return rendered
+        return None

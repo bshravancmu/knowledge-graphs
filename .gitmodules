@@ -6,14 +6,6 @@
 	path = external/llm-assisted/llm4vkg
 	url = https://github.com/HomuraT/LLM4VKG.git
 	branch = main
-[submodule "external/entity-resolution/splink"]
-	path = external/entity-resolution/splink
-	url = https://github.com/moj-analytical-services/splink.git
-	branch = master
-[submodule "external/entity-resolution/dedupe"]
-	path = external/entity-resolution/dedupe
-	url = https://github.com/dedupeio/dedupe.git
-	branch = main
 [submodule "external/validation/pyshacl"]
 	path = external/validation/pyshacl
 	url = https://github.com/RDFLib/pySHACL.git

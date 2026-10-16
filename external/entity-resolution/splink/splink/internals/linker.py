@@ -1,0 +1,567 @@
+from __future__ import annotations
+
+import logging
+from copy import copy, deepcopy
+from pathlib import Path
+from statistics import median
+from typing import Any, Sequence
+
+from splink.internals.blocking import (
+    BlockingRule,
+    block_using_rules_sqls,
+)
+from splink.internals.cache_dict_with_logging import CacheDictWithLogging
+from splink.internals.comparison_vector_values import (
+    compute_comparison_vector_values_from_id_pairs_sqls,
+)
+from splink.internals.dialects import SplinkDialect
+from splink.internals.em_training_session import EMTrainingSession
+from splink.internals.exceptions import SplinkException
+from splink.internals.input_column import InputColumn
+from splink.internals.linker_components.blocking_analysis import (
+    LinkerBlockingAnalysis,
+)
+from splink.internals.linker_components.clustering import LinkerClustering
+from splink.internals.linker_components.evaluation import LinkerEvalution
+from splink.internals.linker_components.inference import LinkerInference
+from splink.internals.linker_components.misc import LinkerMisc
+from splink.internals.linker_components.table_management import LinkerTableManagement
+from splink.internals.linker_components.training import LinkerTraining
+from splink.internals.linker_components.visualisations import LinkerVisualisations
+from splink.internals.misc import (
+    ascii_uid,
+    bayes_factor_to_prob,
+    prob_to_bayes_factor,
+)
+from splink.internals.pipeline import CTEPipeline
+from splink.internals.predict import (
+    predict_from_comparison_vectors_sqls,
+)
+from splink.internals.settings_creator import SettingsCreator
+from splink.internals.settings_validation.log_invalid_columns import (
+    InvalidColumnsLogger,
+    SettingsColumnCleaner,
+)
+from splink.internals.settings_validation.valid_types import (
+    _validate_dialect,
+)
+from splink.internals.splink_dataframe import SplinkDataFrame
+from splink.internals.splink_logging import enable as enable_logging
+from splink.internals.splinkdataframe_utils import (
+    get_db_api_from_inputs,
+    splink_dataframes_to_dict,
+)
+from splink.internals.unique_id_concat import (
+    _composite_unique_id_from_edges_sql,
+)
+from splink.internals.vertically_concatenate import (
+    concat_table_column_names,
+    enqueue_df_concat,
+    enqueue_df_concat_with_tf,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class Linker:
+    """The Linker object manages the data linkage process and holds the data linkage
+    model.
+
+    Most of Splink's functionality can  be accessed by calling methods (functions)
+    on the linker, such as `linker.inference.predict()`, `linker.profile_columns()` etc.
+
+    The Linker class is intended for subclassing for specific backends, e.g.
+    a `DuckDBLinker`.
+    """
+
+    def __init__(
+        self,
+        splink_dataframe_or_dataframes: SplinkDataFrame | Sequence[SplinkDataFrame],
+        settings: SettingsCreator | dict[str, Any] | Path | str,
+        log_level: int | str | None = logging.INFO,
+        validate_settings: bool = True,
+    ):
+        """
+        Initialise the linker object, which manages the data linkage process and
+        holds the data linkage model.
+
+        Examples:
+
+            Dedupe
+            ```py
+            linker = Linker(df, settings_dict)
+            ```
+            Link
+            ```py
+            df_1 = db_api.register(pd.read_parquet("table_1/"))
+            df_2 = db_api.register(pd.read_parquet("table_2/"))
+            linker = Linker(
+                [df_1, df_2],
+                settings_dict,
+                )
+            ```
+            Dedupe with a pre-trained model read from a json file
+            ```py
+            df = db_api.register(
+                pd.read_csv("data_to_dedupe.csv"), dataset_display_name="my_data"
+            )
+            linker = Linker(df, "model.json")
+            ```
+
+        Args:
+            splink_dataframe_or_dataframes (SplinkDataFrame | Sequence[SplinkDataFrame]):
+                Input data into the linkage model. Either a single SplinkDataFrame for
+                deduplication jobs, or a sequence of SplinkDataFrames for link_only
+                or link_and_dedupe. Tables should be registered using db_api.register()
+                before being passed to the Linker.
+            settings_dict (dict | Path | str): A Splink settings dictionary,
+                or a path (either as a pathlib.Path object, or a string) to a json file
+                defining a settings dictionary or pre-trained model.
+            log_level (int | str | None, optional): Logging level for Splink messages.
+                Defaults to logging.INFO. If None, Splink logging is not configured.
+            validate_settings (bool, optional): When True, check your settings
+                dictionary for any potential errors that may cause splink to fail.
+        """  # noqa: E501
+        self._db_schema = "splink"
+        if log_level is not None:
+            enable_logging(log_level)
+
+        self._db_api = get_db_api_from_inputs(splink_dataframe_or_dataframes)
+
+        # TODO: temp hack for compat
+        self._intermediate_table_cache: CacheDictWithLogging = (
+            self._db_api._intermediate_table_cache
+        )
+
+        # Turn into a creator
+        if not isinstance(settings, SettingsCreator):
+            settings_creator = SettingsCreator.from_path_or_dict(settings)
+        else:
+            settings_creator = settings
+
+        # Deal with uuid
+        if settings_creator.linker_uid is None:
+            settings_creator.linker_uid = ascii_uid(8)
+
+        # Do we trust the dialect set in the settings dict
+        # or overwrite it with the db api dialect?
+        # Maybe overwrite it here and incompatibilities have to be dealt with
+        # by comparisons/ blocking rules etc??
+        self._settings_obj = settings_creator.get_settings(
+            self._db_api.sql_dialect.sql_dialect_str
+        )
+
+        # TODO: Add test of what happens if the db_api is for a different backend
+        # to the sql_dialect set in the settings dict
+
+        self._input_tables_dict = splink_dataframes_to_dict(
+            splink_dataframe_or_dataframes
+        )
+
+        self._validate_input_dfs()
+        self._validate_settings(validate_settings)
+        self._em_training_sessions: list[EMTrainingSession] = []
+
+        self._debug_mode = False
+
+        self.blocking_analysis: "LinkerBlockingAnalysis" = LinkerBlockingAnalysis(self)
+        self.clustering: "LinkerClustering" = LinkerClustering(self)
+        self.evaluation: "LinkerEvalution" = LinkerEvalution(self)
+        self.inference: "LinkerInference" = LinkerInference(self)
+        self.misc: "LinkerMisc" = LinkerMisc(self)
+        self.table_management: "LinkerTableManagement" = LinkerTableManagement(self)
+        self.training: "LinkerTraining" = LinkerTraining(self)
+        self.visualisations: "LinkerVisualisations" = LinkerVisualisations(self)
+
+    def _input_columns(
+        self,
+        include_unique_id_col_names: bool = True,
+        include_additional_columns_to_retain: bool = True,
+    ) -> list[InputColumn]:
+        """Retrieve the column names from the input dataset(s) as InputColumns
+
+        Args:
+            include_unique_id_col_names (bool, optional): Whether to include unique ID
+                column names. Defaults to True.
+            include_additional_columns_to_retain (bool, optional): Whether to include
+                additional columns to retain. Defaults to True.
+
+        Raises:
+            SplinkException: If the input frames have different sets of columns.
+
+        Returns:
+            list[InputColumn]
+        """
+
+        input_dfs = self._input_tables_dict.values()
+
+        # get a list of the column names for each input frame as frozensets
+        # of InputColumn objects (frozensets are hashable for set comparison)
+        column_sets_by_input_df = [
+            frozenset(input_df.columns) for input_df in input_dfs
+        ]
+        # check that the set of input columns is the same for each frame,
+        # fail if the sets are different
+        if len(set(column_sets_by_input_df)) > 1:
+            common_cols = set.intersection(
+                *(set(col_set) for col_set in column_sets_by_input_df)
+            )
+            problem_cols = {
+                col
+                for col_set in column_sets_by_input_df
+                for col in col_set
+                if col not in common_cols
+            }
+            raise SplinkException(
+                "All linker input frames must have the same set of columns.  "
+                "The following columns were not found in all input frames: "
+                + ", ".join(c.name for c in problem_cols)
+            )
+
+        columns = next(iter(input_dfs)).columns
+
+        remove_columns = []
+        if not include_unique_id_col_names:
+            remove_columns.extend(
+                self._settings_obj.column_info_settings.unique_id_input_columns
+            )
+        if not include_additional_columns_to_retain:
+            remove_columns.extend(self._settings_obj._additional_columns_to_retain)
+
+        columns = [col for col in columns if col not in remove_columns]
+
+        return columns
+
+    @property
+    def _concat_table_column_names(self) -> list[str]:
+        """
+        Returns the columns actually present in __splink__df_concat table.
+        Includes source dataset name if it's been created, and logic of additional
+        columns already taken care of
+        """
+        return concat_table_column_names(self)
+
+    @property
+    def _cache_uid(self):
+        return self._settings_obj._cache_uid
+
+    @_cache_uid.setter
+    def _cache_uid(self, value):
+        self._settings_obj._cache_uid = value
+
+    @property
+    def _two_dataset_link_only(self):
+        # Two dataset link only join is a special case where an inner join of the
+        # two datasets is much more efficient than self-joining the vertically
+        # concatenation of all input datasets
+
+        if (
+            len(self._input_tables_dict) == 2
+            and self._settings_obj._link_type == "link_only"
+        ):
+            return True
+        else:
+            return False
+
+    # convenience wrappers:
+    @property
+    def _debug_mode(self) -> bool:
+        return self._db_api.debug_mode
+
+    @_debug_mode.setter
+    def _debug_mode(self, value: bool) -> None:
+        self._db_api.debug_mode = value
+
+    # TODO: rename these!
+    @property
+    def _sql_dialect_str(self) -> str:
+        return self._db_api.sql_dialect.sql_dialect_str
+
+    @property
+    def _sql_dialect(self) -> SplinkDialect:
+        return self._db_api.sql_dialect
+
+    def _proportion_sample_sql(
+        self,
+        proportion: float,
+        unique_id_cols: list[InputColumn],
+        seed: int | None = None,
+    ) -> str:
+        return self._sql_dialect.proportion_sample_sql(
+            proportion, unique_id_cols, seed=seed
+        )
+
+    def _check_for_valid_settings(self):
+        # raw tables don't yet exist in db
+        return hasattr(self, "_input_tables_dict")
+
+    def _validate_settings(self, validate_settings):
+        # Vaidate our settings after plugging them through
+        # `Settings(<settings>)`
+        if not self._check_for_valid_settings():
+            return
+
+        # Run miscellaneous checks on our settings dictionary.
+        _validate_dialect(
+            settings_dialect=self._settings_obj._sql_dialect_str,
+            linker_dialect=self._sql_dialect_str,
+            linker_type=self.__class__.__name__,
+        )
+
+        # Constructs output logs for our various settings inputs
+        cleaned_settings = SettingsColumnCleaner(
+            settings_object=self._settings_obj,
+            input_columns=self._input_tables_dict,
+        )
+        InvalidColumnsLogger(cleaned_settings).construct_output_logs(validate_settings)
+
+    def _table_to_splink_dataframe(
+        self, templated_name: str, physical_name: str
+    ) -> SplinkDataFrame:
+        """Create a SplinkDataframe from a table in the underlying database called
+        `physical_name`.
+        Associate a `templated_name` with this table, which signifies the purpose
+        or 'meaning' of this table to splink. (e.g. `__splink__df_blocked`)
+        Args:
+            templated_name (str): The purpose of the table to Splink
+            physical_name (str): The name of the table in the underlying databse
+        """
+        return self._db_api.table_to_splink_dataframe(templated_name, physical_name)
+
+    def __deepcopy__(self, memo):
+        """When we do EM training, we need a copy of the linker which is independent
+        of the main linker e.g. setting parameters on the copy will not affect the
+        main linker.  This method implements ensures linker can be deepcopied.
+        """
+        new_linker = copy(self)
+        new_linker._em_training_sessions = []
+
+        new_settings = deepcopy(self._settings_obj)
+        new_linker._settings_obj = new_settings
+
+        new_linker.clustering = LinkerClustering(new_linker)
+        new_linker.evaluation = LinkerEvalution(new_linker)
+        new_linker.inference = LinkerInference(new_linker)
+        new_linker.misc = LinkerMisc(new_linker)
+        new_linker.table_management = LinkerTableManagement(new_linker)
+        new_linker.training = LinkerTraining(new_linker)
+        new_linker.visualisations = LinkerVisualisations(new_linker)
+
+        return new_linker
+
+    def _predict_warning(self):
+        if not self._settings_obj._is_fully_trained:
+            msg = (
+                "\n -- WARNING --\n"
+                "You have called predict(), but there are some parameter "
+                "estimates which have neither been estimated or specified in your "
+                "settings dictionary.  To produce predictions the following"
+                " untrained parameters will use default values."
+            )
+            messages = self._settings_obj._not_trained_messages()
+
+            warn_message = "\n".join([msg] + messages)
+
+            logger.warning(warn_message)
+
+    def _validate_input_dfs(self):
+        if not hasattr(self, "_input_tables_dict"):
+            # This is only triggered where a user loads a settings dict from a
+            # given file path.
+            return
+
+        for df in self._input_tables_dict.values():
+            df.validate()
+
+        if self._settings_obj._link_type == "dedupe_only":
+            if len(self._input_tables_dict) > 1:
+                raise ValueError(
+                    'If link_type = "dedupe only" then input tables must contain '
+                    "only a single input table",
+                )
+
+    def _populate_probability_two_random_records_match_from_trained_values(self):
+        recip_prop_matches_estimates = []
+
+        logger.log(
+            15,
+            (
+                "---- Using training sessions to compute "
+                "probability two random records match ----"
+            ),
+        )
+        for em_training_session in self._em_training_sessions:
+            training_lambda = em_training_session.core_model_settings.probability_two_random_records_match  # noqa: E501
+            training_lambda_bf = prob_to_bayes_factor(training_lambda)
+            reverse_level_infos = (
+                em_training_session._comparison_levels_to_reverse_blocking_rule
+            )
+
+            logger.log(
+                15,
+                "\n"
+                f"Probability two random records match from trained model blocking on "
+                f"{em_training_session._blocking_rule_for_training.blocking_rule_sql}: "
+                f"{training_lambda:,.3f}",
+            )
+
+            for reverse_level_info in reverse_level_infos:
+                # Get comparison level on current settings obj
+                # TODO: do we need this dance? We already have the level + comparison
+                # maybe they are different copies with different values?
+                reverse_level = reverse_level_info["level"]
+                cc = self._settings_obj._get_comparison_by_output_column_name(
+                    reverse_level_info["comparison"].output_column_name
+                )
+
+                cl = cc._get_comparison_level_by_comparison_vector_value(
+                    reverse_level.comparison_vector_value
+                )
+
+                if cl._has_estimated_values:
+                    bf = cl._trained_m_median / cl._trained_u_median
+                else:
+                    bf = cl._bayes_factor
+
+                logger.log(
+                    15,
+                    f"Reversing comparison level {cc.output_column_name}"
+                    f" using bayes factor {bf:,.3f}",
+                )
+
+                training_lambda_bf = training_lambda_bf / bf
+
+                as_prob = bayes_factor_to_prob(training_lambda_bf)
+
+                logger.log(
+                    15,
+                    (
+                        "This estimate of probability two random records match now: "
+                        f" {as_prob:,.3f} "
+                        f"with reciprocal {(1 / as_prob):,.3f}"
+                    ),
+                )
+            logger.log(15, "\n---------")
+            p = bayes_factor_to_prob(training_lambda_bf)
+            recip_prop_matches_estimates.append(1 / p)
+
+        prop_matches_estimate = 1 / median(recip_prop_matches_estimates)
+
+        self._settings_obj._probability_two_random_records_match = prop_matches_estimate
+        logger.log(
+            15,
+            "\nMedian of prop of matches estimates: "
+            f"{self._settings_obj._probability_two_random_records_match:,.3f} "
+            "reciprocal "
+            f"{1 / self._settings_obj._probability_two_random_records_match:,.3f}",
+        )
+
+    def _populate_m_u_from_trained_values(self):
+        ccs = self._settings_obj.comparisons
+
+        for cc in ccs:
+            for cl in cc._comparison_levels_excluding_null:
+                if cl._has_estimated_u_values and not cl._fix_u_probability:
+                    cl.u_probability = cl._trained_u_median
+                if cl._has_estimated_m_values and not cl._fix_m_probability:
+                    cl.m_probability = cl._trained_m_median
+
+    def _raise_error_if_necessary_waterfall_columns_not_computed(self):
+        ricc = self._settings_obj._retain_intermediate_calculation_columns
+        rmc = self._settings_obj._retain_matching_columns
+        if not (ricc and rmc):
+            raise ValueError(
+                "retain_intermediate_calculation_columns and "
+                "retain_matching_columns must both be set to True in your settings"
+                " dictionary to use this function, because otherwise the necessary "
+                "columns will not be available in the input records."
+                f" Their current values are {ricc} and {rmc}, respectively. "
+                "Please re-run your linkage with them both set to True."
+            )
+
+    def _raise_error_if_necessary_accuracy_columns_not_computed(self):
+        rmc = self._settings_obj._retain_matching_columns
+        if not (rmc):
+            raise ValueError(
+                "retain_matching_columns must be set to True in your settings"
+                " dictionary to use this function, because otherwise the necessary "
+                "columns will not be available in the input records."
+                f" Its current value is {rmc}. "
+                "Please re-run your linkage with it set to True."
+            )
+
+    def _self_link(self) -> SplinkDataFrame:
+        """Use the linkage model to compare and score all records in our input df with
+            themselves.
+
+        Returns:
+            SplinkDataFrame: Scored pairwise comparisons of the input records to
+                themselves.
+        """
+
+        # Block on uid i.e. create pairwise record comparisons where the uid matches
+        settings = self._settings_obj
+        uid_cols = settings.column_info_settings.unique_id_input_columns
+        uid_l = _composite_unique_id_from_edges_sql(uid_cols, None, "l")
+        uid_r = _composite_unique_id_from_edges_sql(uid_cols, None, "r")
+
+        blocking_rule = BlockingRule(
+            f"{uid_l} = {uid_r}", sql_dialect_str=self._sql_dialect.sql_dialect_str
+        )
+
+        pipeline = CTEPipeline()
+        enqueue_df_concat(self, pipeline)
+
+        sqls = block_using_rules_sqls(
+            input_tablename_l="__splink__df_concat",
+            input_tablename_r="__splink__df_concat",
+            blocking_rules=[blocking_rule],
+            link_type="self_link",
+            source_dataset_input_column=settings.column_info_settings.source_dataset_input_column,
+            unique_id_input_column=settings.column_info_settings.unique_id_input_column,
+        )
+        pipeline.enqueue_list_of_sqls(sqls)
+
+        blocked_pairs = self._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        pipeline = CTEPipeline([blocked_pairs])
+        enqueue_df_concat_with_tf(self, pipeline)
+
+        sqls = compute_comparison_vector_values_from_id_pairs_sqls(
+            settings._columns_to_select_for_blocking,
+            settings._columns_to_select_for_comparison_vector_values,
+            input_tablename_l="__splink__df_concat_with_tf",
+            input_tablename_r="__splink__df_concat_with_tf",
+            source_dataset_input_column=settings.column_info_settings.source_dataset_input_column,
+            unique_id_input_column=settings.column_info_settings.unique_id_input_column,
+        )
+        pipeline.enqueue_list_of_sqls(sqls)
+
+        sql_infos = predict_from_comparison_vectors_sqls(
+            unique_id_input_columns=uid_cols,
+            core_model_settings=self._settings_obj.core_model_settings,
+            sql_dialect=self._sql_dialect,
+        )
+        for sql_info in sql_infos:
+            output_table_name = sql_info["output_table_name"]
+            output_table_name = output_table_name.replace("predict", "self_link")
+            pipeline.enqueue_sql(sql_info["sql"], output_table_name)
+
+        predictions = self._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+        return predictions
+
+    def _get_labels_tablename_from_input(
+        self, labels_splinkdataframe_or_table_name: str | SplinkDataFrame
+    ) -> str:
+        if isinstance(labels_splinkdataframe_or_table_name, SplinkDataFrame):
+            labels_tablename = labels_splinkdataframe_or_table_name.physical_name
+        elif isinstance(labels_splinkdataframe_or_table_name, str):
+            labels_tablename = labels_splinkdataframe_or_table_name
+        else:
+            raise ValueError(
+                "The 'labels_splinkdataframe_or_table_name' argument"
+                " must be of type SplinkDataframe or a string representing a tablename"
+                " in the input database"
+            )
+        return labels_tablename

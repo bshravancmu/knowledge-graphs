@@ -1,0 +1,594 @@
+import random
+
+import pyarrow as pa
+
+import splink.internals.comparison_library as cl
+from splink.internals.blocking import materialise_exploded_id_tables
+from tests.decorator import mark_with_dialects_including
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_simple_example_link_only(test_helpers, dialect):
+    data_l = pa.Table.from_pylist(
+        [
+            {"unique_id": 1, "gender": "m", "postcode": ["2612", "2000"]},
+            {"unique_id": 2, "gender": "m", "postcode": ["2612", "2617"]},
+            {"unique_id": 3, "gender": "f", "postcode": ["2617"]},
+        ]
+    )
+    data_r = pa.Table.from_pylist(
+        [
+            {"unique_id": 4, "gender": "m", "postcode": ["2617", "2600"]},
+            {"unique_id": 5, "gender": "f", "postcode": ["2000"]},
+            {"unique_id": 6, "gender": "m", "postcode": ["2617", "2612", "2000"]},
+        ]
+    )
+    helper = test_helpers[dialect]
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": [
+            {
+                "blocking_rule": "l.gender = r.gender and l.postcode = r.postcode",
+                "arrays_to_explode": ["postcode"],
+            },
+            "l.gender = r.gender",
+        ],
+        "comparisons": [cl.ArrayIntersectAtSizes("postcode", [1])],
+    }
+    ## the pairs returned by the first blocking rule are (1,6),(2,4),(2,6)
+    ## the additional pairs returned by the second blocking rule are (1,4),(3,5)
+    linker = helper.linker_with_registration([data_l, data_r], settings)
+    returned_triples = (
+        linker.inference.predict()
+        .as_pyarrow_table()
+        .select(
+            [
+                "unique_id_l",
+                "unique_id_r",
+                "match_key",
+            ]
+        )
+    )
+    actual_triples = {tuple(t.values()) for t in returned_triples.to_pylist()}
+    expected_triples = {(1, 6, "0"), (2, 4, "0"), (2, 6, "0"), (1, 4, "1"), (3, 5, "1")}
+    assert expected_triples == actual_triples
+
+
+def generate_array_based_datasets_helper(
+    n_rows=1000, n_array_based_columns=3, n_distinct_values=1000, array_size=3, seed=1
+):
+    random.seed(seed)
+    datasets = []
+    for _k in range(2):
+        results_dict = {}
+        results_dict["cluster"] = list(range(n_rows))
+        for i in range(n_array_based_columns):
+            col = []
+            for j in range(n_rows):
+                col.append(random.sample(range(n_distinct_values), array_size))
+                if random.random() < 0.8 or i == n_array_based_columns - 1:
+                    col[-1].append(j)
+                    random.shuffle(col[-1])
+            results_dict[f"array_column_{i}"] = col
+        datasets.append(pa.Table.from_pydict(results_dict))
+    return datasets
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_array_based_blocking_with_random_data_dedupe(test_helpers, dialect):
+    helper = test_helpers[dialect]
+    input_data_l, input_data_r = generate_array_based_datasets_helper()
+    input_data_l = input_data_l.append_column(
+        "unique_id",
+        [[f"{cluster_id}-0" for cluster_id in input_data_l.column("cluster")]],
+    )
+    input_data_r = input_data_r.append_column(
+        "unique_id",
+        [[f"{cluster_id}-1" for cluster_id in input_data_r.column("cluster")]],
+    )
+    input_data = pa.concat_tables([input_data_l, input_data_r])
+    blocking_rules = [
+        {
+            "blocking_rule": """l.array_column_0 = r.array_column_0
+                and l.array_column_1 = r.array_column_1""",
+            "arrays_to_explode": ["array_column_0", "array_column_1"],
+        },
+        {
+            "blocking_rule": """l.array_column_0 = r.array_column_0
+                and l.array_column_1 = r.array_column_1
+                and l.array_column_2 = r.array_column_2""",
+            "arrays_to_explode": ["array_column_0", "array_column_1"],
+        },
+        {
+            "blocking_rule": "l.array_column_2 = r.array_column_2",
+            "arrays_to_explode": ["array_column_2"],
+        },
+    ]
+    settings = {
+        "link_type": "dedupe_only",
+        "blocking_rules_to_generate_predictions": blocking_rules,
+        "unique_id_column_name": "unique_id",
+        "additional_columns_to_retain": ["cluster"],
+        "comparisons": [cl.ArrayIntersectAtSizes("array_column_1", [1])],
+    }
+    linker = helper.linker_with_registration(input_data, settings)
+    predict_dict = linker.inference.predict().as_dict()
+    ## check that there are no duplicates in the output
+    assert len(
+        set(zip(predict_dict["unique_id_l"], predict_dict["unique_id_r"]))
+    ) == len(predict_dict["unique_id_l"])
+
+    ## check that the output contains no links with match_key=1,
+    ## since all pairs returned by the second rule should also be
+    ## returned by the first rule and so should be filtered out
+    assert not [mk for mk in predict_dict["match_key"] if mk == 1]
+
+    ## check that all 1000 true matches are in the output
+    ## (this is guaranteed by how the data was generated)
+    assert (
+        sum(
+            c_l == c_r
+            for c_l, c_r in zip(predict_dict["cluster_l"], predict_dict["cluster_r"])
+        )
+        == 1000
+    )
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_array_based_blocking_with_random_data_link_only(test_helpers, dialect):
+    helper = test_helpers[dialect]
+    input_data_l, input_data_r = generate_array_based_datasets_helper()
+    blocking_rules = [
+        {
+            "blocking_rule": """l.array_column_0 = r.array_column_0
+                and l.array_column_1 = r.array_column_1""",
+            "arrays_to_explode": ["array_column_0", "array_column_1"],
+        },
+        {
+            "blocking_rule": """l.array_column_0 = r.array_column_0
+                and l.array_column_1 = r.array_column_1
+                and l.array_column_2=r.array_column_2""",
+            "arrays_to_explode": ["array_column_0", "array_column_1", "array_column_2"],
+        },
+        {
+            "blocking_rule": "l.array_column_2 = r.array_column_2",
+            "arrays_to_explode": ["array_column_2"],
+        },
+    ]
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": blocking_rules,
+        "unique_id_column_name": "cluster",
+        "additional_columns_to_retain": ["cluster"],
+        "comparisons": [cl.ArrayIntersectAtSizes("array_column_1", [1])],
+    }
+    linker = helper.linker_with_registration([input_data_l, input_data_r], settings)
+    predict_dict = linker.inference.predict().as_dict()
+
+    ## check that we get no within-dataset links
+    within_dataset_links = sum(
+        s_l == s_r
+        for s_l, s_r in zip(
+            predict_dict["source_dataset_l"], predict_dict["source_dataset_r"]
+        )
+    )
+    assert within_dataset_links == 0
+
+    ## check that no pair of ids appears twice in the output
+    assert len(set(zip(predict_dict["cluster_l"], predict_dict["cluster_r"]))) == len(
+        predict_dict["cluster_l"]
+    )
+
+    ## check that the second blocking rule returns no matches,
+    ## since every pair matching the second rule will also match the first,
+    ## and so should be filtered out
+    assert sum(mk == 1 for mk in predict_dict["match_key"]) == 0
+
+    ## check that all 1000 true matches are returned
+    assert (
+        sum(
+            c_l == c_r
+            for c_l, c_r in zip(predict_dict["cluster_l"], predict_dict["cluster_r"])
+        )
+        == 1000
+    )
+
+
+@mark_with_dialects_including("duckdb", pass_dialect=True)
+def test_link_only_unique_id_ambiguity(test_helpers, dialect):
+    helper = test_helpers[dialect]
+    data_1 = [
+        {
+            "unique_id": 1,
+            "first_name": "John",
+            "surname": "Doe",
+            "postcode": ["A", "B"],
+        },
+        {"unique_id": 3, "first_name": "John", "surname": "Doe", "postcode": ["B"]},
+    ]
+
+    data_2 = [
+        {"unique_id": 3, "first_name": "John", "surname": "Smith", "postcode": ["A"]},
+    ]
+
+    data_3 = [
+        {"unique_id": 3, "first_name": "John", "surname": "Smith", "postcode": ["A"]},
+        {"unique_id": 4, "first_name": "John", "surname": "Doe", "postcode": ["C"]},
+    ]
+
+    df_1 = pa.Table.from_pylist(data_1)
+    df_2 = pa.Table.from_pylist(data_2)
+    df_3 = pa.Table.from_pylist(data_3)
+
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": [
+            {
+                "blocking_rule": """l.postcode = r.postcode
+                                    and l.first_name = r.first_name""",
+                "arrays_to_explode": ["postcode"],
+            },
+            "l.surname = r.surname",
+        ],
+        "comparisons": [
+            cl.ExactMatch("first_name"),
+            cl.ExactMatch("surname"),
+            cl.ExactMatch("postcode"),
+        ],
+        "retain_intermediate_calculation_columns": True,
+    }
+
+    linker = helper.linker_with_registration(
+        [df_1, df_2, df_3],
+        settings,
+        input_table_aliases=["a_", "b_", "c_"],
+    )
+    returned_triples = (
+        linker.inference.predict()
+        .as_pyarrow_table()
+        .select(
+            [
+                "source_dataset_l",
+                "unique_id_l",
+                "source_dataset_r",
+                "unique_id_r",
+                "match_key",
+            ]
+        )
+    )
+
+    actual_triples = {tuple(t.values()) for t in returned_triples.to_pylist()}
+    assert len(returned_triples) == 5
+
+    rule1_tuples = {
+        ("a_", 1, "b_", 3, "0"),
+        ("a_", 1, "c_", 3, "0"),
+        ("b_", 3, "c_", 3, "0"),
+    }
+    rule2_tuples = {("a_", 1, "c_", 4, "1"), ("a_", 3, "c_", 4, "1")}
+
+    all_tuples = rule1_tuples.union(rule2_tuples)
+    assert actual_triples == all_tuples
+
+
+def _normalise_sql(sql: str) -> str:
+    return sql.lower().replace('"', "").replace("`", "")
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_two_dataset_link_only_exploding_materialised_sql_uses_split_tables(
+    test_helpers, dialect
+):
+    helper = test_helpers[dialect]
+    data_l = pa.Table.from_pylist(
+        [
+            {"unique_id": 1, "first_name": "Alice", "postcode": ["A", "B"]},
+            {"unique_id": 2, "first_name": "Bob", "postcode": ["C"]},
+        ]
+    )
+    data_r = pa.Table.from_pylist(
+        [
+            {"unique_id": 10, "first_name": "Alice", "postcode": ["B"]},
+            {"unique_id": 11, "first_name": "Bob", "postcode": ["C"]},
+        ]
+    )
+
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": [
+            {
+                "blocking_rule": "l.postcode = r.postcode",
+                "arrays_to_explode": ["postcode"],
+            }
+        ],
+        "comparisons": [cl.ExactMatch("first_name")],
+    }
+
+    linker = helper.linker_with_registration([data_l, data_r], settings)
+
+    exploding = materialise_exploded_id_tables(
+        link_type="two_dataset_link_only",
+        blocking_rules=linker._settings_obj._blocking_rules_to_generate_predictions,
+        db_api=linker._db_api,
+        splink_df_dict=linker._input_tables_dict,
+        source_dataset_input_column=linker._settings_obj.column_info_settings.source_dataset_input_column,
+        unique_id_input_column=linker._settings_obj.column_info_settings.unique_id_input_column,
+    )
+    try:
+        assert len(exploding) == 1
+        sql = _normalise_sql(exploding[0].exploded_id_pair_table.sql_used_to_create)
+        assert "from __splink__df_concat_left_unnested as l" in sql
+        assert "inner join __splink__df_concat_right_unnested as r" in sql
+        assert "l.source_dataset < r.source_dataset" not in sql
+        assert "__splink__df_concat as (" not in sql
+        assert "__splink__df_concat_left as (" not in sql
+        assert "__splink__df_concat_right as (" not in sql
+        assert "from __splink__input_table_0" in sql
+        assert "from __splink__input_table_1" in sql
+    finally:
+        for br in exploding:
+            br.drop_materialised_id_pairs_dataframe()
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_two_dataset_link_only_predict_orders_by_min_synthetic_source_dataset(
+    test_helpers, dialect
+):
+    helper = test_helpers[dialect]
+    data_first = pa.Table.from_pylist(
+        [
+            {"unique_id": 1, "name": "Alice", "surname": "Smith", "postcode": ["A"]},
+            {"unique_id": 2, "name": "Bob", "surname": "Brown", "postcode": ["B"]},
+        ]
+    )
+    data_second = pa.Table.from_pylist(
+        [
+            {"unique_id": 10, "name": "Alice", "surname": "Smith", "postcode": ["A"]},
+            {"unique_id": 20, "name": "Bob", "surname": "Brown", "postcode": ["B"]},
+        ]
+    )
+
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": [
+            "l.surname = r.surname",
+            {
+                "blocking_rule": "l.name = r.name and l.postcode = r.postcode",
+                "arrays_to_explode": ["postcode"],
+            },
+        ],
+        "comparisons": [cl.ExactMatch("name")],
+    }
+
+    linker = helper.linker_with_registration(
+        [data_first, data_second],
+        settings,
+        input_table_aliases=["df_2", "df_1"],
+    )
+    df_predict = linker.inference.predict().as_dict()
+
+    actual_pairs = set(
+        zip(
+            df_predict["source_dataset_l"],
+            df_predict["unique_id_l"],
+            df_predict["source_dataset_r"],
+            df_predict["unique_id_r"],
+        )
+    )
+    expected_pairs = {
+        ("df_1", 10, "df_2", 1),
+        ("df_1", 20, "df_2", 2),
+    }
+
+    assert actual_pairs == expected_pairs
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_two_dataset_link_only_exploding_materialised_sql_uses_literal_sds_filters(
+    test_helpers, dialect
+):
+    helper = test_helpers[dialect]
+    data_first = pa.Table.from_pylist(
+        [
+            {"unique_id": 1, "sds": 2, "name": "Alice", "postcode": ["A", "B"]},
+            {"unique_id": 2, "sds": 2, "name": "Bob", "postcode": ["C"]},
+        ]
+    )
+    data_second = pa.Table.from_pylist(
+        [
+            {"unique_id": 10, "sds": 1, "name": "Alice", "postcode": ["B"]},
+            {"unique_id": 11, "sds": 1, "name": "Bob", "postcode": ["C"]},
+        ]
+    )
+
+    settings = {
+        "link_type": "link_only",
+        "source_dataset_column_name": "sds",
+        "blocking_rules_to_generate_predictions": [
+            {
+                "blocking_rule": "l.postcode = r.postcode",
+                "arrays_to_explode": ["postcode"],
+            }
+        ],
+        "comparisons": [cl.ExactMatch("name")],
+    }
+
+    linker = helper.linker_with_registration(
+        [data_first, data_second],
+        settings,
+        input_table_aliases=["df_2", "df_1"],
+    )
+
+    exploding = materialise_exploded_id_tables(
+        link_type="two_dataset_link_only",
+        blocking_rules=linker._settings_obj._blocking_rules_to_generate_predictions,
+        db_api=linker._db_api,
+        splink_df_dict=linker._input_tables_dict,
+        source_dataset_input_column=linker._settings_obj.column_info_settings.source_dataset_input_column,
+        unique_id_input_column=linker._settings_obj.column_info_settings.unique_id_input_column,
+    )
+    try:
+        assert len(exploding) == 1
+        sql = _normalise_sql(exploding[0].exploded_id_pair_table.sql_used_to_create)
+        assert "where sds = 1" in sql
+        assert "where sds = 2" in sql
+        assert "select min(" not in sql
+        assert "select max(" not in sql
+    finally:
+        for br in exploding:
+            br.drop_materialised_id_pairs_dataframe()
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_link_only_three_dataset_exploding_materialised_sql_keeps_standard_filters(
+    test_helpers, dialect
+):
+    helper = test_helpers[dialect]
+    data_1 = pa.Table.from_pylist(
+        [{"unique_id": 1, "first_name": "Alice", "postcode": ["A"]}]
+    )
+    data_2 = pa.Table.from_pylist(
+        [{"unique_id": 2, "first_name": "Alice", "postcode": ["A"]}]
+    )
+    data_3 = pa.Table.from_pylist(
+        [{"unique_id": 3, "first_name": "Alice", "postcode": ["A"]}]
+    )
+
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": [
+            {
+                "blocking_rule": "l.postcode = r.postcode",
+                "arrays_to_explode": ["postcode"],
+            }
+        ],
+        "comparisons": [cl.ExactMatch("first_name")],
+    }
+
+    linker = helper.linker_with_registration([data_1, data_2, data_3], settings)
+
+    exploding = materialise_exploded_id_tables(
+        link_type="link_only",
+        blocking_rules=linker._settings_obj._blocking_rules_to_generate_predictions,
+        db_api=linker._db_api,
+        splink_df_dict=linker._input_tables_dict,
+        source_dataset_input_column=linker._settings_obj.column_info_settings.source_dataset_input_column,
+        unique_id_input_column=linker._settings_obj.column_info_settings.unique_id_input_column,
+    )
+    try:
+        assert len(exploding) == 1
+        sql = _normalise_sql(exploding[0].exploded_id_pair_table.sql_used_to_create)
+        assert "from __splink__df_concat_unnested as l" in sql
+        assert "inner join __splink__df_concat_unnested as r" in sql
+        assert "l.source_dataset != r.source_dataset" in sql
+        assert "__splink__df_concat_left_unnested" not in sql
+    finally:
+        for br in exploding:
+            br.drop_materialised_id_pairs_dataframe()
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_two_dataset_link_only_exploding_with_input_aliases(test_helpers, dialect):
+    helper = test_helpers[dialect]
+    data_l = pa.Table.from_pylist(
+        [
+            {"unique_id": 1, "name": "Alice", "postcode": ["A", "B"]},
+            {"unique_id": 2, "name": "Bob", "postcode": ["C"]},
+        ]
+    )
+    data_r = pa.Table.from_pylist(
+        [
+            {"unique_id": 10, "name": "Alice", "postcode": ["B"]},
+            {"unique_id": 11, "name": "Alice", "postcode": ["D"]},
+            {"unique_id": 12, "name": "Bob", "postcode": ["C"]},
+        ]
+    )
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": [
+            {
+                "blocking_rule": "l.name = r.name and l.postcode = r.postcode",
+                "arrays_to_explode": ["postcode"],
+            }
+        ],
+        "comparisons": [cl.ExactMatch("name")],
+    }
+    linker = helper.linker_with_registration(
+        [data_l, data_r],
+        settings,
+        input_table_aliases=["left_ds", "right_ds"],
+    )
+    df_predict = linker.inference.predict().as_dict()
+
+    pairs = set(zip(df_predict["unique_id_l"], df_predict["unique_id_r"]))
+    assert pairs == {(1, 10), (2, 12)}
+    assert set(df_predict["source_dataset_l"]) == {"left_ds"}
+    assert set(df_predict["source_dataset_r"]) == {"right_ds"}
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_two_dataset_link_only_exploding_predict_expected_pairs(test_helpers, dialect):
+    helper = test_helpers[dialect]
+    data_l = pa.Table.from_pylist(
+        [
+            {"unique_id": 1, "name": "Alice", "postcode": ["A", "B"]},
+            {"unique_id": 2, "name": "Bob", "postcode": ["C"]},
+            {"unique_id": 3, "name": "Alice", "postcode": ["Z"]},
+        ]
+    )
+    data_r = pa.Table.from_pylist(
+        [
+            {"unique_id": 10, "name": "Alice", "postcode": ["B"]},
+            {"unique_id": 11, "name": "Alice", "postcode": ["Z", "Q"]},
+            {"unique_id": 12, "name": "Bob", "postcode": ["W"]},
+        ]
+    )
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": [
+            {
+                "blocking_rule": "l.name = r.name and l.postcode = r.postcode",
+                "arrays_to_explode": ["postcode"],
+            }
+        ],
+        "comparisons": [cl.ExactMatch("name")],
+    }
+    linker = helper.linker_with_registration([data_l, data_r], settings)
+    df_predict = linker.inference.predict().as_dict()
+
+    pairs = set(zip(df_predict["unique_id_l"], df_predict["unique_id_r"]))
+    assert pairs == {(1, 10), (3, 11)}
+
+
+@mark_with_dialects_including("duckdb", "spark", pass_dialect=True)
+def test_two_dataset_link_only_exploding_deterministic_link_expected_pairs(
+    test_helpers, dialect
+):
+    helper = test_helpers[dialect]
+    data_l = pa.Table.from_pylist(
+        [
+            {"unique_id": 1, "name": "Alice", "postcode": ["A", "B"]},
+            {"unique_id": 2, "name": "Bob", "postcode": ["C"]},
+        ]
+    )
+    data_r = pa.Table.from_pylist(
+        [
+            {"unique_id": 10, "name": "Alice", "postcode": ["B"]},
+            {"unique_id": 12, "name": "Bob", "postcode": ["C"]},
+        ]
+    )
+    settings = {
+        "link_type": "link_only",
+        "blocking_rules_to_generate_predictions": [
+            {
+                "blocking_rule": "l.name = r.name and l.postcode = r.postcode",
+                "arrays_to_explode": ["postcode"],
+            }
+        ],
+        "comparisons": [cl.ExactMatch("name")],
+    }
+    linker = helper.linker_with_registration([data_l, data_r], settings)
+    deterministic = linker.inference.deterministic_link().as_dict()
+
+    pairs = set(zip(deterministic["unique_id_l"], deterministic["unique_id_r"]))
+    assert pairs == {(1, 10), (2, 12)}

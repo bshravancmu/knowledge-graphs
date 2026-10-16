@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
+from splink.internals.input_column import InputColumn
+from splink.internals.spark.spark_helpers.version import get_spark_major_version
+from splink.internals.splink_dataframe import SplinkDataFrame
+
+from .spark_helpers.custom_spark_dialect import Dialect
+
+logger = logging.getLogger(__name__)
+
+Dialect["customspark"]
+if TYPE_CHECKING:
+    from pandas import DataFrame as PandasDataFrame
+    from pyarrow import Table as PyArrowTable
+
+    from .database_api import SparkAPI
+else:
+    PandasDataFrame = ...
+
+
+class SparkDataFrame(SplinkDataFrame):
+    db_api: SparkAPI
+
+    @property
+    def columns(self) -> list[InputColumn]:
+        sql = f"select * from {self.physical_name} limit 1"
+        spark_df = self.db_api._execute_sql_against_backend(sql)
+
+        col_strings = list(spark_df.columns)
+        return [InputColumn(c, sqlglot_dialect_str="spark") for c in col_strings]
+
+    def validate(self):
+        pass
+
+    def as_record_list(self, limit=None):
+        sql = f"select * from {self.physical_name}"
+        if limit:
+            sql += f" limit {limit}"
+
+        spark_df = self.db_api._execute_sql_against_backend(sql)
+
+        return [r.asDict(recursive=True) for r in spark_df.collect()]
+
+    def as_dict(self, limit=None):
+        sql = f"select * from {self.physical_name}"
+        if limit:
+            sql += f" limit {limit}"
+
+        spark_df = self.db_api._execute_sql_against_backend(sql)
+
+        columns = spark_df.columns
+        rows = spark_df.collect()
+        return {col: [row[col] for row in rows] for col in columns}
+
+    def as_pyarrow_table(self, limit: int | None = None) -> PyArrowTable:
+        # spark 3 doesn't have native arrow support, so use our fallback method instead
+        if get_spark_major_version() == 3:
+            return super().as_pyarrow_table(limit=limit)
+        sql = f"select * from {self.physical_name}"
+        if limit:
+            sql += f" limit {limit}"
+
+        spark_df = self.db_api._execute_sql_against_backend(sql)
+        return spark_df.toArrow()
+
+    def _drop_table_from_database(self, force_non_splink_table=False):
+        if self.db_api.break_lineage_method == "delta_lake_table":
+            self._check_drop_table_created_by_splink(force_non_splink_table)
+            self.db_api.delete_table_from_database(self.physical_name)
+        else:
+            pass
+
+    def as_pandas_dataframe(self, limit: int | None = None) -> PandasDataFrame:
+        sql = f"select * from {self.physical_name}"
+        if limit:
+            sql += f" limit {limit}"
+
+        return self.db_api._execute_sql_against_backend(sql).toPandas()
+
+    def as_spark_dataframe(self):
+        return self.db_api.spark.table(self.physical_name)
+
+    def to_parquet(self, filepath, overwrite=False):
+        if not overwrite:
+            self.check_file_exists(filepath)
+
+        spark_df = self.as_spark_dataframe()
+        spark_df.write.mode("overwrite").format("parquet").save(filepath)
+
+    def to_csv(self, filepath, overwrite=False):
+        if not overwrite:
+            self.check_file_exists(filepath)
+
+        spark_df = self.as_spark_dataframe()
+        spark_df.write.mode("overwrite").format("csv").option("header", "true").save(
+            filepath
+        )

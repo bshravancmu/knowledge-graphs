@@ -1,0 +1,403 @@
+import pyarrow as pa
+
+import splink.comparison_library as cl
+from splink import SettingsCreator, block_on
+
+from .decorator import mark_with_dialects_excluding
+
+
+# See https://www.robinlinacre.com/graphPlayground/ with this data:
+# https://gist.github.com/RobinL/a022c16ada1892035b1f3f7838f80db0#file-example_1-json
+@mark_with_dialects_excluding()
+def test_single_best_links_correctness_example_1(test_helpers, dialect):
+    helper = test_helpers[dialect]
+
+    data = {
+        "unique_id": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+        "source_dataset": ["a", "b", "c", "a", "b", "c", "a", "b", "c"],
+    }
+
+    predictions = {
+        "unique_id_l": [0, 1, 3, 4, 6, 6],
+        "unique_id_r": [1, 2, 5, 5, 5, 7],
+        "source_dataset_l": ["a", "b", "a", "b", "a", "a"],
+        "source_dataset_r": ["b", "c", "c", "c", "c", "b"],
+        "match_probability": [0.90, 0.70, 0.85, 0.90, 0.80, 0.70],
+    }
+
+    settings = SettingsCreator(
+        link_type="link_only",
+        comparisons=[],
+        blocking_rules_to_generate_predictions=[],
+    )
+
+    linker = helper.linker_with_registration(data, settings)
+
+    predictions_sdf = linker._db_api.register(predictions)
+    df_predict = linker.table_management.register_table_predict(predictions_sdf)
+
+    df_clusters = linker.clustering.cluster_using_single_best_links(
+        df_predict,
+        duplicate_free_datasets=["a", "b", "c"],
+        threshold_match_probability=0.5,
+    )
+
+    result = df_clusters.query_sql("SELECT * FROM {this} ORDER BY unique_id")
+
+    correct_result = {
+        "cluster_id": [
+            "a-__-0",
+            "a-__-0",
+            "a-__-0",
+            "a-__-3",
+            "a-__-3",
+            "a-__-3",
+            "a-__-6",
+            "a-__-6",
+            "c-__-8",
+        ],
+        "unique_id": [0, 1, 2, 3, 4, 5, 6, 7, 8],
+        "source_dataset": ["a", "b", "c", "a", "b", "c", "a", "b", "c"],
+    }
+
+    assert result.as_dict() == correct_result
+
+
+# See https://www.robinlinacre.com/graphPlayground/ with this data:
+# https://gist.github.com/RobinL/a022c16ada1892035b1f3f7838f80db0#file-example_2-json
+@mark_with_dialects_excluding()
+def test_single_best_links_example_2(test_helpers, dialect):
+    helper = test_helpers[dialect]
+
+    df = {
+        "unique_id": ["1", "2", "3", "4", "5", "6", "7"],
+        "source_dataset": ["a", "b", "a", "b", "a", "b", "d"],
+    }
+
+    predictions = {
+        "unique_id_l": ["1", "2", "3", "4", "5", "6", "4"],
+        "unique_id_r": ["2", "3", "4", "5", "6", "1", "7"],
+        "source_dataset_l": ["a", "b", "a", "b", "a", "b", "b"],
+        "source_dataset_r": ["b", "a", "b", "a", "b", "a", "d"],
+        "match_probability": [0.92, 0.91, 0.99, 0.88, 0.90, 0.96, 0.91],
+    }
+
+    settings = SettingsCreator(
+        link_type="link_only",
+        comparisons=[],
+        blocking_rules_to_generate_predictions=[],
+    )
+
+    linker = helper.linker_with_registration(df, settings)
+
+    predictions_sdf = linker._db_api.register(predictions)
+    df_predict = linker.table_management.register_table_predict(predictions_sdf)
+
+    df_clusters = linker.clustering.cluster_using_single_best_links(
+        df_predict,
+        duplicate_free_datasets=["a", "b", "d"],
+        threshold_match_probability=0.5,
+    )
+
+    result = df_clusters.query_sql("SELECT * FROM {this} ORDER BY unique_id")
+
+    correct_result = {
+        "cluster_id": [
+            "a-__-1",
+            "b-__-2",
+            "a-__-3",
+            "a-__-3",
+            "a-__-5",
+            "a-__-1",
+            "a-__-3",
+        ],
+        "unique_id": ["1", "2", "3", "4", "5", "6", "7"],
+        "source_dataset": ["a", "b", "a", "b", "a", "b", "d"],
+    }
+
+    assert result.as_dict() == correct_result
+
+
+# See https://www.robinlinacre.com/graphPlayground/ with this data:
+# https://gist.github.com/RobinL/a022c16ada1892035b1f3f7838f80db0#file-example_3-json
+@mark_with_dialects_excluding()
+def test_single_best_links_example_3(test_helpers, dialect):
+    helper = test_helpers[dialect]
+
+    df = {
+        "unique_id": ["1", "2", "3", "4", "5", "6", "7"],
+        "source_dataset": ["a", "c", "b", "a", "b", "c", "a"],
+    }
+
+    predictions = {
+        "unique_id_l": ["1", "2", "3", "4", "5", "6"],
+        "unique_id_r": ["2", "3", "4", "5", "6", "7"],
+        "source_dataset_l": ["a", "c", "b", "a", "b", "c"],
+        "source_dataset_r": ["c", "b", "a", "b", "c", "a"],
+        "match_probability": [0.98, 0.90, 0.80, 0.81, 0.91, 0.99],
+    }
+
+    settings = SettingsCreator(
+        link_type="link_only",
+        comparisons=[],
+        blocking_rules_to_generate_predictions=[],
+    )
+
+    linker = helper.linker_with_registration(df, settings)
+
+    predictions_sdf = linker._db_api.register(predictions)
+    df_predict = linker.table_management.register_table_predict(predictions_sdf)
+
+    df_clusters = linker.clustering.cluster_using_single_best_links(
+        df_predict,
+        duplicate_free_datasets=["a", "b", "c"],
+        threshold_match_probability=0.5,
+    )
+
+    result = df_clusters.query_sql("SELECT * FROM {this} ORDER BY unique_id")
+
+    correct_result = {
+        "cluster_id": [
+            "a-__-1",
+            "a-__-1",
+            "a-__-1",
+            "a-__-4",
+            "a-__-7",
+            "a-__-7",
+            "a-__-7",
+        ],
+        "unique_id": ["1", "2", "3", "4", "5", "6", "7"],
+        "source_dataset": ["a", "c", "b", "a", "b", "c", "a"],
+    }
+
+    assert result.as_dict() == correct_result
+
+
+@mark_with_dialects_excluding()
+def test_single_best_links_ties(test_helpers, dialect):
+    helper = test_helpers[dialect]
+
+    df = {
+        "unique_id": [0, 1, 2],
+        "source_dataset": ["a", "a", "b"],
+    }
+
+    predictions = {
+        "unique_id_l": [0, 1],
+        "unique_id_r": [2, 2],
+        "source_dataset_l": ["a", "a"],
+        "source_dataset_r": ["b", "b"],
+        "match_probability": [0.90, 0.90],
+    }
+
+    settings = SettingsCreator(
+        link_type="link_only",
+        comparisons=[],
+        blocking_rules_to_generate_predictions=[],
+    )
+
+    linker = helper.linker_with_registration(df, settings)
+
+    predictions_sdf = linker._db_api.register(predictions)
+    df_predict = linker.table_management.register_table_predict(predictions_sdf)
+
+    df_clusters = linker.clustering.cluster_using_single_best_links(
+        df_predict,
+        duplicate_free_datasets=["a", "b"],
+        threshold_match_probability=0.5,
+    )
+
+    n_clusters = df_clusters.query_sql(
+        """
+        WITH clusters AS
+        (SELECT cluster_id FROM {this} GROUP BY cluster_id)
+        SELECT
+            COUNT(*) AS n_clusters
+        FROM
+            clusters
+        """
+    ).as_dict()["n_clusters"][0]
+
+    assert n_clusters > 1
+
+
+@mark_with_dialects_excluding()
+def test_single_best_links_ties_method(test_helpers, dialect):
+    helper = test_helpers[dialect]
+
+    df = {
+        "unique_id": [0, 1, 2, 3, 4, 5],
+        "source_dataset": ["a", "a", "b", "a", "b", "c"],
+    }
+
+    predictions = {
+        "unique_id_l": [0, 1, 3, 3],
+        "unique_id_r": [2, 2, 4, 5],
+        "source_dataset_l": ["a", "a", "a", "a"],
+        "source_dataset_r": ["b", "b", "b", "c"],
+        "match_probability": [0.90, 0.90, 0.8, 0.8],
+    }
+
+    settings = SettingsCreator(
+        link_type="link_only",
+        comparisons=[],
+        blocking_rules_to_generate_predictions=[],
+    )
+
+    linker = helper.linker_with_registration(df, settings)
+
+    predictions_sdf = linker._db_api.register(predictions)
+    df_predict = linker.table_management.register_table_predict(predictions_sdf)
+
+    df_clusters = linker.clustering.cluster_using_single_best_links(
+        df_predict,
+        duplicate_free_datasets=["a", "b", "c"],
+        threshold_match_probability=0.5,
+        ties_method="drop",
+    )
+
+    result = df_clusters.query_sql("SELECT * FROM {this} ORDER BY unique_id")
+
+    correct_result = {
+        "cluster_id": [
+            "a-__-0",
+            "a-__-1",
+            "b-__-2",
+            "a-__-3",
+            "a-__-3",
+            "a-__-3",
+        ],
+        "unique_id": [0, 1, 2, 3, 4, 5],
+        "source_dataset": ["a", "a", "b", "a", "b", "c"],
+    }
+    assert result.as_dict() == correct_result
+
+    # test lowest_id
+
+    df_clusters = linker.clustering.cluster_using_single_best_links(
+        df_predict,
+        duplicate_free_datasets=["a", "b", "c"],
+        threshold_match_probability=0.5,
+        ties_method="lowest_id",
+    )
+
+    result = df_clusters.query_sql("SELECT * FROM {this} ORDER BY unique_id")
+
+    correct_result = {
+        "cluster_id": [
+            "a-__-0",
+            "a-__-1",
+            "a-__-0",
+            "a-__-3",
+            "a-__-3",
+            "a-__-3",
+        ],
+        "unique_id": [0, 1, 2, 3, 4, 5],
+        "source_dataset": ["a", "a", "b", "a", "b", "c"],
+    }
+    assert result.as_dict() == correct_result
+
+
+@mark_with_dialects_excluding()
+def test_single_best_links_one_to_many(test_helpers, dialect):
+    helper = test_helpers[dialect]
+
+    df = {
+        "unique_id": [0, 1, 2, 3],
+        "source_dataset": ["a", "b", "b", "b"],
+    }
+
+    predictions = {
+        "unique_id_l": [0, 0, 0],
+        "unique_id_r": [1, 2, 3],
+        "source_dataset_l": ["a", "a", "a"],
+        "source_dataset_r": ["b", "b", "b"],
+        "match_probability": [0.90, 0.90, 0.8],
+    }
+
+    settings = SettingsCreator(
+        link_type="link_only",
+        comparisons=[],
+        blocking_rules_to_generate_predictions=[],
+    )
+
+    linker = helper.linker_with_registration(df, settings)
+
+    predictions_sdf = linker._db_api.register(predictions)
+    df_predict = linker.table_management.register_table_predict(predictions_sdf)
+
+    df_clusters = linker.clustering.cluster_using_single_best_links(
+        df_predict,
+        duplicate_free_datasets=["a"],
+        threshold_match_probability=0.5,
+        ties_method="drop",
+    )
+
+    result = df_clusters.query_sql("SELECT * FROM {this} ORDER BY unique_id")
+
+    correct_result = {
+        "cluster_id": [
+            "a-__-0",
+            "a-__-0",
+            "a-__-0",
+            "a-__-0",
+        ],
+        "unique_id": [0, 1, 2, 3],
+        "source_dataset": ["a", "b", "b", "b"],
+    }
+
+    assert result.as_dict() == correct_result
+
+
+@mark_with_dialects_excluding()
+def test_single_best_links_one_to_one(test_helpers, dialect, fake_1000):
+    df = fake_1000.slice(length=100)
+    df_l = df.append_column("source_dataset", pa.array(100 * ["a"]))
+    df_r = df.append_column("source_dataset", pa.array(100 * ["b"]))
+
+    helper = test_helpers[dialect]
+
+    settings = SettingsCreator(
+        link_type="link_only",
+        comparisons=[
+            cl.ExactMatch("first_name"),
+            cl.ExactMatch("surname"),
+            cl.ExactMatch("dob"),
+            cl.ExactMatch("city"),
+        ],
+        blocking_rules_to_generate_predictions=[
+            block_on("surname"),
+            block_on("dob"),
+        ],
+    )
+
+    linker = helper.linker_with_registration([df_l, df_r], settings)
+
+    linker.training.estimate_u_using_random_sampling(1e6)
+
+    df_predict = linker.inference.predict(0.5)
+
+    df_clusters = linker.clustering.cluster_using_single_best_links(
+        df_predict,
+        duplicate_free_datasets=["a", "b"],
+        threshold_match_probability=0.5,
+    )
+
+    result = df_clusters.query_sql(
+        """
+        with t as (
+            select
+                cluster_id,
+                sum(cast(source_dataset = 'a' as int)) as count_a,
+                sum(cast(source_dataset = 'b' as int)) as count_b
+            from {this}
+            group by cluster_id
+        )
+        select count(*) as count
+        from t
+        where count_a > 1 or count_b > 1
+        """
+    )
+
+    count = result.as_dict()["count"][0]
+    assert count == 0

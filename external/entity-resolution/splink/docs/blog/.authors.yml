@@ -1,0 +1,40 @@
+authors:
+  robin-l:
+    name: Robin Linacre
+    description: Creator
+    avatar: https://github.com/robinl.png
+
+  ross-k:
+    name: Ross Kennedy
+    description: Maintainer
+    avatar: https://github.com/rossken.png
+
+  zoe-s:
+    name: Zoë Slade
+    description: Contributor
+    avatar: https://github.com/zslade.png
+
+  alice-o:
+    name: Alice O'Leary
+    description: Contributor
+    avatar: https://github.com/aliceoleary0.png
+
+  erica-k:
+    name: Erica Kane
+    description: Contributor
+    avatar: https://github.com/ericakane-moj.png
+
+  thomashepworth:
+    name: Tom Hepworth
+    description: Contributor
+    avatar: https://github.com/thomashepworth.png
+
+  samnlindsay:
+    name: Sam Lindsay
+    description: Contributor
+    avatar: https://github.com/samnlindsay.png
+
+  andy-b:
+    name: Andy Bond
+    description: Contributor
+    avatar: https://github.com/ADBond.png

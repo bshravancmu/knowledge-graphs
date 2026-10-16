@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+# This is otherwise known as the expectation step of the EM algorithm.
+import logging
+from textwrap import dedent
+from typing import List
+
+from splink.internals.comparison import Comparison
+from splink.internals.dialects import SplinkDialect
+from splink.internals.input_column import InputColumn
+from splink.internals.misc import (
+    indent_sql,
+    prob_to_match_weight,
+    threshold_args_to_match_weight,
+)
+
+from .settings import CoreModelSettings, Settings
+
+logger = logging.getLogger(__name__)
+
+
+def predict_from_comparison_vectors_sqls_using_settings(
+    settings_obj: Settings,
+    threshold_match_probability: float | None = None,
+    threshold_match_weight: float | None = None,
+    include_clerical_match_score: bool = False,
+) -> list[dict[str, str]]:
+    return predict_from_comparison_vectors_sqls(
+        unique_id_input_columns=settings_obj.column_info_settings.unique_id_input_columns,
+        core_model_settings=settings_obj.core_model_settings,
+        sql_dialect=SplinkDialect.from_string(settings_obj._sql_dialect_str),
+        threshold_match_probability=threshold_match_probability,
+        threshold_match_weight=threshold_match_weight,
+        retain_matching_columns=settings_obj._retain_matching_columns,
+        retain_intermediate_calculation_columns=settings_obj._retain_intermediate_calculation_columns,
+        training_mode=False,
+        additional_columns_to_retain=settings_obj._additional_columns_to_retain,
+        include_clerical_match_score=include_clerical_match_score,
+    )
+
+
+def predict_from_comparison_vectors_sqls(
+    unique_id_input_columns: List[InputColumn],
+    core_model_settings: CoreModelSettings,
+    sql_dialect: SplinkDialect,
+    threshold_match_probability: float | None = None,
+    threshold_match_weight: float | None = None,
+    # by default we keep off everything we don't necessarily need
+    retain_matching_columns: bool = False,
+    retain_intermediate_calculation_columns: bool = False,
+    training_mode: bool = False,
+    additional_columns_to_retain: List[InputColumn] = [],
+    include_clerical_match_score: bool = False,
+) -> list[dict[str, str]]:
+    sqls = []
+
+    select_cols = Settings.columns_to_select_for_match_weight_parts(
+        unique_id_input_columns=unique_id_input_columns,
+        comparisons=core_model_settings.comparisons,
+        retain_matching_columns=retain_matching_columns,
+        retain_intermediate_calculation_columns=retain_intermediate_calculation_columns,
+        additional_columns_to_retain=additional_columns_to_retain,
+    )
+    if include_clerical_match_score:
+        select_cols.append("clerical_match_score")
+
+    select_cols_expr = ",\n".join(indent_sql(col) for col in select_cols)
+
+    sql = f"""
+    select
+{select_cols_expr}
+    from __splink__df_comparison_vectors
+    """
+
+    sql_info = {
+        "sql": sql,
+        "output_table_name": "__splink__df_match_weight_parts",
+    }
+    sqls.append(sql_info)
+
+    select_cols = Settings.columns_to_select_for_predict(
+        unique_id_input_columns=unique_id_input_columns,
+        comparisons=core_model_settings.comparisons,
+        retain_matching_columns=retain_matching_columns,
+        retain_intermediate_calculation_columns=retain_intermediate_calculation_columns,
+        training_mode=training_mode,
+        additional_columns_to_retain=additional_columns_to_retain,
+    )
+    mw_terms = []
+    for cc in core_model_settings.comparisons:
+        mw_terms.extend(cc._match_weight_columns_to_sum)
+
+    prior = core_model_settings.probability_two_random_records_match
+    match_weight_expr, match_prob_expr = _combine_prior_and_mws(
+        prior,
+        mw_terms,
+        sql_dialect,
+    )
+
+    threshold_as_mw = threshold_args_to_match_weight(
+        threshold_match_probability, threshold_match_weight
+    )
+
+    if threshold_as_mw is not None:
+        threshold_expr = f" where ({match_weight_expr}) >= {threshold_as_mw} "
+    else:
+        threshold_expr = ""
+
+    select_expressions = [
+        f"{match_weight_expr} as match_weight",
+        f"{match_prob_expr} as match_probability",
+        *select_cols,
+    ]
+    if include_clerical_match_score:
+        select_expressions.append("clerical_match_score")
+
+    select_cols_expr = ",\n".join(indent_sql(col) for col in select_expressions)
+
+    sql = f"""
+    select
+{select_cols_expr}
+    from __splink__df_match_weight_parts
+    {threshold_expr}
+    """
+
+    sql_info = {
+        "sql": sql,
+        "output_table_name": "__splink__df_predict",
+    }
+    sqls.append(sql_info)
+
+    return sqls
+
+
+def predict_from_agreement_pattern_counts_sqls(
+    comparisons: List[Comparison],
+    probability_two_random_records_match: float,
+    sql_dialect: SplinkDialect,
+) -> list[dict[str, str]]:
+    sqls = []
+
+    select_cols = []
+
+    for cc in comparisons:
+        cc_sqls = [
+            cl._match_weight_sql(cc._gamma_column_name) for cl in cc.comparison_levels
+        ]
+        sql = "\n".join(cc_sqls)
+        sql = f"CASE\n{indent_sql(sql)}\nEND as {cc._mw_column_name}"
+        select_cols.append(cc._gamma_column_name)
+        select_cols.append(sql)
+    select_cols.append("agreement_pattern_count")
+    select_cols_expr = ",\n".join(indent_sql(col) for col in select_cols)
+
+    sql = f"""
+    select
+{select_cols_expr}
+    from __splink__agreement_pattern_counts
+    """
+
+    sql_info = {
+        "sql": sql,
+        "output_table_name": "__splink__df_match_weight_parts",
+    }
+    sqls.append(sql_info)
+
+    select_cols = []
+    for cc in comparisons:
+        select_cols.append(cc._gamma_column_name)
+        select_cols.append(cc._mw_column_name)
+    select_cols.append("agreement_pattern_count")
+
+    prior = probability_two_random_records_match
+    mw_terms = [cc._mw_column_name for cc in comparisons]
+    match_weight_expr, match_prob_expr = _combine_prior_and_mws(
+        prior,
+        mw_terms,
+        sql_dialect,
+    )
+
+    select_expressions = [
+        f"{match_weight_expr} as match_weight",
+        f"{match_prob_expr} as match_probability",
+        *select_cols,
+    ]
+    select_cols_expr = ",\n".join(indent_sql(col) for col in select_expressions)
+
+    sql = f"""
+    select
+{select_cols_expr}
+    from __splink__df_match_weight_parts
+    """
+
+    sql_info = {
+        "sql": sql,
+        "output_table_name": "__splink__df_predict",
+    }
+    sqls.append(sql_info)
+
+    return sqls
+
+
+def _combine_prior_and_mws(
+    prior: float,
+    mw_terms: list[str],
+    sql_dialect: SplinkDialect,
+) -> tuple[str, str]:
+    """Compute the combined match weight and match probability expressions (additive)"""
+
+    mw_prior = prob_to_match_weight(prior)
+
+    mw_expr = f"cast({mw_prior} as float8) + " + " + ".join(mw_terms)
+
+    # match_prob = 1 / (1 + 2^(-match_weight))
+    # 2^2000 could overflow, but 2^-2000 will not
+    # So for numerical stability,
+    # - When mw >= 0: 1 / (1 + 2^(-mw))
+    # - When mw < 0: 2^mw / (1 + 2^mw)
+    match_prob_expr = f"""
+    CASE
+        WHEN ({mw_expr}) >= 0 THEN
+            1.0 / (1.0 + POWER(cast(2 as float8), -({mw_expr})))
+        ELSE
+            POWER(cast(2 as float8), ({mw_expr})) /
+            (1.0 + POWER(cast(2 as float8), ({mw_expr})))
+    END
+    """.strip()
+
+    return mw_expr, dedent(match_prob_expr)

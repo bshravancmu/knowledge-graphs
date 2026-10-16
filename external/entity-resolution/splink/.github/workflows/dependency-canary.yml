@@ -1,0 +1,58 @@
+name: Dependency canary
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: daily-uv-canary
+  cancel-in-progress: true
+
+jobs:
+  dependency-canary:
+    name: Dependency canary
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        id: setup_uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+
+      - name: Install Python 3.13
+        id: install_python313
+        run: uv python install 3.13
+
+      - name: Upgrade lockfile
+        id: upgrade_lockfile
+        run: uv lock --upgrade
+
+      - name: Did uv.lock change?
+        id: changed
+        run: |
+          if git diff --quiet --exit-code -- uv.lock; then
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "changed=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Install dependencies
+        if: steps.changed.outputs.changed == 'true'
+        id: install_dependencies
+        run: uv sync --python 3.13
+
+      - name: Run tests
+        if: steps.changed.outputs.changed == 'true'
+        id: run_tests
+        run: uv run python -m pytest -m "duckdb" tests/
