@@ -1,0 +1,372 @@
+I have these CSV files, and I want to build a knowledge graph with all possible mappings between both using this ontology and SKOS file. Could you make a table with the column names with the reference to the ontology property? Link all the ontology properties that you can with the information that you have. Provide also the class of the entities or both the classes that it relates and a way to generate the subject for all of them and the condition to join entities. Use functions when it is necessary, adapting to ontology restrictions or transforming input values into the corresponding values in the SKOS file. For every function, give the expected output template or all the possible values. Use the following header: CSV Column, Ontology Property, Entity Class, Related Entity Class, Subject Generation, Join, Datatype, Function Name, Function Output.
+stops.csv
+stop_id,stop_code,stop_name,stop_desc,stop_lat,stop_lon,zone_id,stop_url,location_type,parent_station,stop_timezone,wheelchair_boarding
+acc_4_1_1,1,Plaza de Castilla,Paseo de la Castellana 189,40.46682,-3.68918,,http://www.crtm.es,2,est_90_21,,0
+acc_4_1_1040,1,Ascensor,Plaza de Castilla 9,40.46555,-3.68877,,http://www.crtm.es,2,est_90_21,,0
+acc_4_1_1043,1,Intercambiador Superficie,Paseo de la Castellana 191 B,40.46728,-3.68915,,http://www.crtm.es,2,est_90_21,,0
+acc_4_1_1044,1,Ascensor,Paseo de la Castellana 189,40.46702,-3.68918,,http://www.crtm.es,2,est_90_21,,0
+est_4_95,95,URGEL,,40.39335,-3.7236,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_4_96,96,OPORTO,,40.38846,-3.73132,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_4_97,97,VISTA ALEGRE,,40.38885,-3.73982,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_4_98,98,CARABANCHEL,,40.38783,-3.74487,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_4_99,99,EUGENIA DE MONTIJO,,40.38439,-3.75121,A,http://www.crtm.es,1,,Europe/Madrid,2
+est_90_1,1,Aluche,Calle de Valmojado 293,40.38563,-3.76085,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_13,13,Méndez Álvaro Estación Sur,Calle del Ombu 16,40.39538,-3.67819,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_14,14,Intercambiador de Moncloa,Plaza de la Moncloa 1,40.43523,-3.71919,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_18,18,Intercambiador de Príncipe Pío,Paseo de la Florida 2,40.42107,-3.72037,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_21,21,Intercambiador de Plaza de Castilla,Paseo de la Castellana 189,40.4669,-3.6892,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_25,25,Chamartín,Calle de Agustín de Foxá 40,40.4721,-3.68269,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_33,33,Aeropuerto T4,Ctra de Alcobendas a Barajas SN,40.49176,-3.59356,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_34,34,Aeropuerto T1 - T2 - T3,Avda de la Hispanidad SN,40.46864,-3.56965,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_36,36,Intercambiador de Plaza Elíptica,Calle  Vía Lusitana 2,40.3846,-3.71848,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_4,4,Intercambiador de Avenida de América,Avda de América 9 A,40.43803,-3.67669,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_54,54,Atocha-Renfe,Avda de la Ciudad de Barcelona 2 B,40.40659,-3.68944,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_58,58,Puerta del Sol,Plaza de la Puerta del Sol 6,40.41688,-3.70331,A,http://www.crtm.es,1,,Europe/Madrid,0
+est_90_71,71,Nuevos Ministerios,Calle de Raimundo Fernández Villaverde 67,40.44662,-3.69246,A,http://www.crtm.es,1,,Europe/Madrid,0
+par_4_1,1,PLAZA DE CASTILLA,,40.4669,-3.68917,A,http://www.crtm.es,0,est_90_21,,0
+par_4_10,10,TRIBUNAL,,40.42619,-3.7011,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_100,100,ALUCHE,,40.38563,-3.7608,A,http://www.crtm.es,0,est_90_1,,2
+par_4_101,101,EMPALME,,40.39057,-3.76535,A,http://www.crtm.es,0,,Europe/Madrid,2
+par_4_102,102,CAMPAMENTO,,40.39481,-3.76813,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_103,103,CASA DE CAMPO,,40.40324,-3.76101,A,http://www.crtm.es,0,,Europe/Madrid,2
+par_4_104,104,LAGUNA,,40.39923,-3.74429,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_105,105,CARPETANA,,40.3927,-3.74099,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_106,106,OPORTO,,40.38847,-3.73126,A,http://www.crtm.es,0,est_4_96,,0
+par_4_107,107,OPAÑEL,,40.3869,-3.72313,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_108,108,PLAZA ELIPTICA,,40.3846,-3.71837,A,http://www.crtm.es,0,est_90_36,,2
+par_4_109,109,USERA,,40.3871,-3.7069,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_11,11,GRAN VIA,,40.42001,-3.7018,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_110,110,LEGAZPI,,40.39116,-3.69505,A,http://www.crtm.es,0,est_4_43,,2
+par_4_111,111,MENDEZ ALVARO,,40.39538,-3.67814,A,http://www.crtm.es,0,est_90_13,,0
+par_4_112,112,PACIFICO,,40.40207,-3.67386,A,http://www.crtm.es,0,est_4_18,,0
+par_4_113,113,CONDE DE CASAL,,40.40697,-3.67041,A,http://www.crtm.es,0,,Europe/Madrid,2
+par_4_114,114,SAINZ DE BARANDA,,40.41507,-3.66951,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_115,115,ODONNELL,,40.42289,-3.6686,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_116,116,MANUEL BECERRA,,40.4279,-3.66921,A,http://www.crtm.es,0,est_4_29,,0
+par_4_117,117,DIEGO DE LEON,,40.43295,-3.67294,A,http://www.crtm.es,0,est_4_63,,0
+par_4_118,118,AVENIDA DE AMERICA,,40.43804,-3.67658,A,http://www.crtm.es,0,est_90_4,,0
+par_4_119,119,REPUBLICA ARGENTINA,,40.44379,-3.68406,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_12,12,SOL,,40.41688,-3.70326,A,http://www.crtm.es,0,est_90_58,,1
+par_4_120,120,NUEVOS MINISTERIOS,,40.44662,-3.69241,A,http://www.crtm.es,0,est_90_71,,2
+par_4_121,121,CUATRO CAMINOS,,40.44697,-3.70387,A,http://www.crtm.es,0,est_4_6,,2
+par_4_122,122,GUZMAN EL BUENO,,40.44637,-3.71229,A,http://www.crtm.es,0,,Europe/Madrid,2
+par_4_123,123,METROPOLITANO,,40.44644,-3.71943,A,http://www.crtm.es,0,,Europe/Madrid,0
+par_4_124,124,CIUDAD UNIVERSITARIA,,40.44356,-3.72678,A,http://www.crtm.es,0,,Europe/Madrid,2
+par_4_125,125,MONCLOA,,40.43497,-3.71945,A,http://www.crtm.es,0,est_90_14,,2
+skos.ttl
+@prefix : <http://vocab.gtfs.org/terms#> .
+@prefix cc: <http://creativecommons.org/ns#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xml: <http://www.w3.org/XML/1998/namespace> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix adms: <http://www.w3.org/ns/adms#> .
+@prefix dcat: <http://www.w3.org/ns/dcat#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix gtfs: <http://vocab.gtfs.org/terms#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix vann: <http://purl.org/vocab/vann/> .
+@prefix schema: <http://schema.org/> .
+@prefix status: <http://www.w3.org/2003/06/sw-vocab-status/ns#> .
+@prefix transit: <http://vocab.org/transit/terms/> .
+@prefix geo: <http://www.w3.org/2003/01/geo/wgs84_pos#> .
+@base <http://vocab.gtfs.org/terms#> .
+
+<http://transport.linkeddata.es/kos/wheelchair-accesible> a skos:ConceptScheme;
+  skos:hasTopConcept <http://transport.linkeddata.es/kos/wheelchair-accesible/no-information> ;
+    skos:hasTopConcept <http://transport.linkeddata.es/kos/wheelchair-accesible/accesible> ;
+    skos:hasTopConcept <http://transport.linkeddata.es/kos/wheelchair-accesible/inaccesible> ;
+    skos:prefLabel "Wheelchair Accesible"@en ;
+    dc:title "Types of wheelchair accesibility. No information, accesible or inaccesible."@en .
+
+<http://transport.linkeddata.es/kos/wheelchair-accesible/no-information>  a skos:Concept ;
+  skos:inScheme <http://transport.linkeddata.es/kos/wheelchair-accesible> ;
+  skos:notation "No information" ;
+  skos:prefLabel "No information"@en .
+
+<http://transport.linkeddata.es/kos/wheelchair-accesible/accesible>  a skos:Concept ;
+  skos:inScheme <http://transport.linkeddata.es/kos/wheelchair-accesible> ;
+  skos:notation "Accesible" ;
+  skos:prefLabel "Accesible"@en .
+
+<http://transport.linkeddata.es/kos/wheelchair-accesible/inaccesible> a skos:Concept ;
+  skos:inScheme <http://transport.linkeddata.es/kos/wheelchair-accesible> ;
+  skos:notation "Inaccesible" ;
+  skos:prefLabel "Inaccesible"@en .  
+
+<http://transport.linkeddata.es/kos/location-type> a skos:ConceptScheme;
+    skos:hasTopConcept <http://transport.linkeddata.es/kos/location-type/stop> ;
+    skos:hasTopConcept <http://transport.linkeddata.es/kos/location-type/station> ;
+    skos:hasTopConcept <http://transport.linkeddata.es/kos/location-type/entrance-exit> ;
+    skos:hasTopConcept <http://transport.linkeddata.es/kos/location-type/generic-node> ;
+    skos:hasTopConcept <http://transport.linkeddata.es/kos/location-type/boarding-area> ;
+    skos:prefLabel "Location Type"@en ;
+    dc:title "Types of locations. Stop, station, entrance/exit, generic node and boarding area."@en .
+
+<http://transport.linkeddata.es/kos/location-type/stop>  a skos:Concept ;
+  skos:inScheme <http://transport.linkeddata.es/kos/location-type> ;
+  skos:notation "Stop" ;
+  skos:prefLabel "Stop"@en .
+
+<http://transport.linkeddata.es/kos/location-type/station>  a skos:Concept ;
+  skos:inScheme <http://transport.linkeddata.es/kos/location-type> ;
+  skos:notation "Station" ;
+  skos:prefLabel "Station"@en .
+
+<http://transport.linkeddata.es/kos/location-type/entrance-exit> a skos:Concept ;
+  skos:inScheme <http://transport.linkeddata.es/kos/location-type> ;
+  skos:notation "Entrance/Exit" ;
+  skos:prefLabel "Entrance/Exit"@en .  
+
+<http://transport.linkeddata.es/kos/location-type/generic-node>  a skos:Concept ;
+  skos:inScheme <http://transport.linkeddata.es/kos/location-type> ;
+  skos:notation "Generic Node" ;
+  skos:prefLabel "Generic Node"@en .
+
+<http://transport.linkeddata.es/kos/location-type/boarding-area> a skos:Concept ;
+  skos:inScheme <http://transport.linkeddata.es/kos/location-type> ;
+  skos:notation "Boarding Area" ;
+  skos:prefLabel "Boarding Area"@en .  
+ontology.ttl
+@prefix : <http://vocab.gtfs.org/terms#> .
+@prefix cc: <http://creativecommons.org/ns#> .
+@prefix dct: <http://purl.org/dc/terms/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix dcat: <http://www.w3.org/ns/dcat#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix gtfs: <http://vocab.gtfs.org/terms#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix vann: <http://purl.org/vocab/vann/> .
+@prefix schema: <http://schema.org/> .
+@prefix status: <http://www.w3.org/2003/06/sw-vocab-status/ns#> .
+@prefix geo: <http://www.w3.org/2003/01/geo/wgs84_pos#> .
+@base <http://vocab.gtfs.org/terms#> .
+
+gtfs:parentStation rdf:type owl:ObjectProperty ;
+                   rdfs:domain [ rdf:type owl:Class ;
+                      owl:unionOf ( gtfs:Stop
+                                    gtfs:StationEntrance
+                                    gtfs:GenericNode
+                                    gtfs:BoardingArea
+                                  )
+                    ] ;
+                   rdfs:range gtfs:Station ;
+                   rdfs:comment "Defines hierarchy between the different locations"@en ,
+                                "Define una jerarquía entre las distintas localizaciones."@es ;
+                   rdfs:label "Parent Station"@en ,
+                              "estación matriz"@es .
+
+gtfs:locationType rdf:type owl:ObjectProperty ;
+                  rdfs:domain gtfs:Location ;
+                  rdfs:range [ owl:intersectionOf ( <http://www.w3.org/2004/02/skos/core#Concept>
+                                                    [ rdf:type owl:Restriction ;
+                                                      owl:onProperty <http://www.w3.org/2004/02/skos/core#inScheme> ;
+                                                      owl:hasValue <http://transport.linkeddata.es/kos/location-type> ;
+                                                    ]
+                                                  ) ;
+                                rdf:type owl:Class
+                              ] ;
+                  rdfs:comment "Location type. Stop, Station, Entrance/Exit, Generic Node, Boarding Area."@en ,
+                               "Tipo de localización. Parada, Estación, Entrada/Salida, Nodo Genérico, Área de embarque."@es;
+                  rdfs:label "Location Type"@en ,
+                             "Tipo de localización"@es .
+
+gtfs:wheelchairAccessible rdf:type owl:ObjectProperty ;
+                          rdfs:domain [rdf:type owl:Class; 
+                                       owl:unionOf (gtfs:Station
+                                                    gtfs:Trip
+                                                    gtfs:Stop
+                                                    gtfs:StationEntrance
+                                                   )
+                                      ];
+                          rdfs:range [ owl:intersectionOf ( <http://www.w3.org/2004/02/skos/core#Concept>
+                                        [ rdf:type owl:Restriction ;
+                                          owl:onProperty <http://www.w3.org/2004/02/skos/core#inScheme> ;
+                                          owl:hasValue <http://transport.linkeddata.es/kos/wheelchair-accesible> ;
+                                        ]
+                                        ) ;
+                                        rdf:type owl:Class
+                                      ] ;
+                          gtfs:comment "Si wheelchair_accessible es 0, mapee a gtfs:CheckParentStation; si es 1, mapee a gtfs:WheelchairAccessible; si es 2, mapee a gtfs:NotWheelchairAccessible."@es ,
+                                       "When wheelchair_accessible is 0, map to gtfs:CheckParentStation; if 1 map to gtfs:WheelchairAccessible; if 2 map to gtfs:NotWheelchairAccessible."@en ;
+                          rdfs:comment "La parada o estación específica es accesible para silla de ruedas. No hay información, accesible o inaccesible."@es ,
+                                       "Wheelchair boardings are possible from the specified stop or station. No information, accesible or inaccesible"@en ;
+                          rdfs:label "Accesible para silla de ruedas"@es ,
+                                     "Wheelchair accesible"@en .
+
+gtfs:id rdf:type owl:DatatypeProperty ;
+        rdfs:domain [ rdf:type owl:Class ;
+                      owl:unionOf ( gtfs:Agency
+                                    gtfs:Route
+                                    gtfs:Shape
+                                    gtfs:Service
+                                    gtfs:Location
+                                    gtfs:Trip
+                                  )
+                    ] ;
+        rdfs:range xsd:string ;
+        rdfs:subPropertyOf dct:identifier ;
+        rdfs:comment "Identifies a transit agency, a route, a shape, a set of dates when service is available, a location, a trip or a zone for a stop."@en ,
+                     "Identifica una agencia de tránsito, una ruta, un trayecto, un conjunto de fechas en las que un servicio está disponible, un viaje o una zona para una parada"@es ;
+        rdfs:label "ID"@en ,
+                   "ID"@es .
+
+gtfs:name rdf:type owl:DatatypeProperty ;
+          rdfs:domain [rdf:type owl:Class ;
+                       owl:unionOf (gtfs:Agency
+                                    gtfs:Location
+                                   )
+                       ];
+          rdfs:range foaf:name ;
+          rdfs:comment "Full name of the transit agency or the location."@en ,
+                       "Nombre completo de la agencia de tránsito o de la localización"@es ;
+          rdfs:label "Name"@en ,
+                     "Nombre"@es .
+
+gtfs:url rdf:type owl:DatatypeProperty ;
+         rdfs:domain [rdf:type owl:Class ;
+                      owl:unionOf (gtfs:Agency
+                                   gtfs:Route
+                                   gtfs:Location
+                                   gtfs:Feed
+                                  )
+                      ];
+         rdfs:range foaf:page ;
+         rdfs:comment "URL of the transit agency, a particular route, a location, a publisher of a feed or a contact information URL."@en ,
+                      "URL de la agencia de tránsito, una ruta particular, una localización, un editor de un feed o una URL de información de contacto."@es ;
+         rdfs:label "URL"@en , 
+                    "URL"@es .
+
+gtfs:timezone rdf:type owl:DatatypeProperty ;
+              rdfs:domain [rdf:type owl:Class ; 
+                           owl:unionOf (gtfs:Agency
+                                        gtfs:Location
+                                      )
+                           ];
+              rdfs:range xsd:string ;
+              rdfs:comment "Timezone of the agency or the location."@en ;
+              rdfs:label "Timezone"@en .
+
+gtfs:desc rdf:type owl:DatatypeProperty ;
+          rdfs:domain [rdf:type owl:Class; 
+                            owl:unionOf (gtfs:Route
+                                         gtfs:Location
+                                        )
+                           ];
+          rdfs:range xsd:string ;
+          rdfs:subPropertyOf dct:description ;
+          rdfs:comment "Description of a route or a location that provides useful, quality information."@en ;
+          rdfs:label "RouteDesc"@en .
+
+gtfs:latitude rdf:type owl:DatatypeProperty ;
+              rdfs:domain [rdf:type owl:Class; 
+                           owl:unionOf (gtfs:ShapePoint
+                                        gtfs:Location
+                                       )
+                           ];
+              rdfs:range geo:lat ;
+              rdfs:comment "Latitude of a shape point, a stop or a station."@en ;
+              rdfs:label "Latitude"@en .
+
+gtfs:longitude rdf:type owl:DatatypeProperty ;
+               rdfs:domain [rdf:type owl:Class; 
+                            owl:unionOf (gtfs:ShapePoint
+                                         gtfs:Location
+                                        )
+                           ];
+               rdfs:range geo:long ;
+               rdfs:comment "Longitude of a shape point, a stop or a station."@en ;
+               rdfs:label "Longitude"@en .
+
+gtfs:code rdf:type owl:DatatypeProperty ;
+          rdfs:domain gtfs:Location ;
+          rdfs:range xsd:string ;
+          rdfs:seeAlso <https://developers.google.com/transit/gtfs/reference#stops_fields> ;         
+          rdfs:comment "Short text or a number that identifies the location for riders. These codes are often used in phone-based transit information systems or printed on signage to make it easier for riders to get information for a particular location. This field should be left empty for locations without a code presented to riders."@en ;
+          rdfs:label "Location Code"@en .
+
+gtfs:Location rdf:type owl:Class ;
+              rdfs:comment "A location is a geographical point that has a latitude and a longitude."@en ;
+              rdfs:label "Location"@en .
+
+gtfs:Station rdf:type owl:Class ;
+             rdfs:subClassOf gtfs:Location ,
+                [ rdf:type owl:Restriction ;
+                  owl:onProperty gtfs:latitude ;
+                  owl:minCardinality "1"^^xsd:nonNegativeInteger ;
+                  owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                ] ,
+                [ rdf:type owl:Restriction ;
+                  owl:onProperty gtfs:longitude ;
+                  owl:minCardinality "1"^^xsd:nonNegativeInteger ;
+                  owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                ]  ;
+             rdfs:comment "A physical structure or area that contains one or more platform."@en ,
+                          "Estructura física o área que contiene una o más paradas."@es ;
+             rdfs:label "Estación"@es ,
+                        "Station"@en ;
+             rdfs:seeAlso <https://developers.google.com/transit/gtfs/reference#stops_fields> .
+
+gtfs:Stop rdf:type owl:Class ;
+          rdfs:subClassOf gtfs:Location ,
+                [ rdf:type owl:Restriction ;
+                  owl:onProperty gtfs:latitude ;
+                  owl:minCardinality "1"^^xsd:nonNegativeInteger ;
+                  owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                ] ,
+                [ rdf:type owl:Restriction ;
+                  owl:onProperty gtfs:longitude ;
+                  owl:minCardinality "1"^^xsd:nonNegativeInteger ;
+                  owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                ]  ;
+          rdfs:comment "A stop is a physical location where a vehicle stops or leaves. Multiple routes may use the same stop."@en ,
+                       "Un lugar donde los pasajeros suben o bajan de un vehículo de transporte público."@es ;
+          rdfs:label "Parada"@es ,
+                     "Stop"@en ;
+          rdfs:seeAlso <https://developers.google.com/transit/gtfs/reference#stops_fields> .
+
+gtfs:StationEntrance rdf:type owl:Class ;
+                     rdfs:subClassOf gtfs:Location ,
+                        [ rdf:type owl:Restriction ;
+                          owl:onProperty gtfs:latitude ;
+                          owl:minCardinality "1"^^xsd:nonNegativeInteger ;
+                          owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                        ] ,
+                        [ rdf:type owl:Restriction ;
+                          owl:onProperty gtfs:longitude ;
+                          owl:minCardinality "1"^^xsd:nonNegativeInteger ;
+                          owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                        ]  ;
+                     rdfs:comment "A location where passengers can enter or exit a station from the street. If an entrance/exit belongs to multiple stations, it can be linked by pathways to both, but the data provider must pick one of them as parent."@en ;
+                     rdfs:label "Station Entrance"@en .
+
+gtfs:GenericNode rdf:type owl:Class ;
+                 rdfs:subClassOf gtfs:Location ,
+                    [ rdf:type owl:Restriction ;
+                      owl:onProperty gtfs:latitude ;
+                      owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                    ] ,
+                    [ rdf:type owl:Restriction ;
+                      owl:onProperty gtfs:longitude ;
+                      owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                    ]  ;
+                 rdfs:comment "A location within a station, not matching any other location type, which can be used to link together pathways."@en ;
+                 rdfs:label "Generic Node"@en .
+
+gtfs:BoardingArea rdf:type owl:Class ;
+                  rdfs:subClassOf gtfs:Location ,
+                    [ rdf:type owl:Restriction ;
+                      owl:onProperty gtfs:latitude ;
+                      owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                    ] ,
+                    [ rdf:type owl:Restriction ;
+                      owl:onProperty gtfs:longitude ;
+                      owl:maxCardinality "1"^^xsd:nonNegativeInteger ;
+                    ]  ;
+                  rdfs:comment "A specific location on a platform, where passengers can board and/or alight vehicles."@en ;
+                  rdfs:label "Boarding Area"@en .

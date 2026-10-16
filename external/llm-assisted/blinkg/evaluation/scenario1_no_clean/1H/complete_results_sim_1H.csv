@@ -1,0 +1,37 @@
+column,mean_similarity,LLM,method
+Data Reference,0.967365264892578,gemini,max_all
+Datatype,1.0,gemini,max_all
+Entity Class,1.0,gemini,max_all
+Language Annotations,1.0,gemini,max_all
+Ontology Property,1.0,gemini,max_all
+Subject Generation,1.000000238418579,gemini,max_all
+Data Reference,0.6604443794737259,o3,max_all
+Datatype,0.7333333333333334,o3,max_all
+Entity Class,1.0,o3,max_all
+Language Annotations,0.6988526980082194,o3,max_all
+Ontology Property,0.8330671941792523,o3,max_all
+Subject Generation,1.000000238418579,o3,max_all
+Data Reference,0.7554263667100006,deepseek,max_all
+Datatype,0.9333333333333332,deepseek,max_all
+Entity Class,1.0,deepseek,max_all
+Language Annotations,0.8107457470010827,deepseek,max_all
+Ontology Property,0.9767853170633316,deepseek,max_all
+Subject Generation,1.000000238418579,deepseek,max_all
+Data Reference,0.973640587594774,gpt4o,max_all
+Datatype,1.0,gpt4o,max_all
+Entity Class,1.0,gpt4o,max_all
+Language Annotations,1.0,gpt4o,max_all
+Ontology Property,1.0,gpt4o,max_all
+Subject Generation,1.000000238418579,gpt4o,max_all
+Data Reference,0.7348485626280308,llama,max_all
+Datatype,0.8000000000000002,llama,max_all
+Entity Class,1.0,llama,max_all
+Language Annotations,0.4461036059591505,llama,max_all
+Ontology Property,0.9303559511899948,llama,max_all
+Subject Generation,1.0,llama,max_all
+Data Reference,0.976778248945872,mixtral,max_all
+Datatype,0.7796530723571777,mixtral,max_all
+Entity Class,1.0,mixtral,max_all
+Language Annotations,0.616406692398919,mixtral,max_all
+Ontology Property,1.0,mixtral,max_all
+Subject Generation,0.9174640509817334,mixtral,max_all

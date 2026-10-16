@@ -1,0 +1,518 @@
+use crate::algebra::{Expression, QueryExpression};
+use oxrdf::Variable;
+use oxrdf::vocab::xsd;
+use spargebra::term::{GroundTerm, NamedNodePattern, TermPattern};
+use spargebra::vocab::sparql;
+use std::collections::HashMap;
+use std::ops::{BitAnd, BitOr};
+
+pub fn infer_query_expression_types(
+    query_expression: &QueryExpression,
+    mut types: VariableTypes,
+) -> VariableTypes {
+    match query_expression {
+        QueryExpression::QuadPattern {
+            subject,
+            predicate,
+            object,
+            graph_name,
+        } => {
+            add_term_pattern_types(subject, &mut types, false);
+            if let NamedNodePattern::Variable(v) = predicate {
+                types.intersect_variable_with(v.clone(), VariableType::NAMED_NODE)
+            }
+            add_term_pattern_types(object, &mut types, true);
+            if let Some(NamedNodePattern::Variable(v)) = graph_name {
+                types.intersect_variable_with(v.clone(), VariableType::NAMED_NODE)
+            }
+            types
+        }
+        QueryExpression::Path {
+            subject, object, ..
+        } => {
+            add_term_pattern_types(subject, &mut types, false);
+            add_term_pattern_types(object, &mut types, true);
+            types
+        }
+        QueryExpression::Graph { graph_name, inner } => {
+            let mut types = infer_query_expression_types(inner, types);
+            if let NamedNodePattern::Variable(v) = graph_name {
+                types.intersect_variable_with(v.clone(), VariableType::NAMED_NODE)
+            }
+            types
+        }
+        QueryExpression::Join { left, right, .. } => {
+            let mut output_types = infer_query_expression_types(left, types.clone());
+            output_types.intersect_with(infer_query_expression_types(right, types));
+            output_types
+        }
+        #[cfg(feature = "sep-0006")]
+        QueryExpression::Lateral { left, right } => {
+            infer_query_expression_types(right, infer_query_expression_types(left, types))
+        }
+        QueryExpression::LeftJoin { left, right, .. } => {
+            let mut right_types = infer_query_expression_types(right, types.clone()); // TODO: expression
+            for t in right_types.inner.values_mut() {
+                t.undef = true; // Right might be unset
+            }
+            let mut output_types = infer_query_expression_types(left, types);
+            output_types.intersect_with(right_types);
+            output_types
+        }
+        QueryExpression::Minus { left, .. } => infer_query_expression_types(left, types),
+        QueryExpression::Union { inner } => inner
+            .iter()
+            .map(|inner| infer_query_expression_types(inner, types.clone()))
+            .reduce(|mut a, b| {
+                a.union_with(b);
+                a
+            })
+            .unwrap_or_default(),
+        QueryExpression::Extend {
+            inner,
+            variable,
+            expression,
+        } => {
+            let mut types = infer_query_expression_types(inner, types);
+            types.intersect_variable_with(
+                variable.clone(),
+                infer_expression_type(expression, &types),
+            );
+            types
+        }
+        QueryExpression::Filter { inner, .. } => infer_query_expression_types(inner, types),
+        QueryExpression::Project { inner, variables } => VariableTypes {
+            inner: infer_query_expression_types(inner, types)
+                .inner
+                .into_iter()
+                .filter(|(v, _)| variables.contains(v))
+                .collect(),
+        },
+        QueryExpression::Distinct { inner }
+        | QueryExpression::Reduced { inner }
+        | QueryExpression::OrderBy { inner, .. }
+        | QueryExpression::Slice { inner, .. } => infer_query_expression_types(inner, types),
+        QueryExpression::Group {
+            inner,
+            variables,
+            aggregates,
+        } => {
+            let types = infer_query_expression_types(inner, types);
+            VariableTypes {
+                inner: infer_query_expression_types(inner, types)
+                    .inner
+                    .into_iter()
+                    .filter(|(v, _)| variables.contains(v))
+                    .chain(aggregates.iter().map(|(v, _)| (v.clone(), VariableType::ANY))) //TODO: guess from aggregate
+                    .collect(),
+            }
+        }
+        QueryExpression::Values {
+            variables,
+            bindings,
+        } => {
+            for (i, v) in variables.iter().enumerate() {
+                let mut t = VariableType::default();
+                for binding in bindings {
+                    match binding[i] {
+                        Some(GroundTerm::NamedNode(_)) => t.named_node = true,
+                        Some(GroundTerm::Literal(_)) => t.literal = true,
+                        #[cfg(feature = "sparql-12")]
+                        Some(GroundTerm::Triple(_)) => t.triple = true,
+                        None => t.undef = true,
+                    }
+                }
+                types.intersect_variable_with(v.clone(), t)
+            }
+            types
+        }
+        QueryExpression::Service {
+            name,
+            inner,
+            silent,
+        } => {
+            let parent_types = types.clone();
+            let mut types = infer_query_expression_types(inner, types);
+            if *silent {
+                // On failure, single empty solution
+                types.union_with(parent_types);
+            } else if let NamedNodePattern::Variable(v) = name {
+                types.intersect_variable_with(v.clone(), VariableType::NAMED_NODE)
+            }
+            types
+        }
+    }
+}
+
+fn add_term_pattern_types(pattern: &TermPattern, types: &mut VariableTypes, is_object: bool) {
+    if let TermPattern::Variable(v) = pattern {
+        types.intersect_variable_with(
+            v.clone(),
+            if is_object {
+                VariableType::TERM
+            } else {
+                VariableType::SUBJECT
+            },
+        )
+    }
+    #[cfg(feature = "sparql-12")]
+    if let TermPattern::Triple(t) = pattern {
+        add_term_pattern_types(&t.subject, types, false);
+        if let NamedNodePattern::Variable(v) = &t.predicate {
+            types.intersect_variable_with(v.clone(), VariableType::NAMED_NODE)
+        }
+        add_term_pattern_types(&t.object, types, true);
+    }
+}
+
+pub fn infer_expression_type(expression: &Expression, types: &VariableTypes) -> VariableType {
+    match expression {
+        Expression::NamedNode(_) => VariableType::NAMED_NODE,
+        Expression::Literal(_) | Expression::Exists(_) | Expression::Bound(_) => {
+            VariableType::LITERAL
+        }
+        Expression::Variable(v) => types.get(v),
+        Expression::FunctionCall(name, _)
+            if [
+                sparql::DATATYPE,
+                sparql::IRI,
+                sparql::URI,
+                #[cfg(feature = "sparql-12")]
+                sparql::PREDICATE,
+            ]
+            .contains(name) =>
+        {
+            VariableType::NAMED_NODE | VariableType::UNDEF
+        }
+        Expression::FunctionCall(name, args) if *name == sparql::BNODE => {
+            if args.is_empty() {
+                VariableType::BLANK_NODE
+            } else {
+                VariableType::BLANK_NODE | VariableType::UNDEF
+            }
+        }
+        Expression::FunctionCall(name, _)
+            if [sparql::RAND, sparql::NOW, sparql::UUID, sparql::STRUUID].contains(name) =>
+        {
+            VariableType::LITERAL
+        }
+        Expression::Or(_) | Expression::And(_) => VariableType::LITERAL | VariableType::UNDEF,
+        Expression::FunctionCall(name, args) if *name == sparql::SAME_TERM => {
+            if args
+                .iter()
+                .any(|arg| infer_expression_type(arg, types).undef)
+            {
+                VariableType::LITERAL | VariableType::UNDEF
+            } else {
+                VariableType::LITERAL
+            }
+        }
+        Expression::FunctionCall(name, _)
+            if [
+                sparql::LOGICAL_NOT,
+                sparql::STR,
+                sparql::EQUALS,
+                sparql::NOT_EQUALS,
+                sparql::GREATER_THAN,
+                sparql::GREATER_THAN_OR_EQUAL,
+                sparql::LESS_THAN,
+                sparql::LESS_THAN_OR_EQUAL,
+                sparql::ADD,
+                sparql::SUBTRACT,
+                sparql::MULTIPLY,
+                sparql::DIVIDE,
+                sparql::UNARY_PLUS,
+                sparql::UNARY_MINUS,
+                sparql::LANG,
+                sparql::LANG_MATCHES,
+                sparql::ABS,
+                sparql::CEIL,
+                sparql::FLOOR,
+                sparql::ROUND,
+                sparql::CONCAT,
+                sparql::SUBSTR,
+                sparql::STRLEN,
+                sparql::REPLACE,
+                sparql::UCASE,
+                sparql::LCASE,
+                sparql::ENCODE_FOR_URI,
+                sparql::CONTAINS,
+                sparql::STRSTARTS,
+                sparql::STRENDS,
+                sparql::STRBEFORE,
+                sparql::STRAFTER,
+                sparql::YEAR,
+                sparql::MONTH,
+                sparql::DAY,
+                sparql::HOURS,
+                sparql::MINUTES,
+                sparql::SECONDS,
+                sparql::TIMEZONE,
+                sparql::TZ,
+                sparql::MD5,
+                sparql::SHA1,
+                sparql::SHA256,
+                sparql::SHA384,
+                sparql::SHA512,
+                sparql::STRLANG,
+                sparql::STRDT,
+                sparql::IS_IRI,
+                sparql::IS_URI,
+                sparql::IS_BLANK,
+                sparql::IS_LITERAL,
+                sparql::IS_NUMERIC,
+                sparql::REGEX,
+                #[cfg(feature = "sparql-12")]
+                sparql::LANGDIR,
+                #[cfg(feature = "sparql-12")]
+                sparql::STRLANGDIR,
+                #[cfg(feature = "sparql-12")]
+                sparql::HAS_LANG,
+                #[cfg(feature = "sparql-12")]
+                sparql::HAS_LANGDIR,
+                #[cfg(feature = "sparql-12")]
+                sparql::IS_TRIPLE,
+                #[cfg(feature = "sep-0002")]
+                sparql::ADJUST,
+                xsd::ANY_URI,
+                xsd::BASE_64_BINARY,
+                xsd::BOOLEAN,
+                xsd::BYTE,
+                xsd::DATE,
+                xsd::DAY_TIME_DURATION,
+                xsd::DATE_TIME,
+                xsd::DATE_TIME_STAMP,
+                xsd::DECIMAL,
+                xsd::DOUBLE,
+                xsd::DURATION,
+                xsd::FLOAT,
+                xsd::G_DAY,
+                xsd::G_MONTH,
+                xsd::G_MONTH_DAY,
+                xsd::G_YEAR,
+                xsd::G_YEAR_MONTH,
+                xsd::HEX_BINARY,
+                xsd::INT,
+                xsd::INTEGER,
+                xsd::LANGUAGE,
+                xsd::LONG,
+                xsd::NAME,
+                xsd::NC_NAME,
+                xsd::NEGATIVE_INTEGER,
+                xsd::NMTOKEN,
+                xsd::NON_NEGATIVE_INTEGER,
+                xsd::NON_POSITIVE_INTEGER,
+                xsd::NORMALIZED_STRING,
+                xsd::POSITIVE_INTEGER,
+                xsd::TIME,
+                xsd::SHORT,
+                xsd::STRING,
+                xsd::TOKEN,
+                xsd::UNSIGNED_BYTE,
+                xsd::UNSIGNED_INT,
+                xsd::UNSIGNED_LONG,
+                xsd::UNSIGNED_SHORT,
+                xsd::YEAR_MONTH_DURATION,
+            ]
+            .contains(name) =>
+        {
+            VariableType::LITERAL | VariableType::UNDEF // TODO: add xsd: cast functions
+        }
+        Expression::If(_, then, els) => {
+            // The result is an error if the condition EBV returns and error
+            infer_expression_type(then, types)
+                | infer_expression_type(els, types)
+                | VariableType::UNDEF
+        }
+        Expression::Coalesce(inner) => {
+            let mut t = VariableType::UNDEF;
+            for e in inner {
+                let new = infer_expression_type(e, types);
+                t = t | new;
+                if !new.undef {
+                    t.undef = false;
+                    return t;
+                }
+            }
+            t
+        }
+        #[cfg(feature = "sparql-12")]
+        Expression::FunctionCall(name, _) if *name == sparql::TRIPLE => {
+            VariableType::TRIPLE | VariableType::UNDEF
+        }
+        #[cfg(feature = "sparql-12")]
+        Expression::FunctionCall(name, _) if *name == sparql::SUBJECT => {
+            VariableType::SUBJECT | VariableType::UNDEF
+        }
+        #[cfg(feature = "sparql-12")]
+        Expression::FunctionCall(name, _) if *name == sparql::OBJECT => {
+            VariableType::TERM | VariableType::UNDEF
+        }
+        Expression::FunctionCall(_, _) => VariableType::ANY,
+    }
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct VariableTypes {
+    inner: HashMap<Variable, VariableType>,
+}
+
+impl VariableTypes {
+    pub fn get(&self, variable: &Variable) -> VariableType {
+        self.inner
+            .get(variable)
+            .copied()
+            .unwrap_or(VariableType::UNDEF)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Variable, &VariableType)> {
+        self.inner.iter()
+    }
+
+    pub fn intersect_with(&mut self, other: Self) {
+        for (v, t) in other.inner {
+            self.intersect_variable_with(v, t);
+        }
+    }
+
+    pub fn union_with(&mut self, other: Self) {
+        for (v, t) in &mut self.inner {
+            if other.get(v).undef {
+                t.undef = true; // Might be undefined
+            }
+        }
+        for (v, mut t) in other.inner {
+            self.inner
+                .entry(v)
+                .and_modify(|ex| *ex = *ex | t)
+                .or_insert({
+                    t.undef = true;
+                    t
+                });
+        }
+    }
+
+    fn intersect_variable_with(&mut self, variable: Variable, t: VariableType) {
+        let t = self.get(&variable) & t;
+        if t != VariableType::UNDEF {
+            self.inner.insert(variable, t);
+        }
+    }
+}
+
+#[expect(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Eq, PartialEq, Debug, Default)]
+pub struct VariableType {
+    pub undef: bool,
+    pub named_node: bool,
+    pub blank_node: bool,
+    pub literal: bool,
+    #[cfg(feature = "sparql-12")]
+    pub triple: bool,
+}
+
+impl VariableType {
+    const ANY: Self = Self {
+        undef: true,
+        named_node: true,
+        blank_node: true,
+        literal: true,
+        #[cfg(feature = "sparql-12")]
+        triple: true,
+    };
+    const BLANK_NODE: Self = Self {
+        undef: false,
+        named_node: false,
+        blank_node: true,
+        literal: false,
+        #[cfg(feature = "sparql-12")]
+        triple: false,
+    };
+    const LITERAL: Self = Self {
+        undef: false,
+        named_node: false,
+        blank_node: false,
+        literal: true,
+        #[cfg(feature = "sparql-12")]
+        triple: false,
+    };
+    const NAMED_NODE: Self = Self {
+        undef: false,
+        named_node: true,
+        blank_node: false,
+        literal: false,
+        #[cfg(feature = "sparql-12")]
+        triple: false,
+    };
+    const SUBJECT: Self = Self {
+        undef: false,
+        named_node: true,
+        blank_node: true,
+        literal: false,
+        #[cfg(feature = "sparql-12")]
+        triple: true,
+    };
+    const TERM: Self = Self {
+        undef: false,
+        named_node: true,
+        blank_node: true,
+        literal: true,
+        #[cfg(feature = "sparql-12")]
+        triple: true,
+    };
+    #[cfg(feature = "sparql-12")]
+    const TRIPLE: Self = Self {
+        undef: false,
+        named_node: false,
+        blank_node: false,
+        literal: false,
+        triple: true,
+    };
+    pub const UNDEF: Self = Self {
+        undef: true,
+        named_node: false,
+        blank_node: false,
+        literal: false,
+        #[cfg(feature = "sparql-12")]
+        triple: false,
+    };
+}
+
+impl BitOr for VariableType {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self {
+            undef: self.undef || rhs.undef,
+            named_node: self.named_node || rhs.named_node,
+            blank_node: self.blank_node || rhs.blank_node,
+            literal: self.literal || rhs.literal,
+            #[cfg(feature = "sparql-12")]
+            triple: self.triple || rhs.triple,
+        }
+    }
+}
+
+impl BitAnd for VariableType {
+    type Output = Self;
+
+    #[expect(clippy::nonminimal_bool)]
+    fn bitand(self, rhs: Self) -> Self {
+        Self {
+            undef: self.undef && rhs.undef,
+            named_node: self.named_node && rhs.named_node
+                || (self.undef && rhs.named_node)
+                || (self.named_node && rhs.undef),
+            blank_node: self.blank_node && rhs.blank_node
+                || (self.undef && rhs.blank_node)
+                || (self.blank_node && rhs.undef),
+            literal: self.literal && rhs.literal
+                || (self.undef && rhs.literal)
+                || (self.literal && rhs.undef),
+            #[cfg(feature = "sparql-12")]
+            triple: self.triple && rhs.triple
+                || (self.undef && rhs.triple)
+                || (self.triple && rhs.undef),
+        }
+    }
+}

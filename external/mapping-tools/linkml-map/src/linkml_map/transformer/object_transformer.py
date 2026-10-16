@@ -1,0 +1,1330 @@
+"""A Transformer that works on in-memory dict objects."""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any
+
+import yaml
+from asteval import Interpreter
+from linkml_runtime import SchemaView
+from linkml_runtime.index.object_index import ObjectIndex
+from linkml_runtime.linkml_model import SlotDefinition
+from linkml_runtime.utils.yamlutils import YAMLRoot
+from pydantic import BaseModel
+from simpleeval import InvalidExpression
+
+from linkml_map.datamodel.transformer_model import (
+    ClassDerivation,
+    CollectionType,
+    SerializationSyntaxType,
+    SlotDerivation,
+)
+from linkml_map.functions.unit_conversion import perform_unit_conversion
+from linkml_map.transformer.content_id import ContentIdSynthesizer, mints_ids, missing_identifier_message
+from linkml_map.transformer.errors import TransformationError
+from linkml_map.transformer.pivot import perform_melt, perform_pivot_operation
+from linkml_map.transformer.transformer import OBJECT_TYPE, Transformer
+from linkml_map.utils.dynamic_object import DynObj, dynamic_object
+from linkml_map.utils.eval_utils import _uuid5, eval_expr_with_mapping
+from linkml_map.utils.fk_utils import FKResolution, resolve_fk_path
+from linkml_map.utils.join_utils import join_keys
+from linkml_map.utils.serialization import dump_yaml, dumps_json
+
+DICT_OBJ = dict[str, Any]
+
+
+class _AmbiguousType:
+    """Singleton sentinel for columns present in both parent and joined tables.
+
+    The single instance ``_AMBIGUOUS`` is identity-checked everywhere it is
+    used. ``__deepcopy__`` and ``__reduce__`` return the same instance so the
+    sentinel survives ``copy.deepcopy`` and ``pickle`` round-trips — without
+    these, a copied row would lose ambiguity detection silently.
+    """
+
+    _instance: _AmbiguousType | None = None
+
+    def __new__(cls) -> _AmbiguousType:
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __deepcopy__(self, memo: dict) -> _AmbiguousType:
+        return self
+
+    def __reduce__(self) -> tuple:
+        return (_AmbiguousType, ())
+
+    def __repr__(self) -> str:
+        return "<AMBIGUOUS>"
+
+
+_AMBIGUOUS = _AmbiguousType()
+
+
+class MergedRow(dict):
+    """A dict that remembers the original un-merged rows from an implicit join.
+
+    Behaves identically to a regular dict for all normal operations.
+    The original rows are accessible via :attr:`rows_by_table` so that
+    dot-notation disambiguation (e.g., ``Reading.id``) can resolve
+    ambiguous columns to table-specific values.
+    """
+
+    def __init__(self, merged: dict, rows_by_table: dict[str, dict]) -> None:
+        super().__init__(merged)
+        self.rows_by_table = rows_by_table
+
+
+def _raise_ambiguous_column(
+    column: str,
+    *,
+    class_deriv: ClassDerivation | None = None,
+    slot_derivation: SlotDerivation | None = None,
+) -> None:
+    """Raise a TransformationError for an ambiguous column access."""
+    raise TransformationError(
+        message=(
+            f"Column {column!r} is ambiguous — it exists in both the parent "
+            f"and nested source tables. Use dot notation (e.g., 'TableName.{column}') "
+            f"to disambiguate."
+        ),
+        class_derivation_name=class_deriv.name if class_deriv else None,
+        class_populated_from=class_deriv.populated_from if class_deriv else None,
+        slot_derivation_name=slot_derivation.name if slot_derivation else None,
+        slot_populated_from=slot_derivation.populated_from if slot_derivation else None,
+    )
+
+
+logger = logging.getLogger(__name__)
+
+
+class Bindings(Mapping):
+    """
+    Efficiently access source object attributes.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        object_transformer: ObjectTransformer,
+        source_obj: OBJECT_TYPE,
+        source_obj_typed: OBJECT_TYPE,
+        source_type: str,
+        sv: SchemaView,
+        bindings: dict,
+        class_deriv: ClassDerivation | None = None,
+    ) -> None:
+        self.object_transformer: ObjectTransformer = object_transformer
+        self.source_obj: OBJECT_TYPE = source_obj
+        self.source_obj_typed: OBJECT_TYPE = source_obj_typed
+        self.source_type: str = source_type
+        self.sv: SchemaView = sv
+        self.bindings: dict = {}
+        self.class_deriv: ClassDerivation | None = class_deriv
+        if bindings:
+            self.bindings.update(bindings)
+        self._schema_slots: set[str] = self._collect_schema_slots()
+
+    def _collect_schema_slots(self) -> set[str]:
+        """Slot names declared on the source class.
+
+        Used by ``__getitem__`` to distinguish a schema-declared slot
+        absent from the current row (legitimate SQL null) from a name
+        that does not exist in the schema (typo / stale reference).
+
+        Explicit-join aliases are not added here — they are already
+        handled earlier in ``__getitem__`` via ``_join_specs``. Slots on
+        join-target classes are intentionally excluded so that a bare
+        reference like ``{score}`` (instead of ``{Reading.score}``)
+        surfaces as a typo in strict mode for explicit-join specs.
+        Implicit-join column resolution is a separate concern handled
+        by the runtime merge in ``_derive_nested_objects`` (#217).
+        """
+        if self.source_type and self.source_type in self.sv.all_classes():
+            return {s.name for s in self.sv.class_induced_slots(self.source_type)}
+        return set()
+
+    @classmethod
+    def from_context(cls, transformer: ObjectTransformer, context: DerivationContext) -> Bindings:
+        """Create Bindings from a DerivationContext."""
+        return cls(
+            transformer,
+            source_obj=context.source_obj,
+            source_obj_typed=context.source_obj_typed,
+            source_type=context.source_type,
+            sv=context.sv,
+            bindings={"NULL": None},
+            class_deriv=context.class_deriv,
+        )
+
+    def get_ctxt_obj_and_dict(self, source_obj: OBJECT_TYPE = None) -> tuple[DynObj, OBJECT_TYPE]:
+        """
+        Transform a source object into a typed context object and dictionary, and cache results.
+
+        :param source_obj: Source data. Should be a subset of source_obj provided in the constructor.
+        If None the full source_obj from constructor is used.
+        :return: Tuple of typed context object and context dictionary. The object is the dictionary
+        with keys converted to member variables.
+        """
+        if source_obj is None:
+            source_obj = self.source_obj
+
+        if self.object_transformer.object_index:
+            if not self.source_obj_typed:
+                source_obj_dyn = dynamic_object(source_obj, self.sv, self.source_type)
+            else:
+                source_obj_dyn = self.source_obj_typed
+            # Clear cache: Cache doesn't work since the cache key is the same when source_obj has only a subset
+            # of its keys. eg. {"age": self.source_obj["age"]} and {"name": self.source_obj["name"]}
+            # (with optionally the identifier key included) will have the same cache key, and so `bless` will
+            # incorrectly return the same cached values.
+            self.object_transformer.object_index.clear_proxy_object_cache()
+
+            ctxt_obj = self.object_transformer.object_index.bless(source_obj_dyn)
+            ctxt_dict = {k: getattr(ctxt_obj, k) for k in ctxt_obj._attributes() if not k.startswith("_")}
+        else:
+            do = dynamic_object(source_obj, self.sv, self.source_type)
+            ctxt_obj = do
+            ctxt_dict = vars(do)
+
+        self.bindings.update(ctxt_dict)
+
+        return ctxt_obj, ctxt_dict
+
+    def _all_keys(self) -> list[Any]:
+        keys = list(self.source_obj.keys()) + list(self.bindings.keys())
+        # Remove duplicate keys (ie. found in both source_obj and bindings), and retain original order
+        return list(dict.fromkeys(keys).keys())
+
+    def __len__(self) -> int:
+        return len(self._all_keys())
+
+    def __iter__(self) -> Iterator:
+        return iter(self._all_keys())
+
+    @property
+    def _join_specs(self) -> dict:
+        """Active join specs from the class derivation, or empty dict."""
+        if self.class_deriv and self.class_deriv.joins:
+            return self.class_deriv.joins
+        return {}
+
+    def __getitem__(self, name: Any) -> Any:
+        if name not in self.bindings:
+            if name in self._join_specs:
+                self.bindings[name] = self._resolve_join(name)
+            elif name in self.source_obj and self.source_obj[name] is _AMBIGUOUS:
+                _raise_ambiguous_column(name, class_deriv=self.class_deriv)
+            elif isinstance(self.source_obj, MergedRow) and name in self.source_obj.rows_by_table:
+                self.bindings[name] = DynObj(**self.source_obj.rows_by_table[name])
+            elif name == self.source_type and name not in self.source_obj:
+                # Self-reference: {Reading.score} when source_type is Reading (non-merge context)
+                self.bindings[name] = DynObj(**self.source_obj)
+            elif name in self.source_obj:
+                _ = self.get_ctxt_obj_and_dict({name: self.source_obj[name]})
+            elif name in self._schema_slots:
+                # Schema-declared slot absent from this row → SQL null.
+                # Distinct from a name that is not in the schema at all,
+                # which falls through and raises KeyError so simpleeval
+                # surfaces it as NameNotDefined (handled in strict mode).
+                return None
+            else:
+                raise KeyError(name)
+
+        return self.bindings.get(name)
+
+    def _resolve_join(self, table_name: str) -> DynObj | None:
+        """Resolve a cross-table lookup, returning a DynObj or None."""
+        row = self.object_transformer._resolve_joined_row(table_name, self.source_obj, self.class_deriv)
+        if row is None:
+            return None
+        return DynObj(**row)
+
+    def __setitem__(self, name: Any, value: Any) -> None:
+        del name, value
+        msg = f"__setitem__ not allowed on class {self.__class__.__name__}"
+        raise RuntimeError(msg)
+
+
+@dataclass(frozen=True)
+class DerivationContext:
+    """Immutable context for slot derivation within a single map_object call."""
+
+    source_obj: DICT_OBJ
+    source_obj_typed: Any | None
+    source_type: str
+    sv: SchemaView
+    class_deriv: ClassDerivation
+
+
+@dataclass
+class ObjectTransformer(Transformer):
+    """
+    A Transformer that works on in-memory dict objects.
+
+    This works recursively
+    """
+
+    object_index: ObjectIndex = None
+    lookup_index: Any = None  # Optional[LookupIndex] — lazy import to avoid hard duckdb dep
+
+    extension_functions: dict[str, Callable] = field(default_factory=dict)
+    """Custom safe functions to merge into the expression eval namespace.
+
+    Set by the CLI loader (from ``--functions`` files) or directly by Python
+    callers. Names here are available inside ``expr:`` expressions alongside
+    the built-ins. Per-call context functions (currently ``slot()``) take
+    precedence; built-in functions are precedence-checked at load time via
+    :func:`~linkml_map.utils.extensions.load_extensions`.
+    """
+
+    emit_without_identifiers: bool = False
+    """Emit records whose identifier is neither derived nor minted, instead of raising.
+
+    For ``--continue-on-error`` runs, whose purpose is to surface every problem even at
+    the cost of bad output; the caller reports the missing identifiers once, up front
+    (see :meth:`missing_identifiers`).
+    """
+
+    _content_ids: ContentIdSynthesizer | None = field(default=None, repr=False)
+    """Synthesizer for identifiers the spec doesn't derive, rebuilt if the target schema changes."""
+
+    _warned_unbound_names: set[str] = field(default_factory=set, repr=False)
+    """Names already warned about in non-strict mode.
+
+    Shared across all expression evaluations on this transformer
+    instance — each unique unbound reference logs once, not once per
+    row. The set is never cleared automatically, so a transformer
+    reused across multiple logical runs will not re-warn for the same
+    typo. This is the intended behavior: if a spec has a typo, one
+    warning per typo across the lifetime of the transformer is enough.
+    Construct a fresh ``ObjectTransformer`` if you want a clean slate.
+    """
+
+    def index(self, source_obj: Any, target: str | None = None) -> None:
+        """
+        Create an index over a container object.
+
+        :param source_obj: source data structure to be indexed
+        :param target: class to convert source object into
+        """
+        if isinstance(source_obj, dict):
+            if target is None:
+                [target] = [c.name for c in self.source_schemaview.all_classes().values() if c.tree_root]
+            if target is None:
+                msg = f"target must be passed if source_obj is dict: {source_obj}"
+                raise ValueError(msg)
+            source_obj_typed = dynamic_object(source_obj, self.source_schemaview, target)
+            self.object_index = ObjectIndex(source_obj_typed, schemaview=self.source_schemaview)
+        else:
+            self.object_index = ObjectIndex(source_obj, schemaview=self.source_schemaview)
+
+    def _resolve_source_type(self, source_type: str | None, sv: SchemaView | None) -> str | None:
+        """
+        Resolve the source type when not explicitly provided.
+
+        :param source_type: Explicitly provided source type, or None.
+        :param sv: Source schema view, may be None.
+        :return: Resolved source type name.
+        """
+        if source_type is None and sv is None:
+            # TODO: use smarter method
+            if self.specification.class_derivations:
+                source_type = self.specification.class_derivations[0].name
+            else:
+                msg = (
+                    "Cannot resolve source type: no source_type provided, "
+                    "no SchemaView available, and specification has no class_derivations"
+                )
+                raise ValueError(msg)
+        if source_type is None and sv is not None:
+            source_types = [c.name for c in sv.all_classes().values() if c.tree_root]
+            if len(source_types) == 1:
+                source_type = source_types[0]
+            elif len(source_types) > 1:
+                msg = "No source type specified and multiple root classes found"
+                raise ValueError(msg)
+            elif len(source_types) == 0:
+                if len(sv.all_classes()) == 1:
+                    source_type = next(iter(sv.all_classes().keys()))
+                else:
+                    msg = "No source type specified and no root classes found"
+                    raise ValueError(msg)
+        return source_type
+
+    def map_object(
+        self,
+        source_obj: OBJECT_TYPE,
+        source_type: str | None = None,
+        target_type: str | None = None,
+        class_derivation: ClassDerivation | None = None,
+    ) -> DICT_OBJ | Any:
+        """
+        Transform a source object into a target object.
+
+        Slot derivations are evaluated in declaration order. Expressions
+        may call ``slot('name')`` to reference previously computed values.
+        Slots with ``hide: true`` are computed (so downstream ``slot()``
+        calls can reference them) but excluded from the returned dict.
+
+        :param source_obj: source data structure
+        :param source_type: source_obj instantiates this (may be class, type, or enum)
+        :param target_type: target_obj instantiates this (may be class, type, or enum)
+        :return: transformed data, either as type target_type or a dictionary
+        """
+        sv = self.source_schemaview
+        source_type = self._resolve_source_type(source_type, sv)
+
+        if source_type in sv.all_types():
+            if target_type:
+                if target_type == "string":
+                    return str(source_obj)
+                if target_type == "integer":
+                    return int(source_obj)
+                if target_type in {"float", "double"}:
+                    return float(source_obj)
+                if target_type == "uri":
+                    return self.expand_curie(source_obj)
+                if target_type == "curie":
+                    return self.compress_uri(source_obj)
+            return source_obj
+        if source_type in sv.all_enums():
+            return self.transform_enum(source_obj, [source_type], source_obj)
+
+        source_obj_typed = None
+        if isinstance(source_obj, BaseModel | YAMLRoot):
+            # ensure dict
+            source_obj_typed = source_obj
+            source_obj = vars(source_obj)
+        if not isinstance(source_obj, dict):
+            logger.warning(f"Unexpected: {source_obj} for type {source_type}")
+            return source_obj
+        class_deriv = class_derivation or self._get_class_derivation(source_type)
+
+        # Handle class-level pivot operations (UNMELT from EAV to wide format)
+        if class_deriv.pivot_operation:
+            return perform_pivot_operation(class_deriv.pivot_operation, source_obj, self.target_schemaview)
+
+        context = DerivationContext(
+            source_obj=source_obj,
+            source_obj_typed=source_obj_typed,
+            source_type=source_type,
+            sv=sv,
+            class_deriv=class_deriv,
+        )
+        tgt_attrs = {}
+        bindings = Bindings.from_context(self, context)
+        expr_functions = {**self.extension_functions, "slot": lambda name: tgt_attrs.get(name)}
+        for slot_deriv in class_deriv.slot_derivations.values():
+            with self._slot_error_context(slot_deriv, context):
+                tgt_attrs[str(slot_deriv.name)] = self._derive_slot(
+                    slot_deriv, context, target_type, bindings, expr_functions
+                )
+        # Remove hidden slots from output (they exist only for slot() references)
+        for slot_deriv in class_deriv.slot_derivations.values():
+            if slot_deriv.hide:
+                tgt_attrs.pop(str(slot_deriv.name), None)
+        return self._with_synthesized_id(tgt_attrs, class_deriv)
+
+    def _with_synthesized_id(self, record: dict[str, Any], class_deriv: ClassDerivation) -> dict[str, Any]:
+        """Prepend a content-hash id when the target identifier is minted rather than derived.
+
+        See :mod:`linkml_map.transformer.content_id`.
+
+        :raises TransformationError: If the identifier is neither derived nor minted.
+        """
+        id_slot = self._underived_identifier(class_deriv)
+        if id_slot is None:
+            return record
+        if not self._mints_ids(class_deriv):
+            if self.emit_without_identifiers:
+                return record
+            raise TransformationError(
+                message=missing_identifier_message(class_deriv.name, id_slot),
+                class_derivation_name=class_deriv.name,
+                class_populated_from=class_deriv.populated_from,
+            )
+        return {id_slot: self._content_ids.content_id(record, class_deriv.name), **record}
+
+    def _mints_ids(self, class_deriv: ClassDerivation) -> bool:
+        """Whether *class_deriv* mints ids, per :func:`~linkml_map.transformer.content_id.mints_ids`."""
+        spec = self.specification
+        default = spec.class_defaults.get(class_deriv.name) if spec.class_defaults else None
+        # A spec built directly in Python keeps the compact ``Class: true`` form as a bare bool.
+        default_mint_ids = default if isinstance(default, bool) or default is None else default.mint_ids
+        return mints_ids(spec.mint_ids, default_mint_ids, class_deriv.mint_ids)
+
+    def _underived_identifier(self, class_deriv: ClassDerivation) -> str | None:
+        """The target class's identifier slot when *class_deriv* doesn't derive it, else ``None``.
+
+        Always ``None`` without a target schema, since there is no identifier slot to know of.
+        """
+        if self.target_schemaview is None:
+            return None
+        if self._content_ids is None or self._content_ids.schemaview is not self.target_schemaview:
+            self._content_ids = ContentIdSynthesizer(self.target_schemaview)
+        id_slot = self._content_ids.identifier_slot(class_deriv.name)
+        if id_slot is None or id_slot in class_deriv.slot_derivations:
+            return None
+        return id_slot
+
+    def missing_identifiers(self) -> list[str]:
+        """Describe every class derivation that would emit records without their identifier.
+
+        Checks the whole specification, nested class derivations included: each target
+        identifier slot must be derived explicitly or minted (``mint_ids: true``).
+
+        :return: One message per offending class derivation; empty when all are covered.
+        """
+        top_level = [self._with_inherited_fields(cd) for cd in self.specification.class_derivations]
+        return [
+            missing_identifier_message(cd.name, id_slot)
+            for cd in _all_class_derivations(top_level)
+            if (id_slot := self._underived_identifier(cd)) is not None and not self._mints_ids(cd)
+        ]
+
+    def check_identifiers(self) -> None:
+        """Fail before any output if a class derivation would emit records without their identifier.
+
+        :raises ValueError: Listing every problem from :meth:`missing_identifiers`.
+        """
+        problems = self.missing_identifiers()
+        if problems:
+            raise ValueError("\n".join(problems))
+
+    @contextmanager
+    def _slot_error_context(
+        self,
+        slot_derivation: SlotDerivation,
+        context: DerivationContext,
+    ) -> Iterator[None]:
+        """Wrap slot derivation in error enrichment.
+
+        Re-raises ``TransformationError`` unchanged; wraps all other exceptions
+        with derivation context so callers get actionable diagnostics.
+        """
+        try:
+            yield
+        except TransformationError:
+            raise
+        except Exception as exc:
+            raise TransformationError(
+                message=str(exc),
+                class_derivation_name=context.class_deriv.name,
+                class_populated_from=context.class_deriv.populated_from,
+                slot_derivation_name=slot_derivation.name,
+                slot_populated_from=slot_derivation.populated_from,
+                source_row=context.source_obj,
+                cause=exc,
+            ) from exc
+
+    def _derive_slot(
+        self,
+        slot_derivation: SlotDerivation,
+        context: DerivationContext,
+        target_type: str | None,
+        bindings: Bindings,
+        expr_functions: dict[str, Any] | None = None,
+    ) -> Any:
+        """Derive a single target slot value from the source object.
+
+        Dispatches on the slot derivation type (literal value, expression,
+        populated_from, etc.) and applies post-processing (range mapping,
+        cardinality coercion, datatype coercion, reshaping).
+
+        Slot derivations are evaluated in declaration order. Expressions
+        can reference previously computed slots via ``slot('name')``.
+
+        :param slot_derivation: The slot derivation spec to apply.
+        :param context: Current derivation context.
+        :param target_type: Target class name (needed for nested object derivations).
+        :param bindings: Bindings instance for expression evaluation.
+        :param expr_functions: Extra functions for expression evaluation (e.g. ``slot``).
+        :returns: The derived value for this slot.
+        """
+        v = None
+        source_class_slot = None
+        if slot_derivation.value is not None:
+            v = slot_derivation.value
+        elif slot_derivation.unit_conversion:
+            v = perform_unit_conversion(slot_derivation, context.source_obj, context.sv, context.source_type)
+        elif slot_derivation.pivot_operation:
+            # MELT operation: wide format to EAV/long format
+            v = perform_melt(slot_derivation.pivot_operation, context.source_obj, self.target_schemaview)
+        elif slot_derivation.expr:
+            v = self._eval_expr(slot_derivation.expr, bindings, functions=expr_functions)
+        elif slot_derivation.populated_from:
+            populated_from = slot_derivation.populated_from
+
+            if "." in populated_from:
+                table_name, field_path = populated_from.split(".", 1)
+                if context.class_deriv.joins and table_name in context.class_deriv.joins:
+                    (v, source_class_slot) = self._perform_join_resolution(table_name, field_path, context)
+                elif isinstance(context.source_obj, MergedRow) and table_name in context.source_obj.rows_by_table:
+                    v = context.source_obj.rows_by_table[table_name].get(field_path)
+                    source_class_slot = (
+                        context.sv.induced_slot(field_path, table_name)
+                        if table_name in context.sv.all_classes()
+                        else None
+                    )
+                elif table_name == context.source_type:
+                    v = context.source_obj.get(field_path)
+                    if v is _AMBIGUOUS:
+                        _raise_ambiguous_column(
+                            field_path,
+                            class_deriv=context.class_deriv,
+                            slot_derivation=slot_derivation,
+                        )
+                    source_class_slot = context.sv.induced_slot(field_path, context.source_type)
+                else:
+                    (v, source_class_slot) = self._resolve_fk_or_literal(
+                        populated_from,
+                        slot_derivation,
+                        context,
+                        require_fk=True,
+                    )
+            else:
+                (v, source_class_slot) = self._resolve_fk_or_literal(populated_from, slot_derivation, context)
+
+            v = self._nullify_missing_values(v, slot_derivation)
+
+            if (slot_derivation.value_mappings or slot_derivation.expression_mappings) and v is not None:
+                v = self._apply_mappings(slot_derivation, v, bindings, functions=expr_functions)
+
+            if slot_derivation.offset and v is not None:
+                v = self._apply_offset(v, slot_derivation, context.source_obj)
+
+            logger.debug(
+                f"Pop slot {slot_derivation.name} => {v} using {slot_derivation.populated_from} // {context.source_obj}"
+            )
+        elif slot_derivation.sources:
+            (v, source_class_slot) = self._resolve_sources(slot_derivation, context)
+        elif slot_derivation.class_derivations:
+            v = self._derive_nested_objects(slot_derivation, context.source_obj, target_type, context.class_deriv)
+        else:
+            source_class_slot = context.sv.induced_slot(slot_derivation.name, context.source_type)
+            v = context.source_obj.get(slot_derivation.name, None)
+            if v is _AMBIGUOUS:
+                _raise_ambiguous_column(
+                    slot_derivation.name,
+                    class_deriv=context.class_deriv,
+                    slot_derivation=slot_derivation,
+                )
+            v = self._nullify_missing_values(v, slot_derivation)
+
+        if source_class_slot and v is not None and not slot_derivation.hide:
+            target_range = slot_derivation.range
+            v = self._map_value_by_range(v, source_class_slot, target_range, context.source_obj)
+            v = self._coerce_cardinality(v, slot_derivation, context.class_deriv)
+            v = self._coerce_datatype(v, target_range)
+            v = self._reshape_collection(v, slot_derivation, source_class_slot)
+        return v
+
+    @staticmethod
+    def _nullify_missing_values(value: Any, slot_derivation: SlotDerivation) -> Any:
+        """Return ``None`` if ``value`` is a declared missing-value code, else ``value``.
+
+        Comparison is by string equality against ``slot_derivation.missing_values`` so a
+        sentinel like ``-9`` nulls only ``-9`` (not ``99``) and matches regardless of
+        whether the source value arrived as an int or a raw delimited-file string. Applied
+        at raw-value resolution, before mappings, offset, and range coercion.
+        """
+        if (
+            value is not None
+            and slot_derivation.missing_values
+            and str(value) in {str(mv) for mv in slot_derivation.missing_values}
+        ):
+            return None
+        return value
+
+    def _eval_expr(
+        self,
+        expr: str,
+        bindings: Bindings,
+        functions: dict[str, Any] | None = None,
+    ) -> Any:
+        """Evaluate an expression string against bindings.
+
+        Uses the restricted evaluator by default, with fallback to asteval
+        when ``unrestricted_eval`` is enabled on the transformer.
+
+        :param expr: The expression string to evaluate.
+        :param bindings: Variable bindings for the expression.
+        :param functions: Extra functions injected into the evaluator
+            (e.g. ``slot`` for referencing previously derived target slots).
+        """
+        try:
+            return eval_expr_with_mapping(
+                expr,
+                bindings,
+                functions=functions,
+                strict=self.strict,
+                warned_unbound=self._warned_unbound_names,
+            )
+        except (InvalidExpression, TypeError, ValueError):
+            if not self.unrestricted_eval:
+                raise
+            ctxt_obj, _ = bindings.get_ctxt_obj_and_dict()
+            return self._unrestricted_eval(expr, ctxt_obj, functions=functions)
+
+    def _unrestricted_eval(
+        self,
+        expr: str,
+        src: Any,
+        functions: dict[str, Any] | None = None,
+    ) -> Any:
+        """Evaluate *expr* with the unrestricted asteval interpreter.
+
+        This is the escape hatch reached only when restricted evaluation fails
+        *and* the user opted in via ``unrestricted_eval``. Callers own the gate;
+        this method assumes the opt-in has already been checked.
+
+        :param expr: The expression string to evaluate.
+        :param src: Object exposed to the expression as ``src``.
+        :param functions: Extra functions injected into the interpreter.
+        """
+        usersyms = {"src": src, "target": None, "uuid5": _uuid5}
+        if functions:
+            usersyms.update(functions)
+        aeval = Interpreter(usersyms=usersyms)
+        aeval(expr)
+        return aeval.symtable["target"]
+
+    def _apply_mappings(
+        self,
+        slot_derivation: SlotDerivation,
+        v: Any,
+        bindings: Bindings,
+        functions: dict[str, Any] | None = None,
+    ) -> Any:
+        """Look up a value in value_mappings then expression_mappings.
+
+        Checks ``value_mappings`` first (literal result). On miss, falls through
+        to ``expression_mappings`` (evaluated against *bindings*). Returns
+        ``None`` if neither table contains the key.
+        """
+        str_v = str(v)
+        vm_hit = slot_derivation.value_mappings.get(str_v) if slot_derivation.value_mappings else None
+        if vm_hit is not None:
+            return vm_hit.value
+        if slot_derivation.expression_mappings:
+            em_hit = slot_derivation.expression_mappings.get(str_v)
+            if em_hit is not None:
+                return self._eval_expr(em_hit.value, bindings, functions=functions)
+        return None
+
+    def _perform_fk_resolution(
+        self,
+        fk_resolution: FKResolution,
+        slot_derivation: SlotDerivation,
+        fk_value: Any,
+    ) -> tuple[Any, SlotDefinition | None]:
+        """Resolve a foreign key value through the object index and walk the remaining path."""
+        if fk_value is not None and self.object_index:
+            cache_key = (fk_resolution.target_class, str(fk_value))
+            referenced_obj = self.object_index._source_object_cache.get(cache_key)
+
+            if referenced_obj:
+                v = referenced_obj
+                for attr in fk_resolution.remaining_path.split("."):
+                    if isinstance(v, dict):
+                        v = v.get(attr)
+                    elif v is not None:
+                        v = getattr(v, attr, None)
+                    if v is None:
+                        break
+            else:
+                v = None
+                logger.debug(f"FK reference not found for {slot_derivation.name}")
+        else:
+            v = None
+            if fk_value is not None and not self.object_index:
+                logger.warning(
+                    "Cross-class lookup requires object_index. Call transformer.index(container_data) first."
+                )
+
+        source_class_slot = fk_resolution.final_slot
+        return v, source_class_slot
+
+    def _resolve_fk_or_literal(
+        self,
+        populated_from: str,
+        slot_derivation: SlotDerivation,
+        context: DerivationContext,
+        *,
+        require_fk: bool = False,
+    ) -> tuple[Any, SlotDefinition | None]:
+        """Resolve a populated_from value via FK path or direct field lookup.
+
+        :param populated_from: The populated_from string (may contain dots for FK paths).
+        :param slot_derivation: The active slot derivation.
+        :param context: Current derivation context.
+        :param require_fk: If True, raise ValueError when no FK path is found
+            (used for dot-notation without a matching join).
+        :returns: Tuple of (resolved value, source slot definition or None).
+        """
+        if "." in populated_from and self._is_inline_path(populated_from, context):
+            return self._resolve_inline_path(populated_from, slot_derivation, context)
+        fk_resolution = resolve_fk_path(context.sv, context.source_type, populated_from)
+        if fk_resolution:
+            fk_value = context.source_obj.get(fk_resolution.fk_slot_name)
+            return self._perform_fk_resolution(fk_resolution, slot_derivation, fk_value)
+        if require_fk:
+            msg = (
+                f"Dot-notation '{populated_from}' in populated_from "
+                f"requires a matching join spec or FK path, but neither was found"
+            )
+            raise ValueError(msg)
+        v = context.source_obj.get(populated_from, None)
+        if v is _AMBIGUOUS:
+            _raise_ambiguous_column(
+                populated_from,
+                class_deriv=context.class_deriv,
+                slot_derivation=slot_derivation,
+            )
+        source_class_slot = context.sv.induced_slot(populated_from, context.source_type)
+        return v, source_class_slot
+
+    def _is_inline_path(self, populated_from: str, context: DerivationContext) -> bool:
+        """Decide whether a dot-path traverses inlined nested data rather than an FK.
+
+        Detection is declarative first, with a runtime fallback (issue #247):
+
+        * **Declarative:** the first path segment's source slot has a class range
+          and is marked ``inlined`` / ``inlined_as_list``.
+        * **Runtime fallback:** the value at the first segment is actually a nested
+          object (dict) or list, even when the schema doesn't declare ``inlined``.
+
+        Foreign keys (class range, scalar identifier value, not inlined) fall
+        through to :func:`resolve_fk_path` as before.
+
+        :param populated_from: The dotted ``populated_from`` path.
+        :param context: Current derivation context.
+        :returns: True if the path should be walked structurally through inline data.
+        """
+        first_segment = populated_from.split(".", 1)[0]
+        try:
+            slot = context.sv.induced_slot(first_segment, context.source_type)
+        except Exception:
+            slot = None
+        if slot and slot.range in context.sv.all_classes() and (slot.inlined or slot.inlined_as_list):
+            return True
+        value = context.source_obj.get(first_segment) if isinstance(context.source_obj, dict) else None
+        return isinstance(value, dict | list)
+
+    def _resolve_inline_path(
+        self,
+        populated_from: str,
+        slot_derivation: SlotDerivation,
+        context: DerivationContext,
+    ) -> tuple[Any, SlotDefinition | None]:
+        """Walk a dot-path structurally through inlined nested objects (issue #247).
+
+        Descends into the nested dict(s) one segment at a time and returns the
+        leaf value together with its source slot (for range mapping). A segment
+        that is legitimately absent yields ``None`` rather than an error.
+
+        :param populated_from: The dotted ``populated_from`` path.
+        :param slot_derivation: The active slot derivation (for diagnostics).
+        :param context: Current derivation context.
+        :returns: Tuple of (leaf value, final source slot or None).
+        :raises TransformationError: if a segment holds a list (multivalued inline
+            fan-out, tracked in #265) or a non-dict value is encountered mid-path.
+        """
+        segments = populated_from.split(".")
+        current_val: Any = context.source_obj
+        current_class: str | None = context.source_type
+        final_slot: SlotDefinition | None = None
+
+        for i, segment in enumerate(segments):
+            if not isinstance(current_val, dict):
+                msg = (
+                    f"Cannot traverse inlined path {populated_from!r}: segment {segment!r} "
+                    f"expected a nested object but found {type(current_val).__name__}"
+                )
+                raise TransformationError(
+                    message=msg,
+                    slot_derivation_name=slot_derivation.name,
+                    slot_populated_from=populated_from,
+                )
+            slot = None
+            if current_class:
+                try:
+                    slot = context.sv.induced_slot(segment, current_class)
+                except Exception:
+                    slot = None
+            current_val = current_val.get(segment)
+            if isinstance(current_val, list):
+                msg = (
+                    f"Inlined path {populated_from!r} reaches a multivalued segment {segment!r}; "
+                    f"per-item fan-out to a matching class_derivation is not yet supported (see #265)"
+                )
+                raise TransformationError(
+                    message=msg,
+                    slot_derivation_name=slot_derivation.name,
+                    slot_populated_from=populated_from,
+                )
+            if i == len(segments) - 1:
+                final_slot = slot
+            elif slot and slot.range in context.sv.all_classes():
+                current_class = slot.range
+            else:
+                current_class = slot.range if slot else None
+            if current_val is None:
+                break
+
+        return current_val, final_slot
+
+    def _resolve_joined_row(
+        self,
+        table_name: str,
+        source_obj: DICT_OBJ,
+        class_deriv: ClassDerivation,
+    ) -> dict | None:
+        """Resolve a row from a joined table using LookupIndex.
+
+        This is the single source of truth for cross-table join resolution.
+        Both ``Bindings._resolve_join`` (for ``expr:``) and
+        ``_perform_join_resolution`` (for ``populated_from:``) delegate here.
+
+        :param table_name: Join name (key in ``class_deriv.joins``).
+        :param source_obj: Current primary-table row.
+        :param class_deriv: The active ClassDerivation (carries join specs).
+        :returns: Matched row as a dict, or ``None`` if no match found.
+        :raises ValueError: If join spec is missing keys or lookup_index is not initialized.
+        """
+        # Pre-joined fast path: when the joined row is already supplied inline via a
+        # MergedRow (the set-based DuckDB join engine, or an earlier merge of the same
+        # table), resolve from it directly instead of a per-row lookup.
+        if isinstance(source_obj, MergedRow) and table_name in source_obj.rows_by_table:
+            return source_obj.rows_by_table[table_name]
+
+        spec = class_deriv.joins[table_name]
+        source_key, lookup_key = join_keys(spec)
+        key_val = source_obj.get(source_key)
+        if key_val is None:
+            return None
+        if self.lookup_index is None:
+            msg = f"Join configured for {table_name!r} but lookup_index has not been initialized"
+            raise ValueError(msg)
+        return self.lookup_index.lookup_row(table_name, lookup_key, key_val)
+
+    def _perform_join_resolution(
+        self,
+        table_name: str,
+        field_path: str,
+        context: DerivationContext,
+    ) -> tuple[Any, SlotDefinition | None]:
+        """Resolve a slot value via cross-table join lookup.
+
+        :param table_name: Join name (key in ``class_deriv.joins``).
+        :param field_path: Column name within the joined table.
+        :param context: Current derivation context.
+        :returns: Tuple of (resolved value, source slot definition or None).
+        """
+        row = self._resolve_joined_row(table_name, context.source_obj, context.class_deriv)
+        v = row.get(field_path) if row else None
+        joined_class = context.class_deriv.joins[table_name].class_named or table_name
+        source_class_slot = None
+        if joined_class in context.sv.all_classes():
+            if field_path in context.sv.class_induced_slots(joined_class):
+                source_class_slot = context.sv.induced_slot(field_path, joined_class)
+        return v, source_class_slot
+
+    @staticmethod
+    def _merge_rows(
+        parent_row: DICT_OBJ,
+        joined_row: DICT_OBJ,
+        join_key: str,
+        parent_source: str,
+        nested_source: str,
+    ) -> MergedRow:
+        """Merge parent and joined rows, marking ambiguous columns.
+
+        Columns present in both rows (except the join key) are set to the
+        ``_AMBIGUOUS`` sentinel so that slot resolution raises a clear error
+        instead of silently picking one. The original rows are preserved in
+        the returned :class:`MergedRow` for dot-notation disambiguation.
+
+        :param parent_row: Row from the parent table.
+        :param joined_row: Row from the joined table.
+        :param join_key: The column used to join (kept from parent).
+        :param parent_source: Parent table name (for logging).
+        :param nested_source: Joined table name (for logging).
+        :returns: MergedRow with ambiguous markers and original rows.
+        """
+        ambiguous = {k for k in parent_row if k in joined_row and k != join_key}
+        merged = {}
+        for k, v in parent_row.items():
+            merged[k] = _AMBIGUOUS if k in ambiguous else v
+        for k, v in joined_row.items():
+            if k not in merged:
+                merged[k] = v
+
+        if ambiguous:
+            logger.debug(
+                "Ambiguous columns %s shared between %s and %s — dot notation required",
+                sorted(ambiguous),
+                parent_source,
+                nested_source,
+            )
+
+        # Carry ancestor tables forward so dot-notation (and the pre-joined fast
+        # path) keep resolving at arbitrary nesting depth — e.g.
+        # MeasurementObservationSet -> MeasurementObservation -> Quantity, where the
+        # deepest level still needs every star-joined table available.
+        inherited = parent_row.rows_by_table if isinstance(parent_row, MergedRow) else {parent_source: parent_row}
+        return MergedRow(merged, rows_by_table={**inherited, nested_source: joined_row})
+
+    def _apply_offset(self, value: Any, slot_derivation: SlotDerivation, source_obj: DICT_OBJ) -> Any:
+        """Apply an offset calculation using a value from another source field."""
+        off = slot_derivation.offset
+        off_field_val = source_obj.get(off.offset_field)
+
+        if off_field_val is None:
+            logger.debug(
+                f"Offset field '{off.offset_field}' not found in source object; "
+                f"skipping offset for '{slot_derivation.name}'"
+            )
+            return value
+
+        delta = off.offset_value * off_field_val
+        result = value - delta if off.offset_reverse else value + delta
+        logger.debug(
+            f"Offset for '{slot_derivation.name}': "
+            f"{value} {'-' if off.offset_reverse else '+'} "
+            f"({off.offset_value} * {off_field_val}) = {result}"
+        )
+        return result
+
+    def _resolve_sources(
+        self, slot_derivation: SlotDerivation, context: DerivationContext
+    ) -> tuple[Any, SlotDefinition | None]:
+        """Resolve a slot value from multiple candidate source slots (first available wins)."""
+        vmap = {s: context.source_obj.get(s, None) for s in slot_derivation.sources}
+        vmap = {k: v for k, v in vmap.items() if v is not None}
+        if len(vmap.keys()) > 1:
+            msg = f"Multiple sources for {slot_derivation.name}: {vmap}"
+            raise ValueError(msg)
+        if len(vmap.keys()) == 1:
+            v = next(iter(vmap.values()))
+            source_class_slot_name = next(iter(vmap.keys()))
+            source_class_slot = context.sv.induced_slot(source_class_slot_name, context.source_type)
+        else:
+            v = None
+            source_class_slot = None
+
+        logger.debug(
+            f"Pop slot {slot_derivation.name} => {v} using {slot_derivation.populated_from} // {context.source_obj}"
+        )
+        return v, source_class_slot
+
+    def _derive_nested_objects(
+        self,
+        slot_derivation: SlotDerivation,
+        source_obj: DICT_OBJ,
+        target_type: str,
+        parent_class_deriv: ClassDerivation,
+    ) -> Any:
+        """Build nested objects from slot-level class_derivation declarations.
+
+        When a nested class_derivation has a different ``populated_from`` than
+        its parent and the parent has a matching join spec (explicit or
+        synthesized during normalization), this method resolves the joined row
+        and merges it with the parent row before passing it to ``map_object``.
+
+        :param slot_derivation: The slot derivation that declares nested class_derivations.
+        :param source_obj: The current (parent) source row.
+        :param target_type: Target class name for cardinality decisions.
+        :param parent_class_deriv: The parent's ClassDerivation (carries join specs).
+        """
+        derived_objs = []
+        parent_source = parent_class_deriv.populated_from or parent_class_deriv.name
+
+        for cls_derivation in slot_derivation.class_derivations:
+            nested_source = cls_derivation.populated_from
+            effective_obj = source_obj
+
+            if nested_source and nested_source != parent_source:
+                has_join = parent_class_deriv.joins and nested_source in parent_class_deriv.joins
+                if has_join:
+                    # Join spec exists (explicit or synthesized) — resolve and merge
+                    joined_row = self._resolve_joined_row(nested_source, source_obj, parent_class_deriv)
+                    if joined_row is None:
+                        # Sparse join miss. The nested object is anchored to its
+                        # populated_from table, so with no matching row there is no
+                        # object to emit. Skip it entirely rather than building a hollow
+                        # object against the bare parent row: that would both mask absence
+                        # as a real null (re: #211) and bypass the _AMBIGUOUS markers that
+                        # _merge_rows adds, making ambiguity enforcement data-dependent. See #217.
+                        logger.debug(
+                            "No row in %r matched the join from %r for nested %r; emitting no object",
+                            nested_source,
+                            parent_source,
+                            cls_derivation.name,
+                        )
+                        continue
+                    join_spec = parent_class_deriv.joins[nested_source]
+                    join_key, _ = join_keys(join_spec)  # parent-side key; kept unmarked in the merge
+                    effective_obj = self._merge_rows(
+                        source_obj,
+                        joined_row,
+                        join_key,
+                        parent_source,
+                        nested_source,
+                    )
+                else:
+                    # No join spec for this nested source — cross-table reference can't be resolved.
+                    # Re-derive the reason via the shared resolver so the diagnostic tells the user
+                    # *why* synthesis failed (no overlap vs. multiple non-identifier candidates),
+                    # using the same logic synthesis used rather than a parallel implementation.
+                    from linkml_map.utils.join_utils import resolve_join
+
+                    reason = resolve_join(self.source_schemaview, parent_source, nested_source).reason
+                    raise TransformationError(
+                        message=(
+                            f"Nested class {cls_derivation.name!r} has "
+                            f"populated_from={nested_source!r} which differs from parent "
+                            f"populated_from={parent_source!r}, but no implicit join could be "
+                            f"synthesized: {reason}. Add an explicit joins: block."
+                        ),
+                        class_derivation_name=cls_derivation.name,
+                        class_populated_from=nested_source,
+                    )
+
+            nested_result = self.map_object(
+                effective_obj,
+                source_type=cls_derivation.populated_from,
+                target_type=cls_derivation.name,
+                class_derivation=cls_derivation,
+            )
+            derived_objs.append(nested_result)
+
+        # If the slot is multivalued, we assign the whole list
+        # Otherwise, just assign the first (for now; error/warning later if >1)
+        target_class_slot = self.target_schemaview.induced_slot(slot_derivation.name, target_type)
+        if target_class_slot.multivalued:
+            v = derived_objs
+        else:
+            v = derived_objs[0] if derived_objs else None
+        return v
+
+    def _map_value_by_range(
+        self,
+        v: Any,
+        source_class_slot: SlotDefinition,
+        target_range: str | None,
+        source_obj: DICT_OBJ,
+    ) -> Any:
+        """Recursively map nested values based on the source slot's range type."""
+        source_class_slot_range = source_class_slot.range
+        sv = self.source_schemaview
+
+        # Check for enums defined via any_of when the range is None or "Any"
+        if source_class_slot_range is None or source_class_slot_range == "Any":
+            any_of_enums = self._get_any_of_enum_names(source_class_slot, sv)
+            if any_of_enums:
+                if source_class_slot.multivalued and isinstance(v, list):
+                    return [self.transform_enum(v1, any_of_enums, source_obj) for v1 in v]
+                return self.transform_enum(v, any_of_enums, source_obj)
+            # No range and no any_of enums: nothing to recurse into for scalars
+            if not isinstance(v, dict | list):
+                return v
+            if isinstance(v, list) and all(not isinstance(v1, dict | list) for v1 in v):
+                return v
+
+        if source_class_slot.multivalued:
+            if isinstance(v, list):
+                return [self.map_object(v1, source_class_slot_range, target_range) for v1 in v]
+            elif isinstance(v, dict):
+                return {k1: self.map_object(v1, source_class_slot_range, target_range) for k1, v1 in v.items()}
+            else:
+                return [self.map_object(v, source_class_slot_range, target_range)]
+        else:
+            return self.map_object(v, source_class_slot_range, target_range)
+
+    def _coerce_cardinality(self, v: Any, slot_derivation: SlotDerivation, class_derivation: ClassDerivation) -> Any:
+        """Coerce between single-valued and multi-valued based on target schema and spec."""
+        if (
+            self._is_coerce_to_multivalued(slot_derivation, class_derivation)
+            and v is not None
+            and not isinstance(v, list)
+        ):
+            return self._singlevalued_to_multivalued(v, slot_derivation)
+        elif self._is_coerce_to_singlevalued(slot_derivation, class_derivation) and isinstance(v, list):
+            return self._multivalued_to_singlevalued(v, slot_derivation)
+        return v
+
+    def _reshape_collection(self, v: Any, slot_derivation: SlotDerivation, source_class_slot: SlotDefinition) -> Any:
+        """Reshape between list and compact-dict collection formats."""
+        if slot_derivation.dictionary_key and isinstance(v, list):
+            # List to CompactDict
+            v = {v1[slot_derivation.dictionary_key]: v1 for v1 in v}
+            for v1 in v.values():
+                del v1[slot_derivation.dictionary_key]
+            return v
+        elif (
+            slot_derivation.cast_collection_as
+            and slot_derivation.cast_collection_as == CollectionType.MultiValuedList
+            and isinstance(v, dict)
+        ):
+            # CompactDict to List
+            src_rng = source_class_slot.range
+            src_rng_id_slot = self.source_schemaview.get_identifier_slot(src_rng, use_key=True)
+            if src_rng_id_slot:
+                return [{**v1, src_rng_id_slot.name: k} for k, v1 in v.items()]
+            else:
+                return list(v.values())
+        return v
+
+    @staticmethod
+    def _get_any_of_enum_names(slot: Any, sv: SchemaView) -> list[str]:
+        """Extract enum names from a slot's any_of constraints.
+
+        :param slot: An induced slot definition (from SchemaView.induced_slot).
+        :param sv: Source schema view.
+        :return: List of enum names found in any_of, empty if none.
+        """
+        if not hasattr(slot, "any_of") or not slot.any_of:
+            return []
+        all_enums = sv.all_enums()
+        return [ao.range for ao in slot.any_of if ao.range in all_enums]
+
+    def _multivalued_to_singlevalued(self, vs: list[Any], slot_derivation: SlotDerivation) -> Any:
+        if slot_derivation.stringification:
+            stringification = slot_derivation.stringification
+            delimiter = stringification.delimiter
+            if delimiter:
+                return delimiter.join(vs)
+            if stringification.syntax:
+                if stringification.syntax == SerializationSyntaxType.JSON:
+                    return dumps_json(vs, ensure_ascii=True)
+                if stringification.syntax == SerializationSyntaxType.YAML:
+                    return dump_yaml(vs, default_flow_style=True, allow_unicode=False).strip()
+                msg = f"Unknown syntax: {stringification.syntax}"
+                raise ValueError(msg)
+            msg = f"Cannot convert multivalued to single valued: {vs}; no delimiter"
+            raise ValueError(msg)
+        if len(vs) > 1:
+            msg = f"Cannot coerce multiple values {vs}"
+            raise ValueError(msg)
+        if len(vs) == 0:
+            return None
+        return vs[0]
+
+    def _singlevalued_to_multivalued(self, v: Any, slot_derivation: SlotDerivation) -> list[Any]:
+        stringification = slot_derivation.stringification
+        if stringification:
+            delimiter = stringification.delimiter
+            if delimiter:
+                vs = v.split(slot_derivation.stringification.delimiter)
+                if vs == [""]:
+                    vs = []
+            elif stringification.syntax:
+                syntax = stringification.syntax
+                if syntax == SerializationSyntaxType.JSON:
+                    vs = json.loads(v)
+                elif syntax == SerializationSyntaxType.YAML:
+                    vs = yaml.safe_load(v)
+                else:
+                    msg = f"Unknown syntax: {syntax}"
+                    raise ValueError(msg)
+            else:
+                msg = f"Cannot convert single valued to multivalued: {v}; no delimiter"
+                raise ValueError(msg)
+            return vs
+        return [v]
+
+    def transform_object(
+        self,
+        source_obj: YAMLRoot | BaseModel,
+        target_class: type[YAMLRoot] | type[BaseModel] | None = None,
+    ) -> YAMLRoot | BaseModel:
+        """
+        Transform an object into an object of class target_class.
+
+        :param source_obj: source object
+        :type source_obj: Union[YAMLRoot, BaseModel]
+        :param target_class: class to transform the object into, defaults to None
+        :type target_class: Optional[Union[Type[YAMLRoot], Type[BaseModel]]], optional
+        :return: transformed object of class target_class
+        :rtype: Union[YAMLRoot, BaseModel]
+        """
+        if not target_class:
+            msg = "No target_class specified for transform_object"
+            raise ValueError(msg)
+
+        source_type = type(source_obj)
+        source_type_name = source_type.__name__
+        # if isinstance(source_obj, YAMLRoot):
+        #    source_obj_dict = json_dumper.to_dict(source_obj)
+        # elif isinstance(source_obj, BaseModel):
+        #    source_obj_dict = source_obj.dict()
+        # else:
+        #    raise ValueError(f"Do not know how to handle type: {typ}")
+        tr_obj_dict = self.map_object(source_obj, source_type_name)
+        return target_class(**tr_obj_dict)
+
+    def transform_enum(self, source_value: str, enum_names: list[str], source_obj: Any) -> str | None:
+        """Transform a source enum value through one or more enum derivations.
+
+        Iterates *enum_names* in order. For each enum derivation, tries
+        expression evaluation first, then permissible-value mappings.
+        If mirror_source is set on a derivation and no mapping matched,
+        returns the source value unchanged without trying further enums.
+
+        :param source_value: The source enum value to transform.
+        :param enum_names: Ordered list of source enum names to try.
+        :param source_obj: The full source object (used for expr evaluation).
+        :return: Transformed value, or None if no mapping found.
+        """
+        for enum_name in enum_names:
+            enum_deriv = self._get_enum_derivation(enum_name)
+            if enum_deriv.expr:
+                mapping = (
+                    {**source_obj, "NULL": None}
+                    if isinstance(source_obj, Mapping)
+                    else {"src": source_obj, "NULL": None}
+                )
+                try:
+                    v = eval_expr_with_mapping(
+                        enum_deriv.expr,
+                        mapping,
+                        strict=self.strict,
+                        warned_unbound=self._warned_unbound_names,
+                    )
+                except (InvalidExpression, TypeError, ValueError):
+                    if not self.unrestricted_eval:
+                        raise
+                    v = self._unrestricted_eval(enum_deriv.expr, source_obj)
+                if v is not None:
+                    return v
+            for pv_deriv in enum_deriv.permissible_value_derivations.values():
+                if pv_deriv.sources:
+                    from linkml_map.transformer.errors import SpecificationError
+
+                    msg = (
+                        f"PermissibleValueDerivation '{pv_deriv.name}' has 'sources' set; "
+                        "this should have been migrated to 'populated_from' during spec load. "
+                        "Did the spec bypass linkml_map.spec_normalizer.normalize_spec?"
+                    )
+                    raise SpecificationError(msg)
+                if pv_deriv.populated_from and source_value in pv_deriv.populated_from:
+                    return pv_deriv.name
+            if enum_deriv.mirror_source:
+                return str(source_value)
+        return None
+
+
+def _all_class_derivations(class_derivations: list[ClassDerivation]) -> Iterator[ClassDerivation]:
+    """Yield *class_derivations* and every class derivation nested under their slots."""
+    for cd in class_derivations:
+        yield cd
+        for sd in cd.slot_derivations.values():
+            if sd.class_derivations:
+                yield from _all_class_derivations(sd.class_derivations)

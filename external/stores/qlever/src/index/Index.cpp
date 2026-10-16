@@ -1,0 +1,313 @@
+// Copyright 2023, University of Freiburg,
+// Chair of Algorithms and Data Structures.
+// Authors:
+// Björn Buchhold (2014-2017, buchhold@informatik.uni-freiburg.de)
+// Johannes Kalmbach (2018- , kalmbach@informatik.uni-freiburg.de)
+
+#include "index/Index.h"
+
+#include "index/IndexImpl.h"
+#include "util/MemorySize/MemorySize.h"
+
+// ____________________________________________________________________________
+Index::Index(ad_utility::AllocatorWithLimit<Id> allocator)
+    : pimpl_{std::make_unique<IndexImpl>(std::move(allocator))} {}
+Index::Index(Index&&) noexcept = default;
+
+// Needs to be in the .cpp file because of the unique_ptr to a forwarded class.
+// See
+// https://stackoverflow.com/questions/13414652/forward-declaration-with-unique-ptr
+Index::~Index() {
+  // NOTE: The message is only logged for an index that was loaded from disk.
+  // It is useful when a process unloads an index and keeps running, in
+  // particular when the runtime index rebuild retires the old index as soon
+  // as the last query on it has finished (see `Qlever::swapInRebuiltIndex`).
+  // For an index that was merely built (`qlever-index`), it would be
+  // confusing, because that index was never loaded in the first place.
+  if (pimpl_ && pimpl_->wasLoadedFromDisk()) {
+    AD_LOG_INFO << "Index with basename \"" << pimpl_->getOnDiskBase()
+                << "\" was unloaded" << std::endl;
+  }
+}
+
+// ____________________________________________________________________________
+void Index::createFromOnDiskIndex(const std::string& onDiskBase,
+                                  bool persistUpdatesOnDisk) {
+  pimpl_->createFromOnDiskIndex(onDiskBase, persistUpdatesOnDisk);
+}
+
+// ____________________________________________________________________________
+void Index::addTextFromOnDiskIndex() { pimpl_->addTextFromOnDiskIndex(); }
+
+// ____________________________________________________________________________
+auto Index::getVocab() const -> const Vocab& { return pimpl_->getVocab(); }
+
+// ____________________________________________________________________________
+auto Index::encodedIriManager() const -> const EncodedIriManager& {
+  return pimpl_->encodedIriManager();
+}
+
+// ____________________________________________________________________________
+auto Index::getNonConstVocabForTesting() -> Vocab& {
+  return pimpl_->getNonConstVocabForTesting();
+}
+
+// ____________________________________________________________________________
+ad_utility::BlankNodeManager* Index::getBlankNodeManager() const {
+  return pimpl_->getBlankNodeManager();
+}
+
+// ____________________________________________________________________________
+RdfsVocabulary::AccessReturnType Index::indexToString(VocabIndex id) const {
+  return pimpl_->indexToString(id);
+}
+
+// ____________________________________________________________________________
+TextVocabulary::AccessReturnType Index::indexToString(WordVocabIndex id) const {
+  return pimpl_->indexToString(id);
+}
+
+// ____________________________________________________________________________
+Index::Vocab::PrefixRanges Index::prefixRanges(std::string_view prefix) const {
+  return pimpl_->prefixRanges(prefix);
+}
+
+// ____________________________________________________________________________
+const CompactVectorOfStrings<Id>& Index::getPatterns() const {
+  return pimpl_->getPatterns();
+}
+
+// ____________________________________________________________________________
+double Index::getAvgNumDistinctPredicatesPerSubject() const {
+  return pimpl_->getAvgNumDistinctPredicatesPerSubject();
+}
+
+// ____________________________________________________________________________
+double Index::getAvgNumDistinctSubjectsPerPredicate() const {
+  return pimpl_->getAvgNumDistinctSubjectsPerPredicate();
+}
+
+// ____________________________________________________________________________
+size_t Index::getNumDistinctSubjectPredicatePairs() const {
+  return pimpl_->getNumDistinctSubjectPredicatePairs();
+}
+
+// ____________________________________________________________________________
+std::string_view Index::wordIdToString(WordIndex wordIndex) const {
+  return pimpl_->wordIdToString(wordIndex);
+}
+// ____________________________________________________________________________
+size_t Index::getSizeOfTextBlocksSum(const std::string& word,
+                                     TextScanMode textScanMode) const {
+  return pimpl_->getSizeOfTextBlocksSum(word, textScanMode);
+}
+
+// ____________________________________________________________________________
+IdTable Index::getWordPostingsForTerm(
+    const std::string& term,
+    const ad_utility::AllocatorWithLimit<Id>& allocator) const {
+  return pimpl_->getWordPostingsForTerm(term, allocator);
+}
+
+// ____________________________________________________________________________
+IdTable Index::getEntityMentionsForWord(
+    const std::string& term,
+    const ad_utility::AllocatorWithLimit<Id>& allocator) const {
+  return pimpl_->getEntityMentionsForWord(term, allocator);
+}
+
+// ____________________________________________________________________________
+size_t Index::getIndexOfBestSuitedElTerm(
+    const std::vector<std::string>& terms) const {
+  return pimpl_->getIndexOfBestSuitedElTerm(terms);
+}
+
+// ____________________________________________________________________________
+std::string Index::getTextExcerpt(TextRecordIndex cid) const {
+  return pimpl_->getTextExcerpt(cid);
+}
+
+// ____________________________________________________________________________
+float Index::getAverageNofEntityContexts() const {
+  return pimpl_->getAverageNofEntityContexts();
+}
+
+// ____________________________________________________________________________
+void Index::setKbName(const std::string& name) {
+  return pimpl_->setKbName(name);
+}
+
+// ____________________________________________________________________________
+void Index::setTextName(const std::string& name) {
+  return pimpl_->setTextName(name);
+}
+
+// ____________________________________________________________________________
+bool& Index::usePatterns() { return pimpl_->usePatterns(); }
+
+// ____________________________________________________________________________
+bool& Index::loadAllPermutations() { return pimpl_->loadAllPermutations(); }
+
+// ____________________________________________________________________________
+bool& Index::addHasWordTriples() { return pimpl_->addHasWordTriples(); }
+
+// ____________________________________________________________________________
+bool& Index::doNotLoadPermutations() { return pimpl_->doNotLoadPermutations(); }
+
+// ____________________________________________________________________________
+void Index::setKeepTempFiles(bool keepTempFiles) {
+  return pimpl_->setKeepTempFiles(keepTempFiles);
+}
+
+// ____________________________________________________________________________
+ad_utility::MemorySize& Index::memoryLimitIndexBuilding() {
+  return pimpl_->memoryLimitIndexBuilding();
+}
+
+// ____________________________________________________________________________
+const ad_utility::MemorySize& Index::memoryLimitIndexBuilding() const {
+  return std::as_const(*pimpl_).memoryLimitIndexBuilding();
+}
+
+// ____________________________________________________________________________
+ad_utility::MemorySize& Index::parserBufferSize() {
+  return pimpl_->parserBufferSize();
+}
+
+// ____________________________________________________________________________
+const ad_utility::MemorySize& Index::parserBufferSize() const {
+  return std::as_const(*pimpl_).parserBufferSize();
+}
+
+// ____________________________________________________________________________
+size_t& Index::rowsPerBlock() { return pimpl_->rowsPerBlock(); }
+
+// ____________________________________________________________________________
+const size_t& Index::rowsPerBlock() const { return pimpl_->rowsPerBlock(); }
+
+// ____________________________________________________________________________
+void Index::setOnDiskBase(const std::string& onDiskBase) {
+  return pimpl_->setOnDiskBase(onDiskBase);
+}
+
+// ____________________________________________________________________________
+void Index::setSettingsFile(const std::string& filename) {
+  return pimpl_->setSettingsFile(filename);
+}
+
+// ____________________________________________________________________________
+void Index::setNumTriplesPerBatch(uint64_t numTriplesPerBatch) {
+  return pimpl_->setNumTriplesPerBatch(numTriplesPerBatch);
+}
+
+// ____________________________________________________________________________
+const std::string& Index::getTextName() const { return pimpl_->getTextName(); }
+
+// ____________________________________________________________________________
+const std::string& Index::getKbName() const { return pimpl_->getKbName(); }
+
+// ____________________________________________________________________________
+const std::string& Index::getOnDiskBase() const {
+  return pimpl_->getOnDiskBase();
+}
+
+// ____________________________________________________________________________
+const std::string& Index::getIndexId() const { return pimpl_->getIndexId(); }
+
+// ____________________________________________________________________________
+const std::string& Index::getGitShortHash() const {
+  return pimpl_->getGitShortHash();
+}
+
+// ____________________________________________________________________________
+Index::NumNormalAndInternal Index::numTriples() const {
+  return pimpl_->numTriples();
+}
+
+// ____________________________________________________________________________
+size_t Index::getNofTextRecords() const { return pimpl_->getNofTextRecords(); }
+
+// ____________________________________________________________________________
+size_t Index::getNofWordPostings() const {
+  return pimpl_->getNofWordPostings();
+}
+
+// ____________________________________________________________________________
+size_t Index::getNofEntityPostings() const {
+  return pimpl_->getNofEntityPostings();
+}
+
+// ____________________________________________________________________________
+size_t Index::getNofNonLiteralsInTextIndex() const {
+  return pimpl_->getNofNonLiteralsInTextIndex();
+}
+
+// ____________________________________________________________________________
+Index::NumNormalAndInternal Index::numDistinctSubjects() const {
+  return pimpl_->numDistinctSubjects();
+}
+
+// ____________________________________________________________________________
+Index::NumNormalAndInternal Index::numDistinctObjects() const {
+  return pimpl_->numDistinctObjects();
+}
+
+// ____________________________________________________________________________
+Index::NumNormalAndInternal Index::numDistinctPredicates() const {
+  return pimpl_->numDistinctPredicates();
+}
+
+// ____________________________________________________________________________
+bool Index::hasAllPermutations() const { return pimpl_->hasAllPermutations(); }
+
+// ____________________________________________________________________________
+std::vector<float> Index::getMultiplicities(
+    const Permutation& permutation) const {
+  return pimpl_->getMultiplicities(permutation);
+}
+
+// ____________________________________________________________________________
+std::vector<float> Index::getMultiplicities(
+    const TripleComponent& key, const Permutation& p,
+    const LocatedTriplesState& locatedTriplesState) const {
+  return pimpl_->getMultiplicities(key, p, locatedTriplesState);
+}
+
+// ____________________________________________________________________________
+size_t Index::getResultSizeOfScan(
+    const ScanSpecification& scanSpecification,
+    const Permutation::Enum& permutation,
+    const LocatedTriplesState& locatedTriplesState) const {
+  return pimpl_->getResultSizeOfScan(scanSpecification, permutation,
+                                     locatedTriplesState);
+}
+
+// ____________________________________________________________________________
+void Index::createFromFiles(const std::vector<InputFileSpecification>& files,
+                            size_t numThreads) {
+  return pimpl_->createFromFiles(files, numThreads);
+}
+
+// ____________________________________________________________________________
+const DeltaTriplesManager& Index::deltaTriplesManager() const {
+  return pimpl_->deltaTriplesManager();
+}
+
+// ____________________________________________________________________________
+DeltaTriplesManager& Index::deltaTriplesManager() {
+  return pimpl_->deltaTriplesManager();
+}
+// ____________________________________________________________________________
+GraphNameManager& Index::graphNameManager() {
+  return pimpl_->graphNameManager();
+}
+
+// ____________________________________________________________________________
+const GraphNameManager& Index::graphNameManager() const {
+  return pimpl_->graphNameManager();
+}
+
+// ____________________________________________________________________________
+const LocalVocabContext& Index::getLocalVocabContext() const {
+  return pimpl_->getLocalVocabContext();
+}

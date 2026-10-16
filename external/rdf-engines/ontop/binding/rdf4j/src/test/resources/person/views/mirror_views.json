@@ -1,0 +1,9 @@
+{
+  "relations": [
+    {
+      "name": ["\"hr\"", "\"persons\""],
+      "baseRelation": ["\"person\""],
+      "type": "BasicViewDefinition"
+    }
+  ]
+}

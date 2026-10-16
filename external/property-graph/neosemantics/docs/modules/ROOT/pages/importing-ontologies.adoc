@@ -1,0 +1,149 @@
+[[ontoimport]]
+= Importing Ontologies
+:page-pagination:
+
+Ontologies are serialised as RDF, so they can be imported using plain `n10s.rdf.import.fetch` but the `n10s.onto.import.fetch` method will give us a higher level of control over how an RDFS or OWL ontology is imported into Neo4j.
+It's important to note that this procedure exclusively imports the following:
+
+1. Named class (category) declarations with both `rdfs:Class` and `owl:Class`.
+2. Explicit class hierarchies defined with `rdf:subClassOf` statements.
+3. Property definitions with `owl:ObjectProperty`, `owl:DatatypeProperty` and `rdfs:Property`
+4. Explicit property hierarchies defined with `rdfs:subPropertyOf` statements.
+5. Domain and range information for properties described as `rdfs:domain` and `rdfs:range` statements.
+
+All other elements will be ignored by this loader.
+
+The `n10s.onto.import.fetch` procedure takes the same generic params described in xref:import.adoc#common_params[Common Parameters] at the beginning of the xref:import.adoc[Import] section, so we will invoke it with a URL and a serialisation format. In the following example we will import the ontology in link:https://github.com/neo4j-labs/neosemantics/raw/3.5/docs/rdf/vw.owl[this file].
+
+[source,cypher]
+----
+CALL n10s.onto.import.fetch("https://github.com/neo4j-labs/neosemantics/raw/3.5/docs/rdf/vw.owl","Turtle");
+----
+
+image::vwonto.png[VW ontology imported in Neo4j, scaledwidth="100%"]
+
+We can see in the ingested graph that by default, classes are persisted as nodes with label `Class` with two properties: `uri` and `name` and `rdf:subClassOf` statements are stored as relationships of type `SCO` between `Class` nodes.
+Similarly, relationships will be persisted as nodes with name and uri and labels `Relationship` or `Property` for `owl:ObjectProperty` and `owl:DatatypeProperty` respectively.
+Statements with `rdf:subPropertyOf` as predicate are stored as relationships of type `SPO` between `Relationship` or `Property` nodes.
+
+These graph model elements can be overridden by using the following configuration params in the Graph Config:
+
+* *classLabel*: Label to be used for Ontology Classes (categories). Default is `Class`.
+* *subClassOfRel*: Relationship to be used for `rdfs:subClassOf` hierarchies. Default is `SCO`.
+* *dataTypePropertyLabel*: Label to be used for DataType properties in the Ontology. Default is `Property`.
+* *objectPropertyLabel*: Label to be used for Object properties in the Ontology. Default is `Relationship`.
+* *subPropertyOfRel*: Relationship to be used for `rdfs:subPropertyOf` hierarchies. Default is `SPO`.
+* *domainRel*: Relationship to be used for `rdfs:domain`. Default is `DOMAIN`.
+* *rangeRel*: Relationship to be used for `rdfs:range`. Default is `RANGE`.
+
+Here's an example of how to load an ontology using some of these parameters:
+
+[source,cypher]
+----
+CALL n10s.graphconfig.init({
+  classLabel : 'Category',
+  objectPropertyLabel: 'Rel',
+  dataTypePropertyLabel: 'Prop'
+});
+
+CALL n10s.onto.import.fetch("https://github.com/neo4j-labs/neosemantics/raw/3.5/docs/rdf/vw.owl","Turtle");
+----
+
+
+Just like we saw when importing RDF, it is possible to pass the ontology as text instead of by reference (url),
+the `n10s.onto.import.inline` procedure works in this  mode. Here's an example:
+
+We first import a public vocabulary...
+[source,cypher]
+----
+CALL n10s.onto.import.fetch("http://www.nsmntx.org/2019/10/clothingMaterials","Turtle");
+----
+
+and then we extend it with some additiona statements (triples) passed as text to the `n10s.onto.import.inline` procedure
+[source,cypher]
+----
+CALL n10s.onto.import.inline("<http://www.nsmntx.org/2019/10/clothingMaterials#Leather> <http://www.w3.org/2000/01/rdf-schema#subClassOf> <http://www.nsmntx.org/customCats#AnimalBasedMaterial2> .","N-Triples");
+----
+
+Check xref:reference.adoc[Reference] for a complete list of available parameters.
+
+
+== Importing SKOS concept schemes
+
+https://www.w3.org/TR/skos-reference/[SKOS] (Simple Knowledge Organization System) provides a model for expressing the basic structure and
+content of concept schemes such as thesauri, classification schemes, subject heading lists,
+taxonomies, folksonomies, and other similar types of controlled vocabulary. Neosemantics also provides
+methods (`skos.import`) to import SKOS concept schemes.
+
+These methods follow the same structure and implement the same behavior as the ones for importing ontologies
+here is an example of inline importing a skos fragment of a taxonomy:
+
+[source,cypher]
+----
+call n10s.skos.import.inline('
+
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix ex: <http://www.example.com/> .
+
+ex:cat rdf:type skos:Concept;
+skos:prefLabel "cat"@en;
+skos:prefLabel "Katze"@de;
+skos:altLabel "kitten"@en;
+skos:narrower ex:wildcat;
+skos:broader ex:animal .
+
+ex:wildcat rdf:type skos:Concept;
+skos:prefLabel "wildcat"@en;
+skos:broader ex:cat.
+
+ex:animal rdf:type skos:Concept;
+skos:prefLabel "animal"@en .
+
+','Turtle')
+
+----
+
+producing the following summary of execution:
+
+[source,cypher]
+----
+╒═══════════════════╤═══════════════╤═══════════════╤════════════╤═══════════╤════════════════════════════╕
+│"terminationStatus"│"triplesLoaded"│"triplesParsed"│"namespaces"│"extraInfo"│"callParams"                │
+╞═══════════════════╪═══════════════╪═══════════════╪════════════╪═══════════╪════════════════════════════╡
+│"OK"               │11             │11             │null        │""         │{"handleVocabUris":"IGNORE"}│
+└───────────────────┴───────────────┴───────────────┴────────────┴───────────┴────────────────────────────┘
+----
+
+and on running this cypher query: `MATCH p=(:Class)-[r:SCO]->() RETURN p` produces the following result:
+
+image::skos_inline.png[Small concept hierarchy imported in SKOS, scaledwidth="100%"]
+
+Similarly, the `.fetch` version of the method can be use to retrieve a larger dataset like in the
+following example:
+
+[source,cypher]
+----
+call n10s.skos.import.fetch("http://vocabularies.unesco.org/browser/rest/v1/thesaurus/data?format=text/turtle",
+   "Turtle", { languageFilter: "es" })
+----
+
+[source]
+----
+╒═══════════════════╤═══════════════╤═══════════════╤════════════╤═══════════╤════════════════════════════╕
+│"terminationStatus"│"triplesLoaded"│"triplesParsed"│"namespaces"│"extraInfo"│"callParams"                │
+╞═══════════════════╪═══════════════╪═══════════════╪════════════╪═══════════╪════════════════════════════╡
+│"OK"               │68519          │87191          │null        │""         │{"handleVocabUris":"IGNORE"}│
+└───────────────────┴───────────────┴───────────────┴────────────┴───────────┴────────────────────────────┘
+----
+
+The resulting graph can be queried using cypher now. The following query shows
+how to find the concepts related to
+"Social Problems" (concept uri: `http://vocabularies.unesco.org/thesaurus/concept409`).
+
+[source,cypher]
+----
+MATCH p = (:Resource { uri: "http://vocabularies.unesco.org/thesaurus/concept409"})-[*..5]->() RETURN p limit 80
+----
+
+image::skos_fetch.png[UNESCO Thesaurus in Spanish imported as SKOS, scaledwidth="100%"]

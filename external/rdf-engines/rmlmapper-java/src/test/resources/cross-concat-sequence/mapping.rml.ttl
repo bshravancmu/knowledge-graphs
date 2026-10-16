@@ -1,0 +1,88 @@
+@prefix csvw: <http://www.w3.org/ns/csvw#> .
+@prefix rr: <http://www.w3.org/ns/r2rml#>.
+@prefix rml: <http://semweb.mmlab.be/ns/rml#>.
+@prefix ql: <http://semweb.mmlab.be/ns/ql#>.
+@prefix schema: <http://schema.org/>.
+@prefix fnml: <http://semweb.mmlab.be/ns/fnml#> .
+@prefix grel: <http://users.ugent.be/~bjdmeest/function/grel.ttl#> .
+@prefix fno: <https://w3id.org/function/ontology#> .
+@prefix idlab-fn: <https://w3id.org/imec/idlab/function#> .
+@base <http://example.com/ns#>.
+
+<#LogicalSourcePerson> a rml:LogicalSource ;
+  rml:source <#CSVW_sourcePerson> ;
+  rml:referenceFormulation ql:CSV .
+
+<#CSVW_sourcePerson> a csvw:Table;
+   csvw:url "Person.csv" ;
+   csvw:dialect [ a csvw:Dialect;
+       csvw:delimiter ";"
+   ] .
+
+<#PersonMapping> a rr:TriplesMap;
+  rml:logicalSource <#LogicalSourcePerson> ;
+
+  rr:subjectMap [
+    rr:template "http://snf.ch/person/{PersonNumber}";
+    rr:class schema:Person
+  ] ;
+
+  rr:predicateObjectMap [
+    rr:predicate schema:memberOf ;
+    rr:objectMap <#JoinMap> ;
+  ] ;
+
+  rr:predicateObjectMap [
+    rr:predicate schema:givenName ;
+    rr:objectMap [
+      rml:reference "FirstName"
+    ]
+  ] ;
+
+  rr:predicateObjectMap [
+    rr:predicate schema:familyName ;
+    rr:objectMap [
+      rml:reference "Surname"
+    ]
+  ] .
+
+<#JoinMap>
+    fnml:functionValue [
+        rr:predicateObjectMap [
+            rr:predicate fno:executes ;
+            rr:objectMap [ rr:constant idlab-fn:crossConcatSequence ]
+        ];
+        rr:predicateObjectMap [
+            rr:predicate rdf:_1 ;
+            rr:objectMap [ rr:constant "http://snf.ch/project/" ]
+        ];
+        rr:predicateObjectMap [
+            rr:predicate rdf:_2 ;
+            rr:objectMap <#FunctionMap>
+        ];
+    ] .
+
+
+# https://stackoverflow.com/questions/53715353/converting-a-csv-to-rdf-where-one-column-is-a-set-of-values
+<#FunctionMap>
+    fnml:functionValue [
+        rml:logicalSource <#LogicalSourceGrant>;
+        rr:predicateObjectMap [
+            rr:predicate fno:executes;
+            rr:objectMap [
+                rr:constant grel:string_split # function to use
+            ];
+        ];
+        rr:predicateObjectMap [
+            rr:predicate grel:valueParameter;
+            rr:objectMap [
+                rml:reference "ResponsibleApplicantGrantNumber" # input string: concatenated foreign keys
+            ];
+        ];
+        rr:predicateObjectMap [
+            rr:predicate grel:p_string_sep;
+            rr:objectMap [
+                rr:constant ";";
+            ];
+        ];
+    ].

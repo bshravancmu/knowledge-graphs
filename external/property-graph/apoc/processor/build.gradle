@@ -1,0 +1,116 @@
+import org.gradle.api.internal.artifacts.DefaultExcludeRule
+
+plugins {
+  id 'java'
+}
+
+base {
+  archivesName = "apoc-processor"
+}
+
+jar {
+  manifest {
+    attributes 'Implementation-Title': "APOC Core"
+    attributes 'Implementation-Vendor': "Neo4j"
+    attributes 'Implementation-Version': version
+  }
+}
+
+javadoc {
+  failOnError = false
+  options.addStringOption('Xdoclint:none', '-quiet')
+}
+
+test {
+  jvmArgs += [
+    "--add-opens",
+    "jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+    "--add-opens",
+    "jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+    "--add-opens",
+    "jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+    "--add-opens",
+    "jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED",
+    "--add-opens",
+    "jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED"
+  ]
+}
+
+dependencies {
+  implementation group: 'org.neo4j', name: 'neo4j', version: neo4jVersionEffective   // mandatory to run @ServiceProvider based META-INF code generation
+  api 'com.squareup:javapoet:1.13.0'
+  testImplementation 'com.google.testing.compile:compile-testing:0.23.0'
+  testImplementation group: 'com.google.truth', name: 'truth', version: '1.4.5'
+  testImplementation group: 'com.google.guava', name: 'guava', version: guavaVersion
+  testImplementation 'org.assertj:assertj-core:3.27.6'
+  testImplementation 'org.mockito:mockito-core:5.21.0'
+}
+
+configurations.configureEach {
+  exclude group: 'io.airlift', module: 'aircompressor' // CVE-2025-67721 - no fix available, unreachable
+}
+
+publishing {
+  repositories {
+    maven {
+      name = 'pipeline'
+      url = "file://${project(':core').buildDir}/repo"
+    }
+    if (System.getenv("CODEARTIFACT_PUBLISH_URL") ?: "" != "") {
+      maven {
+        name = 'codeartifact-publish'
+        url = System.getenv('CODEARTIFACT_PUBLISH_URL')
+        credentials {
+          username = System.getenv('CODEARTIFACT_USERNAME')
+          password = System.getenv('CODEARTIFACT_TOKEN')
+        }
+      }
+    }
+  }
+  publications {
+    shadow(MavenPublication) { publication ->
+      artifactId = "apoc-processor"
+      artifact(mySourcesJar)
+      artifact(myJavadocJar)
+
+      from components.java
+
+      versionMapping {
+        usage('java-api') {
+          fromResolutionOf('runtimeClasspath')
+        }
+        usage('java-runtime') {
+          fromResolutionResult()
+        }
+      }
+      pom {
+        name = 'neo4j-apoc-procedure-processor'
+        description = 'A processor for APOC'
+        url = 'http://github.com/neo4j/apoc'
+        licenses {
+          license {
+            name = 'The Apache Software License, Version 2.0'
+            url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+            comments = 'Note that this license is for the project itself, and not for its dependencies.'
+            distribution = 'repo'
+          }
+        }
+        developers {
+          developer {
+            id = 'neo4j'
+            name = 'The Neo4j Team'
+            url = 'https://neo4j.com/'
+            organization = 'Neo4j Inc.'
+            organizationUrl = 'https://neo4j.com/'
+          }
+        }
+        scm {
+          connection = 'scm:git:git://github.com/neo4j/apoc.git'
+          developerConnection = 'scm:git:git@github.com:neo4j/apoc.git'
+          url = 'https://github.com/neo4j/apoc'
+        }
+      }
+    }
+  }
+}
+

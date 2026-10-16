@@ -1,0 +1,276 @@
+/*
+ * Copyright (c) "Neo4j"
+ * Neo4j Sweden AB [http://neo4j.com]
+ *
+ * This file is part of Neo4j.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package apoc.cypher;
+
+import static apoc.SystemPropertyKeys.database;
+
+import apoc.ApocConfig;
+import apoc.SystemLabels;
+import apoc.SystemPropertyKeys;
+import apoc.util.LogsUtil;
+import apoc.util.Util;
+import apoc.util.collection.Iterators;
+import apoc.version.Version;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Objects;
+import java.util.TreeMap;
+import java.util.stream.StreamSupport;
+import org.apache.commons.configuration2.Configuration;
+import org.apache.commons.lang3.StringUtils;
+import org.neo4j.common.DependencyResolver;
+import org.neo4j.configuration.Config;
+import org.neo4j.configuration.GraphDatabaseSettings;
+import org.neo4j.cypher.internal.CypherVersion;
+import org.neo4j.dbms.api.DatabaseManagementService;
+import org.neo4j.graphdb.Label;
+import org.neo4j.graphdb.Node;
+import org.neo4j.graphdb.WriteOperationsNotAllowedException;
+import org.neo4j.graphdb.event.DatabaseEventContext;
+import org.neo4j.graphdb.event.DatabaseEventListener;
+import org.neo4j.kernel.availability.AvailabilityListener;
+import org.neo4j.kernel.impl.coreapi.InternalTransaction;
+import org.neo4j.kernel.internal.GraphDatabaseAPI;
+import org.neo4j.kernel.monitoring.DatabaseEventListeners;
+import org.neo4j.logging.Log;
+
+public class CypherInitializer implements AvailabilityListener {
+
+    private final GraphDatabaseAPI db;
+    private final Log userLog;
+    private final DependencyResolver dependencyResolver;
+    private final DatabaseManagementService databaseManagementService;
+    private final DatabaseEventListeners databaseEventListeners;
+
+    /**
+     * indicates the status of the initializer, to be used for tests to ensure initializer operations are already done
+     */
+    private volatile boolean finished = false;
+
+    public CypherInitializer(
+            GraphDatabaseAPI db,
+            Log userLog,
+            DatabaseManagementService databaseManagementService,
+            DatabaseEventListeners databaseEventListeners) {
+        this.db = db;
+        this.userLog = userLog;
+        this.databaseManagementService = databaseManagementService;
+        this.databaseEventListeners = databaseEventListeners;
+        this.dependencyResolver = db.getDependencyResolver();
+    }
+
+    public boolean isFinished() {
+        return finished;
+    }
+
+    @Override
+    public void available() {
+        // run initializers in a new thread
+        // we need to wait until apoc procs are registered
+        // unfortunately an AvailabilityListener is triggered before that
+        Util.newDaemonThread(() -> {
+                    try {
+                        // Wait for database to become available, once it is available
+                        // procedures are also available by necessity.
+                        while (!db.isAvailable(100))
+                            ;
+
+                        // An initializer is attached to the lifecycle for each database. To ensure that this
+                        // check is performed **once** during the DBMS startup, we validate the version if and
+                        // only if we are the AvailabilityListener for the system database - since there is only
+                        // ever one of those.
+                        if (db.databaseId().isSystemDatabase()) {
+                            String neo4jVersion = org.neo4j.kernel.internal.Version.getNeo4jVersion();
+                            final String apocVersion =
+                                    Version.class.getPackage().getImplementationVersion();
+                            // When running unit tests, the apocVersion is null as the version if taken from the
+                            // manifest in the jar
+                            // To test this properly, use docker tests
+                            if (apocVersion != null && isVersionDifferent(neo4jVersion, apocVersion)) {
+                                // We need to double-check that this isn't due to the CalVer release doing a custom
+                                // setting of 5.27 for 2025.0x, so use the "unsupported" way of getting the Neo4j
+                                // version
+                                String neo4jPackageVersion = org.neo4j.kernel.internal.Version.class
+                                        .getPackage()
+                                        .getImplementationVersion();
+                                if (isVersionDifferent(neo4jPackageVersion, apocVersion)) {
+                                    userLog.warn(
+                                            "The apoc version (%s) and the Neo4j DBMS versions %s are incompatible. \n"
+                                                    + "The two first numbers of both versions needs to be the same.",
+                                            apocVersion, neo4jVersion);
+                                }
+                            }
+                            // Create a uniqueness constraint on system db to avoid race conditions when installing
+                            // triggers
+                            // Retry 3 times on each cluster member to decrease the likelihood of there being no leader
+                            int counter = 0;
+                            boolean constraintCreated = false;
+
+                            while (counter < 3 && !constraintCreated) {
+                                try (InternalTransaction tx = db.beginTransaction()) {
+                                    counter++;
+
+                                    if (tx.securityContext().mode().allowsSchemaWrites()) {
+                                        var constraintName = "triggerConstraint";
+                                        var maybeConstraint = StreamSupport.stream(
+                                                        tx.schema()
+                                                                .getConstraints(SystemLabels.ApocTriggerMeta)
+                                                                .spliterator(),
+                                                        false)
+                                                .filter(x -> x.getName().equals(constraintName))
+                                                .toList();
+                                        if (maybeConstraint.isEmpty()) {
+                                            try {
+                                                tx.schema()
+                                                        .constraintFor(SystemLabels.ApocTriggerMeta)
+                                                        .withName(constraintName)
+                                                        .assertPropertyIsUnique(SystemPropertyKeys.database.name())
+                                                        .create();
+                                                tx.commit();
+                                            } catch (Exception e) {
+                                                if (!e.getMessage()
+                                                        .contains(
+                                                                "No write operations are allowed directly on this database. Writes must pass through the leader. The role of this server is: FOLLOWER")) {
+                                                    throw e;
+                                                }
+                                                // else swallow error, it seems clusters can show they allow writes even
+                                                // when they don't
+                                            }
+                                        }
+                                        constraintCreated = true;
+                                    }
+                                }
+                            }
+
+                            databaseEventListeners.registerDatabaseEventListener(new SystemFunctionalityListener());
+                        }
+
+                        Configuration config = dependencyResolver
+                                .resolveDependency(ApocConfig.class)
+                                .getConfig();
+                        for (final var query : collectInitializers(config)) {
+                            final var neo4jConfig = dependencyResolver.resolveDependency(Config.class);
+
+                            // TODO Replace with actual db specific default when it's available.
+                            final var defaultLanguage =
+                                    switch (neo4jConfig.get(GraphDatabaseSettings.default_language)) {
+                                        case Cypher5 -> CypherVersion.Cypher5;
+                                        case Cypher25 -> CypherVersion.Cypher25;
+                                    };
+                            final var sanitizedQuery = LogsUtil.sanitizeQuery(neo4jConfig, query, defaultLanguage);
+                            try {
+                                // we need to apply a retry strategy here since in systemdb we potentially conflict
+                                // with
+                                // creating constraints which could cause our query to fail with a transient error.
+                                Util.retryInTx(
+                                        userLog, db, tx -> Iterators.count(tx.execute(query)), 0, 5, retries -> {});
+                                userLog.info("successfully initialized: " + sanitizedQuery);
+                            } catch (Exception e) {
+                                userLog.error("error upon initialization, running: " + sanitizedQuery, e);
+                            }
+                        }
+                    } catch (Exception e) {
+                        userLog.error("error upon initialization", e);
+                    } finally {
+                        finished = true;
+                    }
+                })
+                .start();
+    }
+
+    // the visibility is public only for testing purpose, it could be private otherwise
+    public static boolean isVersionDifferent(String neo4jVersion, String apocVersion) {
+        final String[] apocSplit = splitVersion(apocVersion);
+        final String[] neo4jSplit = splitVersion(neo4jVersion);
+
+        return !(apocSplit != null
+                && neo4jSplit != null
+                && apocSplit[0].equals(neo4jSplit[0])
+                && apocSplit[1].equals(neo4jSplit[1]));
+    }
+
+    private static String[] splitVersion(String completeVersion) {
+        if (StringUtils.isBlank(completeVersion)) {
+            return null;
+        }
+        return completeVersion.split("[^\\d]");
+    }
+
+    private Collection<String> collectInitializers(Configuration config) {
+        Map<String, String> initializers = new TreeMap<>();
+
+        config.getKeys(ApocConfig.APOC_CONFIG_INITIALIZER + "." + db.databaseName())
+                .forEachRemaining(key -> putIfNotBlank(initializers, key, config.getString(key)));
+
+        return initializers.values();
+    }
+
+    private void putIfNotBlank(Map<String, String> map, String key, String value) {
+        if ((value != null) && (!value.isBlank())) {
+            map.put(key, value);
+        }
+    }
+
+    @Override
+    public void unavailable() {
+        // intentionally empty
+    }
+
+    private class SystemFunctionalityListener implements DatabaseEventListener {
+
+        @Override
+        public void databaseDrop(DatabaseEventContext eventContext) {
+            final var dbName = eventContext.getDatabaseName();
+            if (!Objects.equals(dbName, db.databaseName())) {
+                if (!db.isAvailable()) {
+                    userLog.warn(
+                            "Database %s not available, skipping apoc trigger cleanup of database %s.",
+                            db.databaseName(), dbName);
+                    return;
+                }
+                try (final var tx = db.beginTx()) {
+                    for (Label label : SystemLabels.values()) {
+                        tx.findNodes(label, database.name(), eventContext.getDatabaseName())
+                                .forEachRemaining(Node::delete);
+                    }
+                    tx.commit();
+                } catch (WriteOperationsNotAllowedException e) {
+                    // Ignore these, writes are not possible so we assume there are no triggers.
+                } catch (Exception e) {
+                    userLog.error(
+                            "Failed to cleanup apoc triggers during database drop of %s, please run `apoc.trigger.dropAll` manually to cleanup: %s"
+                                    .formatted(dbName, e),
+                            e);
+                }
+            }
+        }
+
+        @Override
+        public void databaseStart(DatabaseEventContext eventContext) {}
+
+        @Override
+        public void databaseShutdown(DatabaseEventContext eventContext) {}
+
+        @Override
+        public void databasePanic(DatabaseEventContext eventContext) {}
+
+        @Override
+        public void databaseCreate(DatabaseEventContext eventContext) {}
+    }
+}

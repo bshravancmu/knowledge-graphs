@@ -1,0 +1,204 @@
+/*
+ * Copyright (c) 2026 SPARQL Anything Contributors @ http://github.com/sparql-anything
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+
+package io.github.sparqlanything.engine;
+
+import io.github.sparqlanything.facadeiri.FacadeIRIParser;
+import io.github.sparqlanything.model.*;
+import org.apache.commons.io.IOUtils;
+import org.apache.jena.query.Dataset;
+import org.apache.jena.query.Query;
+import org.apache.jena.query.QueryExecution;
+import org.apache.jena.query.QueryExecutionFactory;
+import org.apache.jena.query.QueryFactory;
+import org.apache.jena.rdf.model.Model;
+import org.apache.jena.shared.NotFoundException;
+import org.apache.jena.sparql.algebra.Algebra;
+import org.apache.jena.sparql.algebra.Op;
+import org.apache.jena.sparql.algebra.op.OpService;
+import org.apache.jena.sparql.core.DatasetGraph;
+import org.apache.jena.sparql.core.Var;
+import org.apache.jena.sparql.engine.ExecutionContext;
+import org.apache.jena.sparql.engine.QueryIterator;
+import org.apache.jena.sparql.engine.iterator.QueryIterNullIterator;
+import org.apache.jena.sparql.engine.main.QC;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.reflect.InvocationTargetException;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.Objects;
+import java.util.Properties;
+import java.util.Scanner;
+
+public class FXWorker {
+
+	private static final Logger logger = LoggerFactory.getLogger(FXWorker.class);
+
+	public QueryIterator execute(Op op, QueryIterator input, ExecutionContext executionContext) throws ClassNotFoundException, InvocationTargetException, InstantiationException, IllegalAccessException, NoSuchMethodException, TriplifierHTTPException, IOException, UnboundVariableException, URISyntaxException {
+
+		// accept deprecated Façade-X terms (e.g. fx:root), with a warning (#681)
+		op = LegacyTerms.rewrite(op);
+
+		// extract properties from service URI
+		Properties p = new Properties();
+
+		// first extract from execution context
+		PropertyExtractor.extractPropertiesFromExecutionContext(executionContext, p);
+
+		if(op instanceof OpService){
+			extractProperties(p, (OpService) op);
+			// Possibly execute reused queries
+			if(PropertyUtils.hasProperty(p, IRIArgument.QUERY))
+				return executeReusedQuery((OpService) op, p, input, executionContext);
+		}
+
+
+		// Possibly read from STD in
+		readFromStdIn(p);
+
+		FXExecutionStrategy s = new FXStrategySelector().getStrategy(p, executionContext);
+		return s.execute(op, input);
+	}
+
+	public void extractProperties(Properties properties, OpService opService) throws UnboundVariableException {
+		String url = opService.getService().getURI();
+
+		// Parse IRI only if contains properties
+		if (!url.equals(FacadeIRIParser.SPARQL_ANYTHING_URI_SCHEMA)) {
+			FacadeIRIParser p = new FacadeIRIParser(url);
+			properties.putAll(p.getProperties());
+		}
+
+		// Setting defaults
+		if (!properties.containsKey(IRIArgument.NAMESPACE.toString())) {
+			logger.trace("Setting default value for namespace: {}", Triplifier.XYZ_NS);
+			properties.setProperty(IRIArgument.NAMESPACE.toString(), Triplifier.XYZ_NS);
+		}
+		// Setting silent
+		if (opService.getSilent()) {
+			// we can only see if silent was specified at the OpService so we need to stash
+			// a boolean
+			// at this point so we can use it when we triplify further down the Op tree
+			properties.setProperty(IRIArgument.OP_SERVICE_SILENT.toString(), "true");
+		}
+
+		Op next = opService.getSubOp();
+		FXBGPFinder vis = new FXBGPFinder();
+		next.visit(vis);
+		logger.trace("Has Table {}", vis.hasTable());
+
+		if (vis.getBGP() != null) {
+			try {
+				PropertyExtractor.extractPropertiesFromBGP(properties, vis.getBGP());
+			} catch (UnboundVariableException e) {
+				if (vis.hasTable()) {
+					logger.trace(vis.getOpTable().toString());
+					logger.trace("BGP {}", vis.getBGP());
+					logger.trace("Contains variable names {}", vis.getOpTable().getTable().getVarNames().contains(e.getVariableName()));
+					if (vis.getOpTable().getTable().getVarNames().contains(e.getVariableName())) {
+						e.setOpTable(vis.getOpTable());
+					}
+				}
+
+				if (vis.getOpExtend() != null) {
+					logger.trace("OpExtend {}", vis.getOpExtend());
+					for (Var var : vis.getOpExtend().getVarExprList().getVars()) {
+						if (var.getName().equals(e.getVariableName())) {
+							e.setOpExtend(vis.getOpExtend());
+						}
+					}
+				}
+
+				throw e;
+			}
+			logger.trace("Number of properties {}: {}", properties.size(), properties);
+		} else {
+			logger.trace("Couldn't find OpGraph");
+		}
+	}
+	private void readFromStdIn(Properties p) {
+		if (p.containsKey(IRIArgument.READ_FROM_STD_IN.toString())) {
+			Scanner sc = new Scanner(System.in);
+			StringBuilder sb = new StringBuilder();
+			while (sc.hasNextLine()) {
+				sb.append(sc.nextLine());
+				sb.append('\n');
+			}
+			p.setProperty(IRIArgument.CONTENT.toString(), sb.substring(0, sb.length()-1));
+		}
+	}
+
+	public QueryIterator executeReusedQuery(OpService opService, Properties properties, QueryIterator input, ExecutionContext executionContext) throws URISyntaxException, IOException {
+//		String queryStr = IOUtils.toString(Objects.requireNonNull(getClass().getClassLoader().getResource(PropertyUtils.getStringProperty(properties, IRIArgument.QUERY))).toURI(), StandardCharsets.UTF_8);
+//		Query query = QueryFactory.create(queryStr);
+		Query query = loadReusedQuery(PropertyUtils.getStringProperty(properties, IRIArgument.QUERY));
+		Op op = Algebra.optimize(Algebra.compile(query));
+		if (query.isSelectType()) {
+			return QC.execute(op, input, executionContext);
+		} else if (query.isConstructQuad()){
+			QueryExecution queryExecution = QueryExecutionFactory.create(query, executionContext.getDataset());
+			Dataset dataset = queryExecution.execConstructDataset();
+			return QC.execute(opService.getSubOp(), input, FacadeXExecutionContext.create(dataset.asDatasetGraph()));
+		} else if (query.isConstructType()) {
+			QueryExecution queryExecution = QueryExecutionFactory.create(query, executionContext.getDataset());
+			Model result = queryExecution.execConstruct();
+			return QC.execute(opService.getSubOp(), input, FacadeXExecutionContext.createForGraph(result.getGraph()));
+		}
+		return QueryIterNullIterator.create(executionContext);
+	}
+
+	/**
+	 * Loads the query referenced by the 'query' option. The reference is resolved, in order, as:
+	 * a URL with a scheme (file:, http:, https:), a file path (relative paths are resolved against
+	 * the working directory), a classpath resource.
+	 */
+	public static Query loadReusedQuery(String ref) throws IOException {
+		if (ref == null || ref.isBlank()) {
+			throw new IOException("The 'query' option is empty");
+		}
+		// 1. URL with a scheme of two or more characters (so Windows paths such as C:\ are treated as files)
+		if (ref.matches("^[A-Za-z][A-Za-z0-9+.-]+:.*")) {
+			try {
+				return QueryFactory.read(ref);
+			} catch (NotFoundException e) {
+				throw new IOException("Cannot find the query referenced by the 'query' option: " + ref, e);
+			}
+		}
+		// 2. File path
+		Path path = Paths.get(ref);
+		if (Files.isRegularFile(path)) {
+			return QueryFactory.create(Files.readString(path, StandardCharsets.UTF_8));
+		}
+		// 3. Classpath resource
+		String resource = ref.startsWith("/") ? ref.substring(1) : ref;
+		try (InputStream is = FXWorker.class.getClassLoader().getResourceAsStream(resource)) {
+			if (is != null) {
+				return QueryFactory.create(IOUtils.toString(is, StandardCharsets.UTF_8));
+			}
+		}
+		throw new IOException("Cannot find the query referenced by the 'query' option: " + ref
+			+ " (resolved as " + path.toAbsolutePath() + ")");
+	}
+}

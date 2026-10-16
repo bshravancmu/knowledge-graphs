@@ -1,0 +1,140 @@
+package it.unibz.inf.ontop.iq.node.impl;
+
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
+import com.google.inject.Inject;
+import it.unibz.inf.ontop.injection.IntermediateQueryFactory;
+import it.unibz.inf.ontop.iq.DownPropagation;
+import it.unibz.inf.ontop.iq.IQTree;
+import it.unibz.inf.ontop.iq.IQTreeCache;
+import it.unibz.inf.ontop.iq.UnaryIQTree;
+import it.unibz.inf.ontop.iq.exception.InvalidIntermediateQueryException;
+import it.unibz.inf.ontop.iq.node.*;
+import it.unibz.inf.ontop.iq.node.normalization.DistinctNormalizer;
+import it.unibz.inf.ontop.iq.request.FunctionalDependencies;
+import it.unibz.inf.ontop.iq.request.VariableNonRequirement;
+import it.unibz.inf.ontop.model.term.*;
+import it.unibz.inf.ontop.substitution.InjectiveSubstitution;
+import it.unibz.inf.ontop.utils.VariableGenerator;
+
+
+
+public class DistinctNodeImpl extends QueryModifierNodeImpl implements DistinctNode {
+
+    private static final String DISTINCT_NODE_STR = "DISTINCT";
+
+    private final DistinctNormalizer normalizer;
+
+    @Inject
+    private DistinctNodeImpl(IntermediateQueryFactory iqFactory, DistinctNormalizer normalizer, TermFactory termFactory) {
+        super(iqFactory, termFactory);
+        this.normalizer = normalizer;
+    }
+
+    /**
+     * TODO: implement it seriously! (is currently blocking)
+     */
+    @Override
+    public IQTree liftIncompatibleDefinitions(Variable variable, IQTree child, VariableGenerator variableGenerator) {
+        // TODO: stop blocking
+        return iqFactory.createUnaryIQTree(this, child);
+    }
+
+    @Override
+    public IQTree normalizeForOptimization(IQTree child, VariableGenerator variableGenerator, IQTreeCache treeCache) {
+        return normalizer.normalizeForOptimization(this, child, variableGenerator, treeCache);
+    }
+
+    @Override
+    public DistinctNode applyFreshRenaming(InjectiveSubstitution<Variable> renamingSubstitution) {
+        return this;
+    }
+
+    @Override
+    public IQTree propagateDownConstraint(DownPropagation dp, IQTree child) {
+        return iqFactory.createUnaryIQTree(this, dp.propagate(child));
+    }
+
+    @Override
+    public IQTree applyDescendingSubstitution(DownPropagation dp, IQTree child) {
+        return iqFactory.createUnaryIQTree(this, dp.propagate(child));
+    }
+
+    @Override
+    public boolean isDistinct(IQTree tree, IQTree child) {
+        return true;
+    }
+
+    @Override
+    public void validateNode(IQTree child) throws InvalidIntermediateQueryException {
+    }
+
+    @Override
+    public IQTree removeDistincts(IQTree child, IQTreeCache treeCache) {
+        return child.removeDistincts();
+    }
+
+    @Override
+    public ImmutableSet<ImmutableSet<Variable>> inferUniqueConstraints(IQTree child) {
+        var childConstraints = child.inferUniqueConstraints();
+        return childConstraints.isEmpty()
+                ? ImmutableSet.of(inferNewUC(child))
+                : childConstraints;
+    }
+
+    private ImmutableSet<Variable> inferNewUC(IQTree child) {
+        /*
+         * NB: by using strict dependents, we are including in the UC intermediate determinants like b in a -> b -> c .
+         * The benefit is that it is usually much cheaper to compute strict dependents than functional dependencies
+         * (especially for large UNIONs).
+         * We are still waiting for a real case where eliminating b in this example has a significant impact.
+         */
+        return Sets.difference(child.getVariables(), child.inferStrictDependents())
+                .immutableCopy();
+    }
+
+    @Override
+    public FunctionalDependencies inferFunctionalDependencies(IQTree child, ImmutableSet<ImmutableSet<Variable>> uniqueConstraints, ImmutableSet<Variable> variables) {
+        return child.inferFunctionalDependencies();
+    }
+
+    @Override
+    public VariableNonRequirement computeVariableNonRequirement(IQTree child) {
+        var childVariableNonRequirement = child.getVariableNonRequirement();
+        if (childVariableNonRequirement.isEmpty())
+            return childVariableNonRequirement;
+
+        return childVariableNonRequirement.withRequiredVariables(inferNewUC(child));
+    }
+
+    @Override
+    public ImmutableSet<Variable> inferStrictDependents(UnaryIQTree tree, IQTree child) {
+        return child.inferStrictDependents();
+    }
+
+    @Override
+    public ImmutableSet<Variable> getLocallyRequiredVariables() {
+        return ImmutableSet.of();
+    }
+
+    @Override
+    public ImmutableSet<Variable> getLocallyDefinedVariables() {
+        return ImmutableSet.of();
+    }
+
+    @Override
+    public int hashCode() {
+        return 238723871;
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        return o instanceof DistinctNodeImpl;
+    }
+
+    @Override
+    public String toString() {
+        return DISTINCT_NODE_STR;
+    }
+}

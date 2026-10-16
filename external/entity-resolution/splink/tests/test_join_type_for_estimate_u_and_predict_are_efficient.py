@@ -1,0 +1,320 @@
+import logging
+import re
+from typing import List
+
+import splink.internals.comparison_library as cl
+from splink.internals.duckdb.database_api import DuckDBAPI
+from splink.internals.linker import Linker
+
+
+# Create a log handler that allows us to captured logged messages to a python list
+class ListHandler(logging.Handler):
+    def __init__(self, log_list):
+        super().__init__()
+        self.log_list = log_list
+
+    def emit(self, record):
+        self.log_list.append(self.format(record))
+
+
+logger = logging.getLogger("splink")
+
+
+data_one = [
+    {
+        "unique_id": "a0",
+        "first_name": "Julia ",
+        "surname": "Taylor",
+        "dob": "2015-07-31",
+        "city": "London",
+        "email": "hannah88@powers.com",
+        "cluster": "0",
+    },
+    {
+        "unique_id": "a1",
+        "first_name": "Juli",
+        "surname": "Taylor",
+        "dob": "2015-07-31",
+        "city": "London",
+        "email": "hannah8@powers.com",
+        "cluster": "0",
+    },
+    {
+        "unique_id": "a2",
+        "first_name": "Julia ",
+        "surname": "Taylo",
+        "dob": "2015-07-31",
+        "city": "Lambeth",
+        "email": "hannah88@powers.com",
+        "cluster": "0",
+    },
+    {
+        "unique_id": "a3",
+        "first_name": "Juli",
+        "surname": "Taylor",
+        "dob": "2015-07-31",
+        "city": "Lambeth",
+        "email": "hannah88@powers.com",
+        "cluster": "0",
+    },
+]
+
+data_three = [
+    {
+        "unique_id": "b0",
+        "first_name": "Juli",
+        "surname": "Taylo",
+        "dob": "2015-07-31",
+        "city": "London",
+        "email": "hannah88@powers.com",
+        "cluster": "0",
+    },
+    {
+        "unique_id": "b1",
+        "first_name": "Juli",
+        "surname": "Taylr",
+        "dob": "2015-07-31",
+        "city": "London",
+        "email": "hannah8@powers.com",
+        "cluster": "0",
+    },
+    {
+        "unique_id": "b2",
+        "first_name": "Julia",
+        "surname": "Taylor",
+        "dob": "2015-07-31",
+        "city": "Lambeth",
+        "email": "hannah88@powers.com",
+        "cluster": "0",
+    },
+]
+
+
+def _assert_self_join_logged(log_output: str, table_name: str) -> None:
+    pattern = (
+        rf"from {re.escape(table_name)}(?:_[a-z0-9]+)? as l inner join "
+        rf"{re.escape(table_name)}(?:_[a-z0-9]+)? as r"
+    )
+    assert re.search(pattern, log_output)
+
+
+def _assert_join_logged(log_output: str, left_table: str, right_table: str) -> None:
+    pattern = (
+        rf"from {re.escape(left_table)}(?:_[a-z0-9]+)? as l inner join "
+        rf"{re.escape(right_table)}(?:_[a-z0-9]+)? as r"
+    )
+    assert re.search(pattern, log_output)
+
+
+def test_dedupe_only():
+    log_list: List[str] = []
+    handler = ListHandler(log_list)
+    logger.addHandler(handler)
+
+    settings = {
+        "link_type": "dedupe_only",
+        "probability_two_random_records_match": 4 / 1000,
+        "blocking_rules_to_generate_predictions": [
+            "l.first_name = r.first_name",
+            "l.surname = r.surname",
+        ],
+        "comparisons": [
+            cl.ExactMatch("first_name"),
+            cl.ExactMatch("surname"),
+            cl.ExactMatch("dob"),
+            cl.ExactMatch("city").configure(term_frequency_adjustments=True),
+            cl.ExactMatch("email"),
+        ],
+    }
+    db_api = DuckDBAPI()
+    df_one_sdf = db_api.register(data_one)
+    linker = Linker(
+        df_one_sdf,
+        settings,
+        log_level=None,
+    )
+    logging.getLogger("splink").setLevel(1)
+
+    linker.training.estimate_u_using_random_sampling(max_pairs=1000)
+    all_log_messages = "\n".join(log_list)
+    all_log_messages = re.sub(r"\s+", " ", all_log_messages)
+
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat_sample")
+
+    handler.log_list.clear()
+
+    linker.inference.predict()
+
+    all_log_messages = "\n".join(log_list)
+    all_log_messages = re.sub(r"\s+", " ", all_log_messages)
+
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat")
+
+
+def test_link_and_dedupe(fake_1000):
+    log_list: List[str] = []
+    handler = ListHandler(log_list)
+    logger.addHandler(handler)
+    settings = {
+        "link_type": "link_and_dedupe",
+        "probability_two_random_records_match": 4 / 1000,
+        "blocking_rules_to_generate_predictions": [
+            "l.first_name = r.first_name",
+            "l.surname = r.surname",
+        ],
+        "comparisons": [
+            cl.ExactMatch("first_name"),
+            cl.ExactMatch("surname"),
+            cl.ExactMatch("dob"),
+            cl.ExactMatch("city").configure(term_frequency_adjustments=True),
+            cl.ExactMatch("email"),
+        ],
+    }
+    db_api = DuckDBAPI()
+    df_one_sdf = db_api.register(data_one, dataset_display_name="df_one")
+    df_two_sdf = db_api.register(fake_1000, dataset_display_name="df_two")
+    linker = Linker(
+        [df_one_sdf, df_two_sdf],
+        settings,
+        log_level=None,
+    )
+
+    handler.log_list.clear()
+    logging.getLogger("splink").setLevel(1)
+    linker.training.estimate_u_using_random_sampling(max_pairs=1000)
+
+    all_log_messages = "\n".join(log_list)
+    all_log_messages = re.sub(r"\s+", " ", all_log_messages)
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat_sample")
+
+    log_list.clear()
+
+    linker.inference.predict()
+
+    all_log_messages = "\n".join(log_list)
+    all_log_messages = re.sub(r"\s+", " ", all_log_messages)
+
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat")
+
+
+def test_link_only_two(fake_1000):
+    log_list: List[str] = []
+    handler = ListHandler(log_list)
+    logger.addHandler(handler)
+
+    settings = {
+        "link_type": "link_only",
+        "probability_two_random_records_match": 4 / 1000,
+        "blocking_rules_to_generate_predictions": [
+            "l.first_name = r.first_name",
+            "l.surname = r.surname",
+        ],
+        "comparisons": [
+            cl.ExactMatch("first_name"),
+            cl.ExactMatch("surname"),
+            cl.ExactMatch("dob"),
+            cl.ExactMatch("city").configure(term_frequency_adjustments=True),
+            cl.ExactMatch("email"),
+        ],
+    }
+    db_api = DuckDBAPI()
+    df_one_sdf = db_api.register(data_one, dataset_display_name="df_one")
+    df_two_sdf = db_api.register(fake_1000, dataset_display_name="df_two")
+    linker = Linker(
+        [df_one_sdf, df_two_sdf],
+        settings,
+        log_level=None,
+    )
+
+    log_list.clear()
+    logging.getLogger("splink").setLevel(1)
+    linker.training.estimate_u_using_random_sampling(max_pairs=1000)
+
+    all_log_messages = "\n".join(log_list)
+    all_log_messages = re.sub(r"\s+", " ", all_log_messages)
+    _assert_join_logged(
+        all_log_messages,
+        "__splink__df_concat_sample_left",
+        "__splink__df_concat_sample_right",
+    )
+
+    log_list.clear()
+
+    linker.inference.predict()
+
+    all_log_messages = "\n".join(log_list)
+    all_log_messages = re.sub(r"\s+", " ", all_log_messages)
+
+    _assert_join_logged(
+        all_log_messages,
+        "__splink__df_concat_left",
+        "__splink__df_concat_right",
+    )
+    assert (
+        "__splink__df_concat_left as ( select 'df_one' as "
+        '"source_dataset", "unique_id", "first_name", "surname" from df_one )'
+        in all_log_messages
+    )
+    assert (
+        "__splink__df_concat_right as ( select 'df_two' as "
+        '"source_dataset", "unique_id", "first_name", "surname" from df_two )'
+        in all_log_messages
+    )
+    assert (
+        "__splink__df_concat_left as ( select * from __splink__df_concat"  # noqa: E501
+        not in all_log_messages
+    )
+    assert (
+        "__splink__df_concat_right as ( select * from __splink__df_concat"  # noqa: E501
+        not in all_log_messages
+    )
+    assert "select min(" not in all_log_messages
+    assert "select max(" not in all_log_messages
+
+
+def test_link_only_three(fake_1000):
+    log_list: List[str] = []
+    handler = ListHandler(log_list)
+    logger.addHandler(handler)
+
+    settings = {
+        "link_type": "link_only",
+        "probability_two_random_records_match": 4 / 1000,
+        "blocking_rules_to_generate_predictions": [
+            "l.first_name = r.first_name",
+            "l.surname = r.surname",
+        ],
+        "comparisons": [
+            cl.ExactMatch("first_name"),
+            cl.ExactMatch("surname"),
+            cl.ExactMatch("dob"),
+            cl.ExactMatch("city").configure(term_frequency_adjustments=True),
+            cl.ExactMatch("email"),
+        ],
+    }
+    db_api = DuckDBAPI()
+    df_one_sdf = db_api.register(data_one, dataset_display_name="df_one")
+    df_two_sdf = db_api.register(fake_1000, dataset_display_name="df_two")
+    df_three_sdf = db_api.register(data_three, dataset_display_name="df_three")
+    linker = Linker(
+        [df_one_sdf, df_two_sdf, df_three_sdf],
+        settings,
+        log_level=None,
+    )
+
+    log_list.clear()
+    logging.getLogger("splink").setLevel(1)
+    linker.training.estimate_u_using_random_sampling(max_pairs=1000)
+
+    all_log_messages = "\n".join(log_list)
+    all_log_messages = re.sub(r"\s+", " ", all_log_messages)
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat_sample")
+
+    log_list.clear()
+
+    linker.inference.predict()
+
+    all_log_messages = "\n".join(log_list)
+    all_log_messages = re.sub(r"\s+", " ", all_log_messages)
+
+    _assert_self_join_logged(all_log_messages, "__splink__df_concat")

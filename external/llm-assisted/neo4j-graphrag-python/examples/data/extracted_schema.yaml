@@ -1,0 +1,72 @@
+node_types:
+- label: Person
+  description: ''
+  properties:
+  - name: name
+    type: STRING
+    description: ''
+  - name: position
+    type: STRING
+    description: ''
+  - name: startYear
+    type: INTEGER
+    description: ''
+- label: Company
+  description: ''
+  properties:
+  - name: name
+    type: STRING
+    description: ''
+  - name: foundedYear
+    type: INTEGER
+    description: ''
+  - name: revenue
+    type: FLOAT
+    description: ''
+  - name: valuation
+    type: FLOAT
+    description: ''
+- label: Product
+  description: ''
+  properties:
+  - name: name
+    type: STRING
+    description: ''
+  - name: launchYear
+    type: INTEGER
+    description: ''
+  - name: unitsSold
+    type: INTEGER
+    description: ''
+- label: Office
+  description: ''
+  properties:
+  - name: location
+    type: STRING
+    description: ''
+relationship_types:
+- label: WORKS_FOR
+  description: ''
+  properties: []
+- label: MANAGES
+  description: ''
+  properties: []
+- label: DEVELOPED_BY
+  description: ''
+  properties: []
+- label: LOCATED_IN
+  description: ''
+  properties: []
+patterns:
+- - Person
+  - WORKS_FOR
+  - Company
+- - Person
+  - MANAGES
+  - Office
+- - Product
+  - DEVELOPED_BY
+  - Person
+- - Company
+  - LOCATED_IN
+  - Office

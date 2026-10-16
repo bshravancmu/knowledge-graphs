@@ -1,0 +1,54 @@
+name: Sphinx Documentation
+env:
+  UV_VERSION: "0.11.21"
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-docs:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ "3.12" ]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Ensure tags if not run from main repo
+        if: github.repository != 'linkml/linkml'
+        run: |
+          git remote add upstream https://github.com/linkml/linkml
+          git fetch upstream --tags
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7.0.0
+        id: setup-python
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install docs dependencies
+        run: uv sync --group docs
+
+      - name: Build documentation.
+        run: |
+          mkdir gh-pages
+          touch gh-pages/.nojekyll
+          cd docs/
+          uv run sphinx-build -b html . _build
+          cp -r _build/* ../gh-pages/
+      - name: Deploy documentation.
+        if: ${{ github.event_name == 'push' }}
+        uses: JamesIves/github-pages-deploy-action@v4.9.0
+        with:
+          branch: gh-pages
+          force: true
+          folder: gh-pages

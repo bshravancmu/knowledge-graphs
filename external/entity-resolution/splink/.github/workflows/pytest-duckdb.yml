@@ -1,0 +1,47 @@
+name: Pytest DuckDB
+
+on:
+  pull_request:
+    paths:
+      - "splink/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+permissions: {}
+
+jobs:
+  test:
+    name: Pytest DuckDB (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        id: setup_uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+
+      - name: Install Python ${{ matrix.python-version }}
+        id: install_python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        id: install_dependencies
+        run: uv sync --python ${{ matrix.python-version }}
+
+      - name: Run tests
+        id: run_tests
+        run: |
+          uv run python -m pytest -v --durations=0 -m "duckdb and not needs_pandas" tests/

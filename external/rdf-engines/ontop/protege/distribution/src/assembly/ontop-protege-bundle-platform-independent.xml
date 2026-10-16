@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<assembly>
+	<id>protege-bundle-platform-independent</id>
+	<formats>
+		<format>zip</format>
+	</formats>
+	<includeBaseDirectory>false</includeBaseDirectory>
+	<fileSets>
+		<fileSet>
+			<directory>${project.build.directory}/unpack/protege-desktop-platform-independent/${protege.bnd.dir}</directory>
+			<outputDirectory>/${protege.bnd.dir}/</outputDirectory>
+		</fileSet>
+	</fileSets>
+	<files>
+		<file>
+			<source>${project.build.directory}/it.unibz.inf.ontop.protege-${project.version}.jar</source>
+			<outputDirectory>/${protege.bnd.dir}/${protege.bnd.dir-plugins-plat-ind}/</outputDirectory>
+		</file>
+	</files>
+</assembly>

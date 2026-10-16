@@ -1,0 +1,37 @@
+description = 'APOC :: Integration Tests Module'
+
+dependencies {
+  testImplementation project(':common')
+  testImplementation project(':core')
+  testImplementation project(':test-utils')
+  testImplementation project(':common').sourceSets.test.output
+  testImplementation project(':core').sourceSets.test.output
+
+  testImplementation platform("io.grpc:grpc-bom:1.78.0")
+  testImplementation group: 'org.neo4j', name: 'neo4j-graph-algo', version: neo4jVersionEffective
+  testImplementation "com.neo4j:enterprise-it-test-support:$neo4jVersionEffective"
+  testImplementation group: 'software.amazon.awssdk', name: 's3', version: awsSdkVersion
+  testImplementation group: 'org.xmlunit', name: 'xmlunit-core', version: '2.11.0'
+  testImplementation("net.javacrumbs.json-unit:json-unit-assertj:5.1.0")
+
+  configurations.all {
+    exclude group: 'org.slf4j', module: 'slf4j-nop'
+    exclude group: 'ch.qos.logback', module: 'logback-classic'
+  }
+}
+
+
+tasks.register('copyApocJar', Copy) {
+  dependsOn(':core:shadowJar')
+  from project(':core').tasks.shadowJar.archiveFile into layout.buildDirectory.dir('test/jar')
+}
+
+test {
+  dependsOn(copyApocJar)
+  maxParallelForks = 1
+  doFirst {
+    var apocJarPath = layout.buildDirectory.file("test/jar/apoc-${version}-core.jar").get().asFile.absolutePath
+    println("apoc-core.test.jar.path=$apocJarPath")
+    systemProperty 'apoc-core.test.jar.path', apocJarPath
+  }
+}

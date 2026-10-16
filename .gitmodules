@@ -1,112 +1,12 @@
-[submodule "external/rdf-engines/morph-kgc"]
-	path = external/rdf-engines/morph-kgc
-	url = https://github.com/morph-kgc/morph-kgc.git
-	branch = main
-[submodule "external/rdf-engines/rmlmapper-java"]
-	path = external/rdf-engines/rmlmapper-java
-	url = https://github.com/RMLio/rmlmapper-java.git
-	branch = development
-[submodule "external/rdf-engines/sdm-rdfizer"]
-	path = external/rdf-engines/sdm-rdfizer
-	url = https://github.com/SDM-TIB/SDM-RDFizer.git
-	branch = master
-[submodule "external/rdf-engines/carml"]
-	path = external/rdf-engines/carml
-	url = https://github.com/carml/carml.git
-	branch = main
-[submodule "external/rdf-engines/rmlstreamer"]
-	path = external/rdf-engines/rmlstreamer
-	url = https://github.com/RMLio/RMLStreamer.git
-	branch = development
-[submodule "external/rdf-engines/ontop"]
-	path = external/rdf-engines/ontop
-	url = https://github.com/ontop/ontop.git
-	branch = version5
-[submodule "external/rdf-engines/sparql-anything"]
-	path = external/rdf-engines/sparql-anything
-	url = https://github.com/SPARQL-Anything/sparql.anything.git
-	branch = v1.3-DEV
-[submodule "external/mapping-tools/yarrrml-parser"]
-	path = external/mapping-tools/yarrrml-parser
-	url = https://github.com/RMLio/yarrrml-parser.git
-	branch = development
-[submodule "external/mapping-tools/yatter"]
-	path = external/mapping-tools/yatter
-	url = https://github.com/citiususc/yatter.git
-	branch = main
-[submodule "external/mapping-tools/linkml-map"]
-	path = external/mapping-tools/linkml-map
-	url = https://github.com/linkml/linkml-map.git
-	branch = main
 [submodule "external/mapping-tools/awesome-kgc-tools"]
 	path = external/mapping-tools/awesome-kgc-tools
 	url = https://github.com/kg-construct/awesome-kgc-tools.git
-	branch = main
-[submodule "external/property-graph/neosemantics"]
-	path = external/property-graph/neosemantics
-	url = https://github.com/neo4j-labs/neosemantics.git
-	branch = 2025.06
-[submodule "external/property-graph/apoc"]
-	path = external/property-graph/apoc
-	url = https://github.com/neo4j/apoc.git
-	branch = dev
-[submodule "external/llm-assisted/mcp-neo4j"]
-	path = external/llm-assisted/mcp-neo4j
-	url = https://github.com/neo4j-contrib/mcp-neo4j.git
-	branch = main
-[submodule "external/llm-assisted/neo4j-graphrag-python"]
-	path = external/llm-assisted/neo4j-graphrag-python
-	url = https://github.com/neo4j/neo4j-graphrag-python.git
-	branch = main
-[submodule "external/llm-assisted/neo4j-runway"]
-	path = external/llm-assisted/neo4j-runway
-	url = https://github.com/a-s-g93/neo4j-runway.git
 	branch = main
 [submodule "external/llm-assisted/llm4vkg"]
 	path = external/llm-assisted/llm4vkg
 	url = https://github.com/HomuraT/LLM4VKG.git
 	branch = main
-[submodule "external/llm-assisted/autorml"]
-	path = external/llm-assisted/autorml
-	url = https://github.com/dtai-kg/AutoRML.git
-	branch = main
-[submodule "external/llm-assisted/kg-pipeline-llm4rml"]
-	path = external/llm-assisted/kg-pipeline-llm4rml
-	url = https://github.com/Vehnem/kg-pipeline.git
-	branch = main
-[submodule "external/llm-assisted/blinkg"]
-	path = external/llm-assisted/blinkg
-	url = https://github.com/citiususc/blinkg.git
-	branch = main
-[submodule "external/entity-resolution/splink"]
-	path = external/entity-resolution/splink
-	url = https://github.com/moj-analytical-services/splink.git
-	branch = master
-[submodule "external/entity-resolution/dedupe"]
-	path = external/entity-resolution/dedupe
-	url = https://github.com/dedupeio/dedupe.git
-	branch = main
-[submodule "external/validation/pyshacl"]
-	path = external/validation/pyshacl
-	url = https://github.com/RDFLib/pySHACL.git
-	branch = master
-[submodule "external/mapping-tools/linkml"]
-	path = external/mapping-tools/linkml
-	url = https://github.com/linkml/linkml.git
-	branch = main
-[submodule "external/stores/oxigraph"]
-	path = external/stores/oxigraph
-	url = https://github.com/oxigraph/oxigraph.git
-	branch = main
-[submodule "external/stores/qlever"]
-	path = external/stores/qlever
-	url = https://github.com/ad-freiburg/qlever.git
-	branch = master
 [submodule "external/orchestration/dagster"]
 	path = external/orchestration/dagster
 	url = https://github.com/dagster-io/dagster.git
 	branch = master
-[submodule "external/profiling/ydata-profiling"]
-	path = external/profiling/ydata-profiling
-	url = https://github.com/ydataai/ydata-profiling.git
-	branch = develop

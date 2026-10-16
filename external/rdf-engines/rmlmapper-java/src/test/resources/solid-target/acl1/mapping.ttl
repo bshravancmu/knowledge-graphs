@@ -1,0 +1,106 @@
+@base <http://example.com/base/>.
+@prefix rr: <http://www.w3.org/ns/r2rml#>.
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>.
+@prefix foaf: <http://xmlns.com/foaf/0.1/>.
+@prefix rml: <http://semweb.mmlab.be/ns/rml#>.
+@prefix ql: <http://semweb.mmlab.be/ns/ql#>.
+@prefix o: <http://example.com/ont/>.
+@prefix ex: <http://example.com/>.
+@prefix rmlt: <http://semweb.mmlab.be/ns/rml-target#>.
+@prefix formats: <http://www.w3.org/ns/formats/>.
+@prefix acl: <http://www.w3.org/ns/auth/acl#>.
+@prefix rmle: <https://w3id.org/imec/rml/ns/extensions#>.
+@prefix htv:  <http://www.w3.org/2011/http#>.
+@prefix void: <http://rdfs.org/ns/void#>.
+
+<TriplesMap1> a rr:TriplesMap;
+    rml:logicalSource [
+        rml:source "src/test/resources/solid-target/solid1/buildings.csv";
+        rml:referenceFormulation ql:CSV;
+    ];
+    rr:subjectMap [
+        rr:template "http://example.com/{BuildingID}";
+        rml:logicalTarget <target1>;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate o:has-floor-tile;
+        rr:objectMap [ rr:template "http://example.com/product-{FloorTileID}" ];
+    ].
+
+<TriplesMap2> a rr:TriplesMap;
+    rml:logicalSource [
+        rml:source "src/test/resources/solid-target/acl1/buildings.csv";
+        rml:referenceFormulation ql:CSV;
+    ];
+    rr:subjectMap [
+        rr:constant "http://example.com/pod1-acl";
+        rr:class acl:Authorization;
+        rml:logicalTarget <target1_acl>;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate acl:agent;
+        rr:object <https://pod.playground.solidlab.be/user2/profile/card#me>;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate acl:mode;
+        rr:object acl:Read;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate acl:accessTo;
+        rr:object <https://pod.playground.solidlab.be/user1/rmlmapper/building.ttl>;
+    ].
+
+<TriplesMap3> a rr:TriplesMap;
+    rml:logicalSource [
+        rml:source "src/test/resources/solid-target/acl1/buildings.csv";
+        rml:referenceFormulation ql:CSV;
+    ];
+    rr:subjectMap [
+        rr:constant "http://example.com/example-acl";
+        rr:class acl:Authorization;
+        rml:logicalTarget <target1_acl>;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate acl:agent;
+        rr:object <https://pod.playground.solidlab.be/user1/profile/card#me>;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate acl:mode;
+        rr:object acl:Read;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate acl:accessTo;
+        rr:object <https://pod.playground.solidlab.be/user1/rmlmapper/building.ttl>;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate acl:mode;
+        rr:object acl:Control;
+    ];
+    rr:predicateObjectMap [
+        rr:predicate acl:mode;
+        rr:object acl:Write;
+    ].
+
+<target1> rmlt:serialization formats:Turtle;
+    rmlt:target [
+        a rmlt:Target;
+        a rmle:DirectHttpRequest;
+        htv:absoluteURI "https://pod.playground.solidlab.be/user1/rmlmapper/building.ttl";
+        rmle:userAuthentication <authentication1>;
+    ].
+
+<target1_acl> rmlt:serialization formats:Turtle;
+    rmlt:target [
+        a rmlt:Target;
+        a rmle:LinkedHttpRequest;
+        rmle:linkingAbsoluteURI "https://pod.playground.solidlab.be/user1/rmlmapper/building.ttl";
+        rmle:linkRelation "acl";
+        rmle:userAuthentication <authentication1>;
+    ].
+
+<authentication1> a rmle:CssClientCredentialsAuthentication;
+    rmle:authEmail "user1@pod.playground.solidlab.be";
+    rmle:authPassword "user1";
+    rmle:authOidcIssuer <https://pod.playground.solidlab.be/>;
+    rmle:authWebId <https://pod.playground.solidlab.be/user1/profile/card#me>.
+

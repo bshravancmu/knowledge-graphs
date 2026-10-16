@@ -1,0 +1,40 @@
+### Start services locally
+
+This is a manual task you need to do in the terminal.
+
+This spins up Neo4j and Weaviate containers and is configuring Weaviate to use embeddings from Hugging Face's Sentence Transformers using the "all-MiniLM-L6-v2" model, which has 384 dimensions.
+
+Weaviate is behind the `vectordb` profile, so it needs the flag.
+
+```bash
+docker compose -f tests/e2e/docker-compose.yml --profile vectordb up -d --wait
+```
+
+### Write data (once)
+
+Run this from the project root to write data to both dbs.
+
+```
+uv run python -m tests.e2e.weaviate_e2e.populate_dbs
+```
+
+### Install Weaviate client
+
+You need to install the `weaviate-client` package to use this retriever.
+
+```bash
+pip install weaviate-client
+```
+
+### Search
+
+```
+# search by vector
+uv run python -m examples.customize.retrievers.external.weaviate.vector_search
+
+# search by text, with embeddings generated locally (via embedder argument)
+uv run python -m examples.customize.retrievers.external.weaviate.text_search_local_embedder
+
+# search by text, with embeddings generated on the Weaviate side, via configured vectorizer
+uv run python -m examples.customize.retrievers.external.weaviate.text_search_remote_embedder
+```

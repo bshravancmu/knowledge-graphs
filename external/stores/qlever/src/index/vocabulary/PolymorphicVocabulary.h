@@ -1,0 +1,295 @@
+// Copyright 2025-2026 The QLever Authors, in particular:
+// 2025 Christoph Ullinger <ullingec@cs.uni-freiburg.de>, UFR
+// 2025-2026 Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>, UFR
+// 2026 Marvin Stoetzel <marvin.stoetzel@email.uni-freiburg.de>, UFR
+//
+// UFR = University of Freiburg, Chair of Algorithms and Data Structures
+
+// You may not use this file except in compliance with the Apache 2.0 License,
+// which can be found in the `LICENSE` file at the root of the QLever project.
+
+#ifndef QLEVER_SRC_INDEX_VOCABULARY_POLYMORPHICVOCABULARY_H
+#define QLEVER_SRC_INDEX_VOCABULARY_POLYMORPHICVOCABULARY_H
+
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_join.h>
+
+#include <variant>
+
+#include "backports/type_traits.h"
+#include "index/vocabulary/CompressedVocabulary.h"
+#include "index/vocabulary/SplitVocabulary.h"
+#include "index/vocabulary/VocabularyConstraints.h"
+#include "index/vocabulary/VocabularyInMemory.h"
+#include "index/vocabulary/VocabularyInMemoryBinSearch.h"
+#include "index/vocabulary/VocabularyInternalExternal.h"
+#include "index/vocabulary/VocabularyType.h"
+#include "util/Serializer/Serializer.h"
+#include "util/TypeTraits.h"
+#include "util/json.h"
+
+// A vocabulary that can at runtime choose between different vocabulary
+// implementations. The only restriction is, that a vocabulary can only be read
+// from disk with the same implementation that it was written to.
+class PolymorphicVocabulary {
+ public:
+  using VocabularyType = ad_utility::VocabularyType;
+
+ private:
+  // Type aliases for all the currently supported vocabularies. To add another
+  // vocabulary,
+  // 1. Add an enum value to the `VocabularyTypeEnum`.
+  // 2. Add an alias below for the vocabulary that has the same name as the enum
+  // value.
+  // 3. Add the alias type to the `Variant` below.
+  // 4. Add the corresponding line to the `resetToType` function in
+  // `PolymorphicVocabulary.cpp`.
+  // 5. Add the alias type to the appropriate concepts in
+  // `VocabularyConstraints.h`.
+  using InMemoryUncompressed = VocabularyInMemory;
+  using OnDiskUncompressed = VocabularyInternalExternal;
+  using InMemoryCompressed = CompressedVocabulary<InMemoryUncompressed>;
+  using OnDiskCompressed = CompressedVocabulary<OnDiskUncompressed>;
+  using OnDiskCompressedGeoSplit = SplitGeoVocabulary<OnDiskCompressed>;
+  // The vocabularies with "holes", which are only used for vocabularies that
+  // were exported from a larger vocabulary with some of the entries excluded
+  // (see `VocabularyInMemoryBinSearch` and `VocabularyType.h`).
+  using InMemoryUncompressedWithHoles = VocabularyInMemoryBinSearch;
+  using InMemoryCompressedWithHoles =
+      CompressedVocabulary<InMemoryUncompressedWithHoles>;
+  using Variant =
+      std::variant<InMemoryUncompressed, OnDiskUncompressed, OnDiskCompressed,
+                   InMemoryCompressed, OnDiskCompressedGeoSplit,
+                   InMemoryUncompressedWithHoles, InMemoryCompressedWithHoles>;
+
+  // In this variant we store the actual vocabulary.
+  Variant vocab_;
+
+ public:
+  // Read a vocabulary with the given `type` from the file with the `filename`.
+  // A vocabulary with the corresponding `type` must have been previously
+  // written to that file.
+  void open(const std::string& filename, VocabularyType type);
+
+  // Close the vocabulary if it is open, and set the underlying vocabulary
+  // implementation according to the `type` without opening the vocabulary.
+  void resetToType(VocabularyType type);
+
+  // Same as the overload of `open` above, but expects that the correct
+  // `VocabularyType` has already been set via `resetToType` above.
+  void open(const std::string& filename);
+
+  // Forward the geo cell grid to the currently active vocabulary if it is a
+  // `SplitVocabulary` (which forwards it to its `GeoVocabulary`); no-op
+  // otherwise.
+  void setGeoCellGrid(std::optional<ad_utility::GeoCellGrid> grid) {
+    ad_utility::visitIf(
+        vocab_,
+        [&grid](OnDiskCompressedGeoSplit& vocab) {
+          vocab.setGeoCellGrid(grid);
+        },
+        [](const auto& vocab) {
+          static_assert(
+              NeverProvidesGeometryInfo<std::decay_t<decltype(vocab)>>);
+        });
+  }
+
+  // The geo cell grid of an underlying `GeoVocabulary`, or `std::nullopt` if
+  // the active vocabulary is not a `SplitVocabulary` holding one with a grid.
+  std::optional<ad_utility::GeoCellGrid> getGeoCellGrid() const {
+    return ad_utility::visitIf(
+        vocab_,
+        [](const OnDiskCompressedGeoSplit& vocab) {
+          return vocab.getGeoCellGrid();
+        },
+        [](const auto& vocab) -> std::optional<ad_utility::GeoCellGrid> {
+          static_assert(
+              NeverProvidesGeometryInfo<std::decay_t<decltype(vocab)>>);
+          return std::nullopt;
+        });
+  }
+
+  // Close the vocabulary s.t. it consumes no more RAM.
+  void close();
+
+  // Return the total number of words in the vocabulary.
+  size_t size() const;
+
+  // Return the word with the vocabulary index `i`, throw if `i` is out of
+  // bounds. For a vocabulary with holes (see `VocabularyInMemoryBinSearch`)
+  // return `placeholderForMissingVocabIndex(i)` if `i` is one of those holes,
+  // instead of throwing.
+  std::string operator[](uint64_t i) const;
+
+  // Iterate over all words. The ranges of the different possible
+  // underlying vocabularies are wrapped in type-erased `VocabularyScanRange`s.
+  VocabularyScanRange scanAll() const;
+
+  //____________________________________________________________________________
+  VocabBatchLookupResult lookupBatch(ql::span<const size_t> indices) const;
+
+  //____________________________________________________________________________
+  VocabLookupOutput lookupBatchesStreamed(VocabLookupInput input) const;
+
+  // Return a reference to currently underlying vocabulary, as a variant of the
+  // possible types.
+  Variant& getUnderlyingVocabulary() { return vocab_; }
+  const Variant& getUnderlyingVocabulary() const { return vocab_; }
+
+  // Apply `function` to the currently active vocabulary, provided that this
+  // vocabulary supports zero-copy (de)serialization (see
+  // `VocabularySupportsZeroCopy`); throw otherwise. The `operation` describes
+  // the attempted operation and is expected to read like `"Loading a vocabulary
+  // from"`. The `const` overload is used for writing a zero-copy blob, the
+  // non-`const` overload for reading one (which overwrites the active
+  // vocabulary in place).
+  template <typename Function>
+  void applyToZeroCopyCapableVocabulary(std::string_view operation,
+                                        Function function) {
+    applyToZeroCopyCapableVocabularyImpl(*this, operation, std::move(function));
+  }
+
+  //____________________________________________________________________________
+  template <typename Function>
+  void applyToZeroCopyCapableVocabulary(std::string_view operation,
+                                        Function function) const {
+    applyToZeroCopyCapableVocabularyImpl(*this, operation, std::move(function));
+  }
+
+  // Same as `std::lower_bound`, return the smallest entry >= `word`.
+  template <typename String, typename Comp>
+  WordAndIndex lower_bound(const String& word, Comp comp) const {
+    return std::visit(
+        [&word, &comp](auto& vocab) {
+          return vocab.lower_bound(word, std::move(comp));
+        },
+        vocab_);
+  }
+
+  // Analogous to `lower_bound` (see above).
+  template <typename String, typename Comp>
+  WordAndIndex upper_bound(const String& word, Comp comp) const {
+    return std::visit(
+        [&word, &comp](auto& vocab) {
+          return vocab.upper_bound(word, std::move(comp));
+        },
+        vocab_);
+  }
+
+  // Analogous to `lower_bound`, but since `word` is guaranteed to be a full
+  // word, not a prefix, this function can respect the split of an underlying
+  // `SplitVocabulary`, as well as the "one past the end" index of a vocabulary
+  // with holes (see `HasSpecialGetPositionOfWord` in
+  // `VocabularyConstraints.h`).
+  template <typename String, typename Comp>
+  std::pair<uint64_t, uint64_t> getPositionOfWord(const String& word,
+                                                  Comp comp) const {
+    return std::visit(
+        [&word, &comp, this](auto& vocab) {
+          using T = std::decay_t<decltype(vocab)>;
+          if constexpr (HasSpecialGetPositionOfWord<T>) {
+            return vocab.getPositionOfWord(word, std::move(comp));
+          } else {
+            // If a vocabulary does not require a special implementation for
+            // `getPositionOfWord`, we can compute the result using
+            // `lower_bound`. When adding new vocabulary types, ensure the
+            // correct semantics here by deciding between adding the class to
+            // `HasSpecialGetPositionOfWord` or `HasDefaultGetPositionOfWord`.
+            static_assert(HasDefaultGetPositionOfWord<T>);
+            return vocab.lower_bound(word, comp)
+                .positionOfWord(word)
+                .value_or(std::pair<uint64_t, uint64_t>{size(), size()});
+          }
+        },
+        vocab_);
+  }
+
+  // Retrieve `GeometryInfo` from an underlying vocabulary, if it is a
+  // `GeoVocabulary`.
+  std::optional<ad_utility::GeometryInfo> getGeoInfo(uint64_t index) const {
+    return std::visit(
+        [&](const auto& vocab) -> std::optional<ad_utility::GeometryInfo> {
+          using T = std::decay_t<decltype(vocab)>;
+          // For more details, please see the definition of these concepts
+          // in `VocabularyConstraints.h`.
+          if constexpr (MaybeProvidesGeometryInfo<T>) {
+            return vocab.getGeoInfo(index);
+          } else {
+            static_assert(NeverProvidesGeometryInfo<T>);
+            return std::nullopt;
+          }
+        },
+        vocab_);
+  }
+
+  // Checks if any of the underlying vocabularies is a `GeoVocabulary`.
+  bool isGeoInfoAvailable() const {
+    return std::visit(
+        [](const auto& vocab) {
+          using T = std::decay_t<decltype(vocab)>;
+          // For more details, please see the definition of these concepts
+          // in `VocabularyConstraints.h`.
+          if constexpr (MaybeProvidesGeometryInfo<T>) {
+            return vocab.isGeoInfoAvailable();
+          } else {
+            static_assert(NeverProvidesGeometryInfo<T>);
+            return false;
+          }
+        },
+        vocab_);
+  }
+
+  // The files that a vocabulary with the given `type` consists of, as suffixes
+  // of its base filename (see `FileSuffixes`).
+  static FileSuffixes fileSuffixes(VocabularyType type);
+
+  // Create a `WordWriter` that will create a vocabulary with the given `type`
+  // at the given `filename`. Throw for a `type` with holes (see
+  // `VocabularyInMemoryBinSearch`), which cannot be built word by word.
+  static std::unique_ptr<WordWriterBase> makeDiskWriterPtr(
+      const std::string& filename, VocabularyType type);
+
+  // Same as above, but the `VocabularyType` is the currently active type of
+  // `this`.
+  std::unique_ptr<WordWriterBase> makeDiskWriterPtr(
+      const std::string& filename) const;
+
+  // Create the `ParallelWordWriterBase` (see `index/vocabulary/
+  // VocabularyTypes.h`) that will create a vocabulary of the currently active
+  // type at the given `filename`. Throw for a type with holes, see
+  // `makeDiskWriterPtr`.
+  std::unique_ptr<ParallelWordWriterBase> makeParallelWriterPtr(
+      const std::string& filename) const;
+
+  // Generic serialization support - delegates to the active variant.
+  AD_SERIALIZE_FRIEND_FUNCTION(PolymorphicVocabulary) {
+    std::visit([&serializer](auto& vocab) { serializer | vocab; }, arg.vocab_);
+  }
+
+ private:
+  // The common implementation of the two `applyToZeroCopyCapableVocabulary`
+  // overloads above. `self` is a deduced (possibly `const`) reference to
+  // `*this`, so that a single implementation serves both of them.
+  template <typename Self, typename Function>
+  static void applyToZeroCopyCapableVocabularyImpl(Self& self,
+                                                   std::string_view operation,
+                                                   Function function) {
+    std::visit(
+        [&function, &operation](auto& vocab) {
+          // Only those alternatives that support zero-copy (in-memory,
+          // uncompressed or compressed) can be handled, the others throw.
+          if constexpr (VocabularySupportsZeroCopy<
+                            std::decay_t<decltype(vocab)>>) {
+            function(vocab);
+          } else {
+            AD_THROW(absl::StrCat(
+                operation,
+                " a zero-copy blob is only supported for the in-memory "
+                "(uncompressed or compressed) vocabulary implementations"));
+          }
+        },
+        self.vocab_);
+  }
+};
+
+#endif  // QLEVER_SRC_INDEX_VOCABULARY_POLYMORPHICVOCABULARY_H

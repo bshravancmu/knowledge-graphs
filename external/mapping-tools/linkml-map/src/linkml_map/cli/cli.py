@@ -1,0 +1,1006 @@
+"""Command line interface for linkml-map."""
+
+import logging
+import sys
+from pathlib import Path
+from typing import Any
+
+import click
+import yaml
+from linkml_runtime import SchemaView
+from more_itertools import chunked
+
+from linkml_map.compiler.markdown_compiler import MarkdownCompiler
+from linkml_map.compiler.python_compiler import PythonCompiler
+from linkml_map.inference.inverter import TransformationSpecificationInverter
+from linkml_map.inference.schema_mapper import SchemaMapper
+from linkml_map.loaders import DataLoader
+from linkml_map.transformer.engine import transform_spec
+from linkml_map.transformer.errors import TransformationError
+from linkml_map.transformer.object_transformer import ObjectTransformer
+from linkml_map.utils.extensions import ExtensionError, load_extensions
+from linkml_map.writers import (
+    EXTENSION_FORMAT_MAP,
+    MultiStreamWriter,
+    OutputFormat,
+    StreamWriter,
+    make_stream_writer,
+)
+
+__all__ = [
+    "main",
+]
+
+# CLI options
+output_option = click.option("-o", "--output", help="Output file.")
+schema_option = click.option("-s", "--schema", help="Path to source schema.")
+transformer_specification_option = click.option(
+    "-T",
+    "--transformer-specification",
+    multiple=True,
+    help="Path to transformer specification file or directory.  Can be repeated.",
+)
+target_schema_option = click.option(
+    "--target-schema", help="Path to target schema (required for nested object_derivations)."
+)
+entity_option = click.option(
+    "--entity",
+    help="Only process class_derivations matching this class name.",
+)
+
+logger = logging.getLogger(__name__)
+
+
+@click.group()
+@click.option("-v", "--verbose", count=True, help="Increase log verbosity; repeat for debug.")
+@click.option("-q", "--quiet", is_flag=True, help="Suppress warnings; only report errors.")
+# @click.version_option(__version__)
+def main(verbose: int, quiet: bool) -> None:
+    """CLI for linkml-map."""
+    logger = logging.getLogger()
+    if verbose >= 2:
+        logger.setLevel(level=logging.DEBUG)
+    elif verbose == 1:
+        logger.setLevel(level=logging.INFO)
+    else:
+        logger.setLevel(level=logging.WARNING)
+    if quiet:
+        logger.setLevel(level=logging.ERROR)
+    logger.info(f"Logger {logger.name} set to level {logger.level}")
+
+
+@main.command()
+@output_option
+@transformer_specification_option
+@schema_option
+@target_schema_option
+@entity_option
+@click.option("--source-type", help="Source type/class name for the input data.")
+@click.option(
+    "--unrestricted-eval/--no-unrestricted-eval",
+    default=False,
+    show_default=True,
+    help="Allow unrestricted eval of python expressions.",
+)
+@click.option(
+    "--strict/--no-strict",
+    default=False,
+    show_default=True,
+    help=(
+        "Raise an error when an expression references a name that is not a slot "
+        "on the source class. Recommended for real data transforms; the default "
+        "warns and returns None for backward compatibility."
+    ),
+)
+@click.option(
+    "--output-format",
+    "-f",
+    type=click.Choice(["yaml", "json", "jsonl", "tsv", "csv", "parquet", "duckdb"]),
+    default=None,
+    help="Output format. Defaults to yaml for single objects, or inferred from output file extension.",
+)
+@click.option(
+    "--chunk-size",
+    type=int,
+    default=1000,
+    show_default=True,
+    help="Number of records to process per chunk (for streaming output).",
+)
+@click.option(
+    "--table-name",
+    default=None,
+    help="Table name for DuckDB output. Defaults to the output file's stem.",
+)
+@click.option(
+    "-O",
+    "--additional-output",
+    multiple=True,
+    help="Additional output files. Format inferred from extension. Can be repeated.",
+)
+@click.option(
+    "--continue-on-error",
+    is_flag=True,
+    default=False,
+    help="Continue processing when a row fails to transform. Report errors at end.",
+)
+@click.option(
+    "--emit-spec",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    help="Write the resolved (merged + filtered) spec to this file path as a side-effect.",
+)
+@click.option(
+    "-F",
+    "--functions",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Python file containing functions tagged with ``@safe_function``. "
+        "Their names are merged into the expression eval namespace. Repeatable."
+    ),
+)
+@click.argument("input_data")
+def map_data(
+    input_data: str,
+    schema: str,
+    source_type: str | None,
+    transformer_specification: tuple[str, ...],
+    output: str | None,
+    output_format: str | None,
+    chunk_size: int,
+    table_name: str | None,
+    additional_output: tuple,
+    continue_on_error: bool = False,
+    target_schema: str | None = None,
+    entity: str | None = None,
+    emit_spec: str | None = None,
+    **kwargs: dict[str, Any],
+) -> None:
+    """
+    Map data from a source schema to a target schema using a transformation specification.
+
+    INPUT_DATA can be:
+      - A single YAML/JSON file (original behavior)
+      - A single TSV/CSV file (each row is transformed)
+      - A directory containing TSV/CSV/YAML/JSON files (multi-file transform)
+
+    For directory input, each file should be named after the source type
+    (e.g., Person.tsv for Person instances).
+
+    Examples:
+        # Single YAML file (original behavior)
+        linkml-map map-data -T transform.yaml -s schema.yaml data.yaml
+
+        # Multiple spec files merged at load time
+        linkml-map map-data -T enums.yaml -T classes.yaml -s schema.yaml data/
+
+        # Directory of spec files
+        linkml-map map-data -T specs/ -s schema.yaml data/
+
+        # Filter to a single entity class
+        linkml-map map-data -T specs/ --entity Person -s schema.yaml data/
+
+        # Multi-output: write TSV, JSON, and JSONL simultaneously
+        linkml-map map-data -T transform.yaml -s schema.yaml -f jsonl -O out.tsv -O out.json input.tsv
+
+    """
+    logger.info(f"Transforming {input_data} conforming to {schema} using {transformer_specification}")
+
+    function_paths = kwargs.pop("functions", ())
+    if function_paths:
+        try:
+            kwargs["extension_functions"] = load_extensions(function_paths)
+        except ExtensionError as err:
+            raise click.ClickException(str(err)) from err
+
+    input_path = Path(input_data)
+
+    # Determine output format
+    if output_format is None:
+        if output:
+            ext = Path(output).suffix.lower()
+            fmt = EXTENSION_FORMAT_MAP.get(ext, OutputFormat.YAML)
+            output_format = fmt.value
+        else:
+            output_format = "yaml"
+
+    # Check if input is tabular or directory
+    is_tabular = input_path.suffix.lower() in (".tsv", ".csv")
+    is_directory = input_path.is_dir()
+
+    if is_tabular or is_directory:
+        # Use streaming transformation for tabular/directory input
+        _map_data_streaming(
+            input_path=input_path,
+            schema=schema,
+            source_type=source_type,
+            transformer_specification=transformer_specification,
+            output=output,
+            output_format=output_format,
+            chunk_size=chunk_size,
+            table_name=table_name,
+            additional_output=additional_output,
+            target_schema=target_schema,
+            continue_on_error=continue_on_error,
+            entity=entity,
+            emit_spec=emit_spec,
+            **kwargs,
+        )
+    else:
+        # Original single-object transformation
+        _map_data_single(
+            input_data=input_data,
+            schema=schema,
+            source_type=source_type,
+            transformer_specification=transformer_specification,
+            output=output,
+            output_format=output_format,
+            table_name=table_name,
+            target_schema=target_schema,
+            continue_on_error=continue_on_error,
+            entity=entity,
+            emit_spec=emit_spec,
+            **kwargs,
+        )
+
+
+def _load_specs(tr: ObjectTransformer, transformer_specification: tuple[str, ...]) -> None:
+    """Load one or more transformer specification files into the transformer."""
+    tr.load_transformer_specifications(transformer_specification)
+
+
+def _pre_flight_validate(
+    tr: ObjectTransformer,
+    *,
+    source_schema: str | None = None,
+    target_schema: str | None = None,
+) -> None:
+    """Surface static spec checks before performing a CLI action.
+
+    Replays pre-normalize scan messages captured at spec-load time and runs
+    reference resolution, printing all findings to stderr. **Does not gate** —
+    findings are informational only; the runtime remains the authoritative
+    arbiter of whether a transformation can actually execute. Users who want
+    fail-fast behavior should run ``validate-spec --strict`` separately.
+
+    Reading scan messages from ``tr.spec_messages`` rather than re-scanning
+    the post-migration spec means deprecations whose source fields were
+    cleared by normalization (e.g., ``object_derivations``, PV ``sources``)
+    are still surfaced here. Reuses ``tr.source_schemaview`` and
+    ``tr.target_schemaview`` when set, avoiding a duplicate load of large
+    or remote schemas.
+    """
+    from linkml_map.validator import ValidationMessage, validate_spec_semantics
+
+    if tr.specification is None:
+        return
+
+    messages = list(tr.spec_messages)
+
+    # Validate the *derived* spec when a source schema is available, so the
+    # semantic checks observe synthesized joins rather than predicting them.
+    # Synthesis can fail loud (e.g. an un-keyable cross-table reference); surface
+    # that as a finding instead of crashing pre-flight, and fall back to the raw
+    # spec for the remaining checks.
+    spec = tr.specification
+    if tr.source_schemaview is not None:
+        try:
+            derived = tr.derived_specification
+        except (ValueError, SyntaxError) as err:
+            messages.append(ValidationMessage(severity="error", path="", message=str(err)))
+            derived = None
+        if derived is not None:
+            spec = derived
+
+    spec_dict = spec.model_dump(exclude_none=True)
+    messages.extend(
+        validate_spec_semantics(
+            spec_dict,
+            source_schema=source_schema,
+            target_schema=target_schema,
+            source_schemaview=tr.source_schemaview,
+            target_schemaview=tr.target_schemaview,
+        )
+    )
+
+    for msg in messages:
+        click.echo(str(msg), err=True)
+
+
+def _filter_spec_to_entity(tr: ObjectTransformer, entity: str | None) -> None:
+    """Restrict ``tr.specification.class_derivations`` to the named entity in place.
+
+    A no-op when *entity* is ``None``. This is the single source of truth for
+    --entity filtering: applied once on the loaded spec, both ``map_object``
+    (single-object) and ``transform_spec`` (streaming) then see only the
+    matching derivation. Raises if no derivation matches so the failure mode
+    is loud rather than silently producing zero output.
+    """
+    if not entity or tr.specification is None:
+        return
+    matched = [cd for cd in tr.specification.class_derivations if cd.name == entity]
+    if not matched:
+        names = ", ".join(cd.name for cd in tr.specification.class_derivations) or "(none)"
+        msg = f"--entity {entity!r} did not match any class_derivation. Available: {names}"
+        raise click.ClickException(msg)
+    tr.specification.class_derivations = matched
+    # Mutating the spec invalidates any derived spec already computed (e.g. by
+    # pre-flight validation), so it is rebuilt from the filtered spec on next access.
+    tr._derived_specification = None
+
+
+def _require_identifiers(tr: ObjectTransformer, continue_on_error: bool) -> int:
+    """Check that every class derivation derives or mints its target identifier.
+
+    Runs before any output is opened.  Normally a problem refuses the run.  Under
+    ``--continue-on-error``, whose purpose is to surface every error even at the cost of
+    bad output, each problem is reported once and the records are emitted without ids.
+
+    :param tr: The transformer, after ``--entity`` filtering.
+    :param continue_on_error: Whether the run reports errors instead of stopping.
+    :return: The number of problems reported, to count toward the exit status.
+    :raises click.ClickException: Listing every problem, unless continuing on error.
+    """
+    problems = tr.missing_identifiers()
+    if problems and not continue_on_error:
+        raise click.ClickException("\n".join(problems))
+    for problem in problems:
+        click.echo(f"  - {problem}", err=True)
+    tr.emit_without_identifiers = bool(problems)
+    return len(problems)
+
+
+def _emit_spec_to_file(tr: ObjectTransformer, emit_spec: str) -> None:
+    """Write the resolved specification (after any --entity filtering) to a file."""
+    from linkml_runtime.dumpers import yaml_dumper
+
+    with open(emit_spec, "w", encoding="utf-8") as f:
+        f.write(yaml_dumper.dumps(tr.specification))
+    logger.info("Wrote resolved spec to %s", emit_spec)
+
+
+def _map_data_single(
+    input_data: str,
+    schema: str,
+    source_type: str | None,
+    transformer_specification: tuple[str, ...],
+    output: str | None,
+    output_format: str,
+    table_name: str | None = None,
+    target_schema: str | None = None,
+    continue_on_error: bool = False,
+    entity: str | None = None,
+    emit_spec: str | None = None,
+    **kwargs: dict[str, Any],
+) -> None:
+    """Original single-object transformation logic."""
+    tr = ObjectTransformer(**kwargs)
+    tr.source_schemaview = SchemaView(schema)
+    _load_specs(tr, transformer_specification)
+    if target_schema:
+        tr.target_schemaview = SchemaView(target_schema)
+
+    _pre_flight_validate(tr, source_schema=schema, target_schema=target_schema)
+    _filter_spec_to_entity(tr, entity)
+    identifier_errors = _require_identifiers(tr, continue_on_error)
+    if emit_spec:
+        _emit_spec_to_file(tr, emit_spec)
+
+    # Load input data (YAML or JSON)
+    with open(input_data) as file:
+        content = file.read()
+        try:
+            input_obj = yaml.safe_load(content)
+        except yaml.YAMLError:
+            import json
+
+            input_obj = json.loads(content)
+
+    tr.index(input_obj, source_type)
+    try:
+        tr_obj = tr.map_object(input_obj, source_type)
+    except TransformationError as err:
+        if not continue_on_error:
+            raise
+        click.echo("\n1 transformation error:", err=True)
+        click.echo(f"  - {err}", err=True)
+        raise SystemExit(1) from err
+    if output_format in COLUMNAR_FORMATS:
+        _dump_columnar(tr_obj, output_format, output, table_name)
+    else:
+        dump_output(tr_obj, output_format, output)
+    if identifier_errors:
+        click.echo(f"\n{identifier_errors} transformation error(s)", err=True)
+        raise SystemExit(1)
+
+
+#: Formats whose artifact is a binary file built by DuckDB, so they cannot go to stdout
+#: and are not handled by the text-oriented ``dump_output``.
+COLUMNAR_FORMATS = frozenset({OutputFormat.PARQUET.value, OutputFormat.DUCKDB.value})
+
+
+def _dump_columnar(
+    tr_obj: dict[str, Any] | list[Any],
+    output_format: str,
+    output: str | None,
+    table_name: str | None,
+) -> None:
+    """Write a single transformed object (or list of them) as Parquet or DuckDB.
+
+    The single-object path has no chunk stream, so the result is handed to the same
+    writers the streaming path uses as one chunk.  Without this, inferring ``parquet``
+    from an output extension on single-object input reached ``dump_output`` and raised
+    ``NotImplementedError``.
+
+    :param tr_obj: The transformed object, or a list of them.
+    :param output_format: ``parquet`` or ``duckdb``.
+    :param output: Output file path.
+    :param table_name: Table name for DuckDB output.
+    :raises click.ClickException: If no output path was given.
+    """
+    if not output:
+        msg = f"{output_format} output requires an output file; pass -o/--output FILE"
+        raise click.ClickException(msg)
+    rows = tr_obj if isinstance(tr_obj, list) else [tr_obj]
+    writer = make_stream_writer(OutputFormat(output_format), table_name=table_name)
+    MultiStreamWriter([(writer, Path(output))]).write_all(iter([rows]))
+
+
+def _build_additional_outputs(
+    additional_output: tuple,
+    table_name: str | None = None,
+) -> list[tuple[StreamWriter, Path]]:
+    """Build (StreamWriter, Path) pairs for additional -O outputs.
+
+    :param additional_output: Tuple of file path strings from the CLI.
+    :param table_name: Table name for DuckDB outputs, applied to every DuckDB writer this
+        command builds so ``-O out.duckdb --table-name X`` names the table consistently
+        with the primary output.
+    :return: List of (StreamWriter, Path) tuples.
+    :raises click.ClickException: If an extension cannot be mapped to a format.
+    """
+    result = []
+    for extra_path_str in additional_output:
+        extra_path = Path(extra_path_str)
+        ext = extra_path.suffix.lower()
+        extra_fmt = EXTENSION_FORMAT_MAP.get(ext)
+        if extra_fmt is None:
+            msg = f"Cannot infer output format from extension: {ext}"
+            raise click.ClickException(msg)
+        result.append((make_stream_writer(extra_fmt, table_name=table_name), extra_path))
+    return result
+
+
+def _map_data_streaming(
+    input_path: Path,
+    schema: str,
+    source_type: str | None,
+    transformer_specification: tuple[str, ...],
+    output: str | None,
+    output_format: str,
+    chunk_size: int,
+    table_name: str | None = None,
+    additional_output: tuple = (),
+    target_schema: str | None = None,
+    continue_on_error: bool = False,
+    entity: str | None = None,
+    emit_spec: str | None = None,
+    **kwargs: dict[str, Any],
+) -> None:
+    """Streaming transformation for tabular/directory input."""
+    # Initialize transformer
+    tr = ObjectTransformer(**kwargs)
+    tr.source_schemaview = SchemaView(schema)
+    _load_specs(tr, transformer_specification)
+    if target_schema:
+        tr.target_schemaview = SchemaView(target_schema)
+
+    _pre_flight_validate(tr, source_schema=schema, target_schema=target_schema)
+    _filter_spec_to_entity(tr, entity)
+    identifier_errors = _require_identifiers(tr, continue_on_error)
+    if emit_spec:
+        _emit_spec_to_file(tr, emit_spec)
+
+    # Initialize data loader (schema enables type-preserving coercion for TSV/CSV)
+    data_loader = DataLoader(input_path, schemaview=tr.source_schemaview)
+
+    # When continue-on-error is enabled, report each row error as it occurs so
+    # nothing is lost if a later write crashes; a count drives the exit code.
+    error_count = identifier_errors
+
+    def report_error(err: TransformationError) -> None:
+        nonlocal error_count
+        error_count += 1
+        click.echo(f"  - {err}", err=True)
+
+    on_error = report_error if continue_on_error else None
+
+    # Create transform iterator and chunk it
+    transform_iter = transform_spec(tr, data_loader, source_type, on_error=on_error)
+    chunks = chunked(transform_iter, chunk_size)
+
+    # Resolve output format
+    try:
+        fmt = OutputFormat(output_format)
+    except ValueError:
+        msg = f"Unsupported output format: {output_format}"
+        raise click.ClickException(msg) from None
+
+    if output_format in COLUMNAR_FORMATS and not output:
+        msg = f"{output_format} output requires an output file; pass -o/--output FILE"
+        raise click.ClickException(msg)
+
+    extra_outputs = _build_additional_outputs(additional_output, table_name) if additional_output else []
+
+    # Validate no duplicate paths between primary and additional outputs
+    if extra_outputs and output:
+        primary_resolved = Path(output).resolve()
+        extra_paths = {p.resolve() for _, p in extra_outputs}
+        if primary_resolved in extra_paths:
+            msg = f"Primary output path duplicated in -O: {output}"
+            raise click.ClickException(msg)
+
+    primary_target = Path(output) if output else sys.stdout
+    all_outputs = [(make_stream_writer(fmt, table_name=table_name), primary_target), *extra_outputs]
+    MultiStreamWriter(all_outputs).write_all(chunks)
+
+    # Errors were already printed as they occurred; a mid-stream crash would
+    # have propagated before reaching here. Reached only on clean completion.
+    if error_count:
+        click.echo(f"\n{error_count} transformation error(s)", err=True)
+        raise SystemExit(1)
+
+
+@main.command()
+@output_option
+@transformer_specification_option
+@schema_option
+@click.option("--target", default="python", show_default=True, help="Target representation.")
+def compile(
+    schema: str,
+    transformer_specification: tuple[str, ...],
+    target: str,
+    output: str | None,
+    **kwargs: Any,
+) -> None:
+    """
+    Compiles a schema to another representation.
+
+    Example:
+        linkml-map compile -T X-to-Y-tr.yaml -s X.yaml
+
+    """
+    logger.info(f"Compiling {transformer_specification} with {schema}")
+    sv = SchemaView(schema)
+    compiler_args = {"source_schemaview": sv}
+    if target == "python":
+        compiler = PythonCompiler(**compiler_args)
+    elif target == "markdown":
+        compiler = MarkdownCompiler(**compiler_args)
+    else:
+        msg = f"Compiler {target} not implemented"
+        raise NotImplementedError(msg)
+    tr = ObjectTransformer()
+    tr.source_schemaview = sv
+    _load_specs(tr, transformer_specification)
+    _pre_flight_validate(tr, source_schema=schema)
+    result = compiler.compile(tr.derived_specification)
+    # dump as-is, no encoding
+    dump_output(result.serialization, None, output)
+
+
+@main.command()
+@output_option
+@transformer_specification_option
+@click.argument("schema")
+def derive_schema(
+    schema: str,
+    transformer_specification: tuple[str, ...],
+    output: str | None,
+    **kwargs: Any,
+) -> None:
+    """
+    Derive a schema from a source schema and a transformation specification.
+
+    This can be thought of as "copying" the source to a target, using the transformation
+    specification as a "patch"
+
+    Notes:
+        the implementation is currently incomplete; the derived schema may not be valid
+        linkml, e.g. there may be "dangling" references.
+
+    Example:
+        linkml-map derive-schema -T transform/personinfo-to-agent.transform.yaml source/personinfo.yaml
+
+    """
+    logger.info(f"Transforming {schema} using {transformer_specification}")
+    tr = ObjectTransformer()
+    _load_specs(tr, transformer_specification)
+    _pre_flight_validate(tr, source_schema=schema)
+    mapper = SchemaMapper(transformer=tr)
+    mapper.source_schemaview = SchemaView(schema)
+    target_schema = mapper.derive_schema()
+    dump_output(target_schema, "yaml", output)
+
+
+@main.command()
+@output_option
+@transformer_specification_option
+@click.option("--strict/--no-strict", default=True, show_default=True, help="Strict mode.")
+@click.argument("schema")
+def invert(
+    schema: str,
+    transformer_specification: tuple[str, ...],
+    output: str | None,
+    **kwargs: Any,
+) -> None:
+    """
+    Invert a transformation specification.
+
+    Example:
+        linkml-map invert -T transform/personinfo-to-agent.transform.yaml source/personinfo.yaml
+
+    """
+    logger.info(f"Inverting {transformer_specification} using {schema} as source")
+    tr = ObjectTransformer()
+    _load_specs(tr, transformer_specification)
+    _pre_flight_validate(tr, source_schema=schema)
+    inverter = TransformationSpecificationInverter(
+        source_schemaview=SchemaView(schema),
+        **kwargs,
+    )
+    inverted_spec = inverter.invert(tr.specification)
+    dump_output(inverted_spec, "yaml", output)
+
+
+@main.command(name="validate-spec")
+@entity_option
+@click.option(
+    "--merge",
+    is_flag=True,
+    default=False,
+    help="Merge all spec files into one before validating.  Supports directories.",
+)
+@click.option(
+    "--emit-spec",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Write the resolved (merged + filtered) spec to a file path.  Use '-' for stdout.",
+)
+@click.argument("spec_files", nargs=-1, required=True, type=click.Path(exists=True))
+@click.option(
+    "--source-schema",
+    type=click.Path(exists=True),
+    help="Path to source LinkML schema. Overrides spec auto-detection. Use this for "
+    "specs with identifier-style source_schema values (auto-detect supports paths and URLs only).",
+)
+@click.option(
+    "--target-schema",
+    type=click.Path(exists=True),
+    help="Path to target LinkML schema. Overrides spec auto-detection. Use this for "
+    "specs with identifier-style target_schema values (auto-detect supports paths and URLs only).",
+)
+@click.option("--strict", is_flag=True, help="Treat warnings as errors.")
+@click.option("--no-warnings", is_flag=True, help="Suppress warning output.")
+@click.option(
+    "--list-entities",
+    is_flag=True,
+    default=False,
+    help="Print the class_derivation names from the merged spec (one per line, "
+    "sorted) and exit, skipping schema-binding validation.  For discovery by "
+    "external orchestrators before per-entity runs.",
+)
+def validate_spec_cmd(
+    spec_files: tuple[str, ...],
+    source_schema: str | None = None,
+    target_schema: str | None = None,
+    strict: bool = False,
+    no_warnings: bool = False,
+    entity: str | None = None,
+    merge: bool = False,
+    emit_spec: str | None = None,
+    list_entities: bool = False,
+) -> None:
+    """Validate transformation specification YAML files.
+
+    Checks that each file conforms to the TransformationSpecification schema.
+    With --source-schema and/or --target-schema, also checks that class names,
+    slot names, and populated_from references resolve against the schemas.
+    Schemas are auto-detected from the spec's source_schema/target_schema
+    fields when not provided explicitly.
+
+    Exits with code 1 if any file has validation errors.
+
+    Example:
+
+        linkml-map validate-spec my-transform.yaml
+
+        linkml-map validate-spec --source-schema src.yaml --target-schema tgt.yaml spec.yaml
+
+        linkml-map validate-spec specs/*.yaml
+
+        linkml-map validate-spec --merge --entity Person --emit-spec resolved.yaml specs/
+
+        linkml-map validate-spec --list-entities specs/
+    """
+    if list_entities:
+        from linkml_map.utils.spec_merge import class_derivation_names
+
+        merged = _merge_or_exit(spec_files)
+        for name in sorted(set(class_derivation_names(merged))):
+            click.echo(name)
+        return
+
+    if merge:
+        _validate_spec_merged(
+            spec_files,
+            entity=entity,
+            emit_spec=emit_spec,
+            source_schema=source_schema,
+            target_schema=target_schema,
+            strict=strict,
+            no_warnings=no_warnings,
+        )
+    else:
+        if entity or emit_spec:
+            click.echo("--entity and --emit-spec require --merge", err=True)
+            raise SystemExit(1)
+        _validate_spec_individual(
+            spec_files,
+            source_schema=source_schema,
+            target_schema=target_schema,
+            strict=strict,
+            no_warnings=no_warnings,
+        )
+
+
+def _validate_spec_individual(
+    spec_files: tuple[str, ...],
+    *,
+    source_schema: str | None = None,
+    target_schema: str | None = None,
+    strict: bool = False,
+    no_warnings: bool = False,
+) -> None:
+    """Validate each spec file independently.
+
+    Directories are expanded to their contained YAML files.
+    """
+    from linkml_map.utils.spec_merge import resolve_spec_paths
+    from linkml_map.validator import validate_spec_file
+
+    resolved = resolve_spec_paths(spec_files)
+    if not resolved:
+        click.echo("No YAML files found in the provided paths", err=True)
+        raise SystemExit(1)
+
+    has_errors = False
+    has_warnings = False
+    for path in resolved:
+        messages = validate_spec_file(
+            str(path),
+            source_schema=source_schema,
+            target_schema=target_schema,
+            strict=strict,
+        )
+        errors = [m for m in messages if m.severity == "error"]
+        warnings = [m for m in messages if m.severity == "warning"]
+
+        if errors:
+            has_errors = True
+            click.echo(f"{path}:", err=True)
+            for msg in errors:
+                click.echo(f"  {msg}", err=True)
+
+        if warnings:
+            has_warnings = True
+        if warnings and not no_warnings:
+            if not errors:
+                click.echo(f"{path}:", err=True)
+            for msg in warnings:
+                click.echo(f"  {msg}", err=True)
+
+        if not errors and not warnings:
+            click.echo(f"{path}: ok")
+        elif not errors:
+            click.echo(f"{path}: ok (with warnings)")
+
+    if has_errors or (strict and has_warnings):
+        raise SystemExit(1)
+
+
+def _merge_or_exit(spec_files: tuple[str, ...]) -> dict[str, Any]:
+    """Merge spec files, reporting expected load/merge failures cleanly.
+
+    Catches :class:`SpecMergeError` (no spec files found, conflicting
+    derivations) and exits with code 1 and the message on stderr, rather
+    than dumping a traceback for a condition we deliberately raise. Any
+    other exception propagates, since it signals an actual bug.
+    """
+    from linkml_map.utils.spec_merge import SpecMergeError, load_and_merge_specs
+
+    try:
+        return load_and_merge_specs(spec_files)
+    except SpecMergeError as err:
+        click.echo(str(err), err=True)
+        raise SystemExit(1) from err
+
+
+def _validate_spec_merged(
+    spec_files: tuple[str, ...],
+    *,
+    entity: str | None = None,
+    emit_spec: str | None = None,
+    source_schema: str | None = None,
+    target_schema: str | None = None,
+    strict: bool = False,
+    no_warnings: bool = False,
+) -> None:
+    """Merge spec files, validate the result, optionally emit."""
+    from linkml_map.validator import validate_spec
+
+    merged = _merge_or_exit(spec_files)
+
+    # Apply entity filter before validation so we only validate what
+    # map-data --entity would actually execute.
+    if entity:
+        cd = merged.get("class_derivations")
+        if isinstance(cd, list):
+            merged["class_derivations"] = [
+                item
+                for item in cd
+                if isinstance(item, dict)
+                and (
+                    item.get("name") == entity  # expanded format
+                    or (len(item) == 1 and entity in item)  # compact-key format
+                )
+            ]
+        elif isinstance(cd, dict):
+            merged["class_derivations"] = {k: v for k, v in cd.items() if k == entity}
+
+    messages = validate_spec(
+        merged,
+        source_schema=source_schema,
+        target_schema=target_schema,
+        strict=strict,
+    )
+    errors = [m for m in messages if m.severity == "error"]
+    warnings = [m for m in messages if m.severity == "warning"]
+
+    if errors:
+        click.echo("Merged spec validation errors:", err=True)
+        for msg in errors:
+            click.echo(f"  {msg}", err=True)
+
+    if warnings and not no_warnings:
+        click.echo("Merged spec validation warnings:", err=True)
+        for msg in warnings:
+            click.echo(f"  {msg}", err=True)
+
+    if errors:
+        raise SystemExit(1)
+
+    if warnings:
+        click.echo("Merged spec: ok (with warnings)")
+    else:
+        click.echo("Merged spec: ok")
+
+    if strict and warnings:
+        raise SystemExit(1)
+
+    if emit_spec:
+        from linkml_map.spec_normalizer import normalize_spec
+
+        normalize_spec(merged)
+        from linkml_map.datamodel.transformer_model import TransformationSpecification
+
+        spec = TransformationSpecification(**merged)
+        from linkml_runtime.dumpers import yaml_dumper
+
+        spec_yaml = yaml_dumper.dumps(spec)
+        if emit_spec == "-":
+            click.echo(spec_yaml)
+        else:
+            with open(emit_spec, "w", encoding="utf-8") as f:
+                f.write(spec_yaml)
+            click.echo(f"Wrote resolved spec to {emit_spec}")
+
+
+def _strip_empty(obj: Any) -> Any:
+    """Recursively drop ``None``, empty lists and empty dicts, keeping the outer container.
+
+    Matches what linkml's ``yaml_dumper`` removes from plain data, without its conversion
+    of decimals to floats.  A stopgap until one output policy covers every writer (#354).
+
+    >>> _strip_empty({"a": [], "b": {"c": None}, "d": [{}, 1]})
+    {'d': [1]}
+    """
+    if isinstance(obj, dict):
+        stripped = ((k, _strip_empty(v)) for k, v in obj.items())
+        return {k: v for k, v in stripped if not _is_empty(v)}
+    if isinstance(obj, list):
+        return [v for v in map(_strip_empty, obj) if not _is_empty(v)]
+    return obj
+
+
+def _is_empty(value: Any) -> bool:
+    """Whether *value* is ``None`` or an empty list or dict."""
+    return value is None or (isinstance(value, dict | list) and not value)
+
+
+def dump_output(
+    output_data: dict[str, Any] | list[Any] | str,
+    output_format: str | None = None,
+    file_path: str | None = None,
+) -> None:
+    """
+    Dump output to a file or stdout.
+
+    :param output_data: data to dump
+    :type output_data: dict[str, Any] | list[Any] | str
+    :param output_format: format for dumped data (yaml, json, jsonl, tsv, csv)
+    :type output_format: Optional[str], optional
+    :param file_path: path to an output file, defaults to None
+    :type file_path: Optional[str], optional
+    """
+    from decimal import Decimal
+
+    from flatten_dict import flatten
+    from flatten_dict.reducers import make_reducer
+
+    if output_data is None:
+        msg = "No output to be printed"
+        raise ValueError(msg)
+
+    from linkml_map.utils.serialization import dump_yaml, dumps_json, format_decimal
+    from linkml_map.writers.output_streams import _strip_nulls
+
+    text_dump = output_data
+    if output_format == "yaml":
+        if isinstance(output_data, dict | list):
+            text_dump = dump_yaml(_strip_empty(output_data), sort_keys=False)
+        else:
+            from linkml_runtime.dumpers import yaml_dumper
+
+            text_dump = yaml_dumper.dumps(output_data)
+    elif output_format == "json":
+        text_dump = dumps_json(_strip_nulls(output_data), indent=2) + "\n"
+    elif output_format == "jsonl":
+        if isinstance(output_data, list):
+            text_dump = "\n".join(dumps_json(_strip_nulls(item)) for item in output_data) + "\n"
+        else:
+            text_dump = dumps_json(_strip_nulls(output_data)) + "\n"
+    elif output_format in ("tsv", "csv"):
+        separator = "\t" if output_format == "tsv" else ","
+        reducer = make_reducer("__")
+        if isinstance(output_data, list):
+            rows = [flatten(item, reducer=reducer) for item in output_data]
+        else:
+            rows = [flatten(output_data, reducer=reducer)]
+        if rows:
+            headers = list(rows[0].keys())
+            for row in rows[1:]:
+                for k in row:
+                    if k not in headers:
+                        headers.append(k)
+            lines = [separator.join(headers)]
+            for row in rows:
+                cells = (row.get(h, "") for h in headers)
+                lines.append(separator.join(format_decimal(c) if isinstance(c, Decimal) else str(c) for c in cells))
+            text_dump = "\n".join(lines) + "\n"
+        else:
+            text_dump = ""
+    elif output_format:
+        msg = f"Output format {output_format} is not supported"
+        raise NotImplementedError(msg)
+
+    if not file_path:
+        sys.stdout.write(text_dump)
+        return
+
+    with open(file_path, "w", encoding="utf-8") as fh:
+        fh.write(text_dump)
+
+
+if __name__ == "__main__":
+    main()

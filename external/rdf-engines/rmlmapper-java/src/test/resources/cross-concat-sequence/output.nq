@@ -1,0 +1,7 @@
+<http://snf.ch/person/1> <http://schema.org/familyName> "Doe" .
+<http://snf.ch/person/1> <http://schema.org/givenName> "John" .
+<http://snf.ch/person/1> <http://schema.org/memberOf> "http://snf.ch/project/111925" .
+<http://snf.ch/person/1> <http://schema.org/memberOf> "http://snf.ch/project/34468" .
+<http://snf.ch/person/1> <http://schema.org/memberOf> "http://snf.ch/project/55836" .
+<http://snf.ch/person/1> <http://schema.org/memberOf> "http://snf.ch/project/66731" .
+<http://snf.ch/person/1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://schema.org/Person> .

@@ -1,0 +1,15 @@
+[PrefixDeclaration]
+:		http://ontop.inf.unibz.it/test/datatypes#
+xsd:	http://www.w3.org/2001/XMLSchema#
+
+
+[MappingDeclaration] @collection [[
+mappingId	Boolean Types
+target		:boolean-{id} a :Row ; :hasBoolean {type_boolean} . 
+source		select id, type_boolean from "Booleans"
+
+mappingId	Binary Types
+target		:binary-{id} a :Row ; :hasBit {type_bit} ; :hasBinaryVarying {type_bitvarying} . 
+source		select id, type_bit, type_bitvarying from "Binaries"
+]]
+

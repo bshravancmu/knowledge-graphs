@@ -1,0 +1,309 @@
+<entry xmlns:cac="urn:dgpe:names:draft:codice:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc="urn:dgpe:names:draft:codice:schema:xsd:CommonBasicComponents-2"
+       xmlns:cac-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonAggregateComponents-2"
+       xmlns:cbc-place-ext="urn:dgpe:names:draft:codice-place-ext:schema:xsd:CommonBasicComponents-2">
+    <id>https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/6565138</id>
+    <link href="https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&amp;idEvl=IZQ77oJ45x6iEJrVRqloyA%3D%3D"/>
+    <summary type="text">Id licitación: 561770M; Órgano de Contratación: Presidencia de Diputación Provincial de Albacete; Importe: 47272.73 EUR; Estado: RES</summary>
+    <title>Suministro de vehículos usados para servicio del Parque Movil: Una furgoneta de cinco plazas, un furgoneta de seis plazas, un furgoneta de nueve plazas, un todo terreno 4X4.</title>
+    <updated>2021-01-07T10:36:44.003+01:00</updated>
+    <cac-place-ext:ContractFolderStatus>
+        <cbc:ContractFolderID>561770M</cbc:ContractFolderID>
+        <cbc-place-ext:ContractFolderStatusCode languageID="es" listURI="https://contrataciondelestado.es/codice/cl/2.04/SyndicationContractFolderStatusCode-2.04.gc">RES</cbc-place-ext:ContractFolderStatusCode>
+        <cac-place-ext:LocatedContractingParty>
+            <cbc:ContractingPartyTypeCode listURI="http://contrataciondelestado.es/codice/cl/1.04/ContractingAuthorityCode-1.04.gc">3</cbc:ContractingPartyTypeCode>
+            <cac:Party>
+                <cbc:WebsiteURI>http://www.dipualba.es</cbc:WebsiteURI>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="DIR3">L02000002</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">P0200000H</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>Presidencia de Diputación Provincial de Albacete</cbc:Name>
+                </cac:PartyName>
+                <cac:PostalAddress>
+                    <cbc:CityName>Albacete</cbc:CityName>
+                    <cbc:PostalZone>02071</cbc:PostalZone>
+                    <cac:AddressLine>
+                        <cbc:Line>Paseo de la Libertad, 5</cbc:Line>
+                    </cac:AddressLine>
+                    <cac:Country>
+                        <cbc:IdentificationCode listURI="http://docs.oasis-open.org/ubl/os-ubl-2.0/cl/gc/default/CountryIdentificationCode-2.0.gc">ES</cbc:IdentificationCode>
+                        <cbc:Name>España</cbc:Name>
+                    </cac:Country>
+                </cac:PostalAddress>
+                <cac:Contact>
+                    <cbc:Name>Presidencia de Diputación Provincial de Albacete</cbc:Name>
+                    <cbc:Telephone>967595300</cbc:Telephone>
+                    <cbc:Telefax>967520316</cbc:Telefax>
+                    <cbc:ElectronicMail>contratacion@dipualba.es</cbc:ElectronicMail>
+                </cac:Contact>
+            </cac:Party>
+        </cac-place-ext:LocatedContractingParty>
+        <cac:ProcurementProject>
+            <cbc:Name>Suministro de vehículos usados para servicio del Parque Movil: Una furgoneta de cinco plazas, un furgoneta de seis plazas, un furgoneta de nueve plazas, un todo terreno 4X4.</cbc:Name>
+            <cbc:TypeCode listURI="http://contrataciondelestado.es/codice/cl/2.08/ContractCode-2.08.gc">1</cbc:TypeCode>
+            <cbc:SubTypeCode listURI="http://contrataciondelestado.es/codice/cl/1.04/GoodsContractCode-1.04.gc">2</cbc:SubTypeCode>
+            <cac:BudgetAmount>
+                <cbc:EstimatedOverallContractAmount currencyID="EUR">47272.72</cbc:EstimatedOverallContractAmount>
+                <cbc:TotalAmount currencyID="EUR">57200</cbc:TotalAmount>
+                <cbc:TaxExclusiveAmount currencyID="EUR">47272.73</cbc:TaxExclusiveAmount>
+            </cac:BudgetAmount>
+            <cac:RequiredCommodityClassification>
+                <cbc:ItemClassificationCode listURI="http://contrataciondelestado.es/codice/cl/1.04/CPV2007-1.04.gc">34136000</cbc:ItemClassificationCode>
+            </cac:RequiredCommodityClassification>
+            <cac:RequiredCommodityClassification>
+                <cbc:ItemClassificationCode listURI="http://contrataciondelestado.es/codice/cl/1.04/CPV2007-1.04.gc">34113000</cbc:ItemClassificationCode>
+            </cac:RequiredCommodityClassification>
+            <cac:RequiredCommodityClassification>
+                <cbc:ItemClassificationCode listURI="http://contrataciondelestado.es/codice/cl/1.04/CPV2007-1.04.gc">34113200</cbc:ItemClassificationCode>
+            </cac:RequiredCommodityClassification>
+            <cac:RealizedLocation>
+                <cbc:CountrySubentity>Albacete</cbc:CountrySubentity>
+                <cbc:CountrySubentityCode listURI="http://contrataciondelestado.es/codice/cl/2.06/NUTS-2016.gc">ES421</cbc:CountrySubentityCode>
+                <cac:Address>
+                    <cbc:CityName>Albacete</cbc:CityName>
+                    <cbc:PostalZone>02005</cbc:PostalZone>
+                    <cac:Country>
+                        <cbc:IdentificationCode listURI="http://docs.oasis-open.org/ubl/os-ubl-2.0/cl/gc/default/CountryIdentificationCode-2.0.gc">ES</cbc:IdentificationCode>
+                        <cbc:Name>España</cbc:Name>
+                    </cac:Country>
+                </cac:Address>
+            </cac:RealizedLocation>
+            <cac:PlannedPeriod>
+                <cbc:DurationMeasure unitCode="DAY">30</cbc:DurationMeasure>
+            </cac:PlannedPeriod>
+            <cac:ContractExtension>
+                <cac:OptionValidityPeriod>
+                    <cbc:Description>No</cbc:Description>
+                </cac:OptionValidityPeriod>
+            </cac:ContractExtension>
+        </cac:ProcurementProject>
+        <cac:ProcurementProjectLot>
+            <cbc:ID schemeName="ID_LOTE">1</cbc:ID>
+            <cac:ProcurementProject>
+                <cbc:Name>Una furgoneta 5 plazas</cbc:Name>
+                <cac:BudgetAmount>
+                    <cbc:TotalAmount currencyID="EUR">7400</cbc:TotalAmount>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">6115.7</cbc:TaxExclusiveAmount>
+                </cac:BudgetAmount>
+                <cac:RequiredCommodityClassification>
+                    <cbc:ItemClassificationCode listURI="http://contrataciondelestado.es/codice/cl/1.04/CPV2007-1.04.gc">34136000</cbc:ItemClassificationCode>
+                </cac:RequiredCommodityClassification>
+                <cac:RealizedLocation>
+                    <cbc:CountrySubentity>Albacete</cbc:CountrySubentity>
+                    <cbc:CountrySubentityCode listURI="http://contrataciondelestado.es/codice/cl/2.06/NUTS-2016.gc">ES421</cbc:CountrySubentityCode>
+                    <cac:Address>
+                        <cac:Country>
+                            <cbc:IdentificationCode listURI="http://docs.oasis-open.org/ubl/os-ubl-2.0/cl/gc/default/CountryIdentificationCode-2.0.gc">ES</cbc:IdentificationCode>
+                            <cbc:Name>España</cbc:Name>
+                        </cac:Country>
+                    </cac:Address>
+                </cac:RealizedLocation>
+            </cac:ProcurementProject>
+        </cac:ProcurementProjectLot>
+        <cac:ProcurementProjectLot>
+            <cbc:ID schemeName="ID_LOTE">2</cbc:ID>
+            <cac:ProcurementProject>
+                <cbc:Name>Una furgoneta 6 plazas</cbc:Name>
+                <cac:BudgetAmount>
+                    <cbc:TotalAmount currencyID="EUR">14000</cbc:TotalAmount>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">11570.25</cbc:TaxExclusiveAmount>
+                </cac:BudgetAmount>
+                <cac:RequiredCommodityClassification>
+                    <cbc:ItemClassificationCode listURI="http://contrataciondelestado.es/codice/cl/1.04/CPV2007-1.04.gc">34136000</cbc:ItemClassificationCode>
+                </cac:RequiredCommodityClassification>
+                <cac:RealizedLocation>
+                    <cbc:CountrySubentity>Albacete</cbc:CountrySubentity>
+                    <cbc:CountrySubentityCode listURI="http://contrataciondelestado.es/codice/cl/2.06/NUTS-2016.gc">ES421</cbc:CountrySubentityCode>
+                    <cac:Address>
+                        <cac:Country>
+                            <cbc:IdentificationCode listURI="http://docs.oasis-open.org/ubl/os-ubl-2.0/cl/gc/default/CountryIdentificationCode-2.0.gc">ES</cbc:IdentificationCode>
+                            <cbc:Name>España</cbc:Name>
+                        </cac:Country>
+                    </cac:Address>
+                </cac:RealizedLocation>
+            </cac:ProcurementProject>
+        </cac:ProcurementProjectLot>
+        <cac:TenderResult>
+            <cbc:ResultCode listURI="http://contrataciondelestado.es/codice/cl/2.02/TenderResultCode-2.02.gc">8</cbc:ResultCode>
+            <cbc:Description>Oferta que obtiene mayor puntuación según los criterios del PCAP</cbc:Description>
+            <cbc:AwardDate>2020-12-28</cbc:AwardDate>
+            <cbc:ReceivedTenderQuantity>1</cbc:ReceivedTenderQuantity>
+            <cbc:LowerTenderAmount currencyID="EUR">6107.44</cbc:LowerTenderAmount>
+            <cbc:HigherTenderAmount currencyID="EUR">6107.44</cbc:HigherTenderAmount>
+            <cbc:StartDate>2021-01-08</cbc:StartDate>
+            <cbc:SMEAwardedIndicator>true</cbc:SMEAwardedIndicator>
+            <cbc:AbnormallyLowTendersIndicator>false</cbc:AbnormallyLowTendersIndicator>
+            <cac:Contract>
+                <cbc:ID>561770M</cbc:ID>
+                <cbc:IssueDate>2021-01-07</cbc:IssueDate>
+            </cac:Contract>
+            <cac:WinningParty>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">B30476642</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>SURESTE CART S.L.</cbc:Name>
+                </cac:PartyName>
+            </cac:WinningParty>
+            <cac:AwardedTenderedProject>
+                <cbc:ProcurementProjectLotID>1</cbc:ProcurementProjectLotID>
+                <cac:LegalMonetaryTotal>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">6107.44</cbc:TaxExclusiveAmount>
+                    <cbc:PayableAmount currencyID="EUR">7390</cbc:PayableAmount>
+                </cac:LegalMonetaryTotal>
+            </cac:AwardedTenderedProject>
+        </cac:TenderResult>
+        <cac:TenderResult>
+            <cbc:ResultCode listURI="http://contrataciondelestado.es/codice/cl/2.02/TenderResultCode-2.02.gc">8</cbc:ResultCode>
+            <cbc:Description>Oferta que obtiene mayor puntuación</cbc:Description>
+            <cbc:AwardDate>2020-12-28</cbc:AwardDate>
+            <cbc:ReceivedTenderQuantity>1</cbc:ReceivedTenderQuantity>
+            <cbc:LowerTenderAmount currencyID="EUR">11561.98</cbc:LowerTenderAmount>
+            <cbc:HigherTenderAmount currencyID="EUR">11561.98</cbc:HigherTenderAmount>
+            <cbc:StartDate>2021-01-08</cbc:StartDate>
+            <cbc:SMEAwardedIndicator>true</cbc:SMEAwardedIndicator>
+            <cbc:AbnormallyLowTendersIndicator>false</cbc:AbnormallyLowTendersIndicator>
+            <cac:Contract>
+                <cbc:ID>561770M</cbc:ID>
+                <cbc:IssueDate>2021-01-07</cbc:IssueDate>
+            </cac:Contract>
+            <cac:WinningParty>
+                <cac:PartyIdentification>
+                    <cbc:ID schemeName="NIF">B30476642</cbc:ID>
+                </cac:PartyIdentification>
+                <cac:PartyName>
+                    <cbc:Name>SURESTE CART S.L.</cbc:Name>
+                </cac:PartyName>
+            </cac:WinningParty>
+            <cac:AwardedTenderedProject>
+                <cbc:ProcurementProjectLotID>2</cbc:ProcurementProjectLotID>
+                <cac:LegalMonetaryTotal>
+                    <cbc:TaxExclusiveAmount currencyID="EUR">11561.98</cbc:TaxExclusiveAmount>
+                    <cbc:PayableAmount currencyID="EUR">13990</cbc:PayableAmount>
+                </cac:LegalMonetaryTotal>
+            </cac:AwardedTenderedProject>
+        </cac:TenderResult>
+        <cac:TenderingTerms>
+            <cbc:RequiredCurriculaIndicator>false</cbc:RequiredCurriculaIndicator>
+            <cbc:VariantConstraintIndicator>false</cbc:VariantConstraintIndicator>
+            <cbc:PriceRevisionFormulaDescription>No</cbc:PriceRevisionFormulaDescription>
+            <cac:RequiredFinancialGuarantee>
+                <cbc:GuaranteeTypeCode listURI="http://contrataciondelestado.es/codice/cl/1.04/GuaranteeTypeCode-1.04.gc">2</cbc:GuaranteeTypeCode>
+                <cbc:AmountRate>5</cbc:AmountRate>
+            </cac:RequiredFinancialGuarantee>
+            <cac:ProcurementLegislationDocumentReference>
+                <cbc:ID>2014/24/EU</cbc:ID>
+            </cac:ProcurementLegislationDocumentReference>
+            <cac:TendererQualificationRequest>
+                <cac:TechnicalEvaluationCriteria>
+                    <cbc:EvaluationCriteriaTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.0/TechnicalCapabilityTypeCode-2.0.gc">OSR-COMPTASK</cbc:EvaluationCriteriaTypeCode>
+                    <cbc:Description>Debe declarar que ha realizado  suministros en los últimos tres años del mismo tipo o naturaleza al que corresponde el objeto del contrato por importe igual o superior al 70% del valor estimado del contrato. Se aplica respecto de cada Lote por separado. La acreditación de este requisito sólo se requerirá al propuesto como adjudicatario, siendo suficiente en el momento de presentación de la proposición con la declaración responsable del cumplimiento de dicho requisito.</cbc:Description>
+                </cac:TechnicalEvaluationCriteria>
+                <cac:FinancialEvaluationCriteria>
+                    <cbc:EvaluationCriteriaTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.0/FinancialCapabilityTypeCode-2.0.gc">5</cbc:EvaluationCriteriaTypeCode>
+                    <cbc:Description>El volumen anual de negocios en el año de mayor volumen de los tres últimos concluidos debe ser, al menos, superior a 1,5 veces el valor estimado del contrato. Se aplica respecto de cada lote del contrato, de forma separada. La acreditación de este requisito sólo se requerirá al propuesto como adjudicatario, siendo suficiente en el momento de presentación de la proposición con la declaración responsable del cumplimiento de dicho requisito.</cbc:Description>
+                </cac:FinancialEvaluationCriteria>
+                <cac:SpecificTendererRequirement>
+                    <cbc:RequirementTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.08/DeclarationTypeCode-2.08.gc">1</cbc:RequirementTypeCode>
+                </cac:SpecificTendererRequirement>
+                <cac:SpecificTendererRequirement>
+                    <cbc:RequirementTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.08/DeclarationTypeCode-2.08.gc">5</cbc:RequirementTypeCode>
+                </cac:SpecificTendererRequirement>
+                <cac:SpecificTendererRequirement>
+                    <cbc:RequirementTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.08/DeclarationTypeCode-2.08.gc">2</cbc:RequirementTypeCode>
+                </cac:SpecificTendererRequirement>
+                <cac:SpecificTendererRequirement>
+                    <cbc:RequirementTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.08/DeclarationTypeCode-2.08.gc">4</cbc:RequirementTypeCode>
+                </cac:SpecificTendererRequirement>
+            </cac:TendererQualificationRequest>
+            <cac:AwardingTerms>
+                <cac:AwardingCriteria>
+                    <cbc:Description>Precio mas bajo</cbc:Description>
+                    <cbc:WeightNumeric>60</cbc:WeightNumeric>
+                </cac:AwardingCriteria>
+                <cac:AwardingCriteria>
+                    <cbc:Description>Mejora antiguedad de los vehiculos</cbc:Description>
+                    <cbc:WeightNumeric>20</cbc:WeightNumeric>
+                </cac:AwardingCriteria>
+                <cac:AwardingCriteria>
+                    <cbc:Description>Mejora del kilometraje máximo de los vehículos</cbc:Description>
+                    <cbc:WeightNumeric>20</cbc:WeightNumeric>
+                </cac:AwardingCriteria>
+            </cac:AwardingTerms>
+            <cac:Language>
+                <cbc:ID>es</cbc:ID>
+            </cac:Language>
+        </cac:TenderingTerms>
+        <cac:TenderingProcess>
+            <cbc:ProcedureCode listURI="https://contrataciondelestado.es/codice/cl/2.07/SyndicationTenderingProcessCode-2.07.gc">9</cbc:ProcedureCode>
+            <cbc:UrgencyCode listURI="http://contrataciondelestado.es/codice/cl/1.04/DiligenceTypeCode-1.04.gc">1</cbc:UrgencyCode>
+            <cbc:PartPresentationCode listURI="http://contrataciondelestado.es/codice/cl/1.04/TenderPresentationCode-1.04.gc" name="A uno o varios lotes">3</cbc:PartPresentationCode>
+            <cbc:ContractingSystemCode listURI="http://contrataciondelestado.es/codice/cl/2.08/ContractingSystemTypeCode-2.08.gc">0</cbc:ContractingSystemCode>
+            <cbc:SubmissionMethodCode listURI="http://contrataciondelestado.es/codice/cl/1.04/TenderDeliveryCode-1.04.gc">1</cbc:SubmissionMethodCode>
+            <cbc:MaximumLotPresentationQuantity>4</cbc:MaximumLotPresentationQuantity>
+            <cbc:MaximumTendererAwardedLotsQuantity>4</cbc:MaximumTendererAwardedLotsQuantity>
+            <cac:DocumentAvailabilityPeriod>
+                <cbc:EndDate>2020-11-25</cbc:EndDate>
+                <cbc:EndTime>18:59:00</cbc:EndTime>
+            </cac:DocumentAvailabilityPeriod>
+            <cac:TenderSubmissionDeadlinePeriod>
+                <cbc:EndDate>2020-11-25</cbc:EndDate>
+                <cbc:EndTime>19:00:00</cbc:EndTime>
+            </cac:TenderSubmissionDeadlinePeriod>
+            <cac:AuctionTerms>
+                <cbc:AuctionConstraintIndicator>false</cbc:AuctionConstraintIndicator>
+            </cac:AuctionTerms>
+        </cac:TenderingProcess>
+        <cac:LegalDocumentReference>
+            <cbc:ID>PCAP.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/wps/wcm/connect/PLACE_es/Site/area/docAccCmpnt?srv=cmpnt&amp;cmpntname=GetDocumentsById&amp;source=library&amp;DocumentIdParam=e4239e35-b528-4fd6-9647-26ae69464f13</cbc:URI>
+                    <cbc:DocumentHash>QDajOhMgZbOG2RTHDt+teFmhyIc=</cbc:DocumentHash>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:LegalDocumentReference>
+        <cac:TechnicalDocumentReference>
+            <cbc:ID>PPT.pdf</cbc:ID>
+            <cac:Attachment>
+                <cac:ExternalReference>
+                    <cbc:URI>https://contrataciondelestado.es/wps/wcm/connect/PLACE_es/Site/area/docAccCmpnt?srv=cmpnt&amp;cmpntname=GetDocumentsById&amp;source=library&amp;DocumentIdParam=3ca3846e-41fc-4df5-9908-7a6e9dbfbe35</cbc:URI>
+                    <cbc:DocumentHash>XqfmJnMQOecJUP6WTSOp7oDa5K8=</cbc:DocumentHash>
+                </cac:ExternalReference>
+            </cac:Attachment>
+        </cac:TechnicalDocumentReference>
+        <cac-place-ext:ValidNoticeInfo>
+            <cbc-place-ext:NoticeTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.04/TenderingNoticeTypeCode-2.04.gc">DOC_CAN_ADJ</cbc-place-ext:NoticeTypeCode>
+            <cac-place-ext:AdditionalPublicationStatus>
+                <cbc-place-ext:PublicationMediaName>Perfil del Contratante</cbc-place-ext:PublicationMediaName>
+                <cac-place-ext:AdditionalPublicationDocumentReference>
+                    <cbc:IssueDate>2020-12-29</cbc:IssueDate>
+                </cac-place-ext:AdditionalPublicationDocumentReference>
+                <cac-place-ext:AdditionalPublicationDocumentReference>
+                    <cbc:DocumentTypeCode listURI="http://contrataciondelestado.es/codice/cl/2.07/TenderingDocumentTypeCode-2.07.gc" name="Documento de Acta de Adjudicación">ACTA_ADJ</cbc:DocumentTypeCode>
+                    <cac:Attachment>
+                        <cac:ExternalReference>
+                            <cbc:URI>https://contrataciondelestado.es/wps/wcm/connect/PLACE_es/Site/area/docAccCmpnt?srv=cmpnt&amp;cmpntname=GetDocumentsById&amp;source=library&amp;DocumentIdParam=3e857cda-7dbf-4b52-9457-ff36e7676f19</cbc:URI>
+                            <cbc:FileName>Decreto adjudicacion.pdf</cbc:FileName>
+                        </cac:ExternalReference>
+                    </cac:Attachment>
+                </cac-place-ext:AdditionalPublicationDocumentReference>
+            </cac-place-ext:AdditionalPublicationStatus>
+        </cac-place-ext:ValidNoticeInfo>
+        <cac-place-ext:GeneralDocument>
+            <cac-place-ext:GeneralDocumentDocumentReference>
+                <cbc:ID>5077b33e-79ac-4c7f-bfc6-b5e66c206d92</cbc:ID>
+                <cac:Attachment>
+                    <cac:ExternalReference>
+                        <cbc:URI>https://contrataciondelestado.es/wps/wcm/connect/PLACE_es/Site/area/docAccCmpnt?srv=cmpnt&amp;cmpntname=GetDocumentsById&amp;source=library&amp;DocumentIdParam=5077b33e-79ac-4c7f-bfc6-b5e66c206d92</cbc:URI>
+                        <cbc:FileName>Documento de aprobación del expediente</cbc:FileName>
+                    </cac:ExternalReference>
+                </cac:Attachment>
+            </cac-place-ext:GeneralDocumentDocumentReference>
+        </cac-place-ext:GeneralDocument>
+    </cac-place-ext:ContractFolderStatus>
+</entry>

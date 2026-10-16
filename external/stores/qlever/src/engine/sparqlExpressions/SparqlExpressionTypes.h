@@ -1,0 +1,415 @@
+//  Copyright 2021, University of Freiburg, Chair of Algorithms and Data
+//  Structures. Author: Johannes Kalmbach <kalmbacj@cs.uni-freiburg.de>
+//
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
+
+// Several helper types needed for the SparqlExpression module
+
+#ifndef QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_SPARQLEXPRESSIONTYPES_H
+#define QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_SPARQLEXPRESSIONTYPES_H
+
+#include <boost/mp11.hpp>
+#include <vector>
+
+#include "backports/keywords.h"
+#include "engine/QueryExecutionContext.h"
+#include "engine/sparqlExpressions/SetOfIntervals.h"
+#include "global/Id.h"
+#include "rdfTypes/Variable.h"
+#include "util/AllocatorWithLimit.h"
+#include "util/ContainersWithAllocator.h"
+#include "util/HashSet.h"
+#include "util/TypeTraits.h"
+#include "util/VectorWithMemoryLimit.h"
+#include "util/VisitMixin.h"
+
+namespace sparqlExpression {
+
+// `VectorWithMemoryLimit` used to live here, but has been moved to
+// `ad_utility`. Make it available under the (historic) `sparqlExpression`
+// namespace, where it is still used a lot.
+using ad_utility::VectorWithMemoryLimit;
+
+// The result of an expression that can yield an ID or a string (for example
+// IF and COALESCE). `IdOrLocalVocabEntry` is the fully resolved type used in
+// `ExpressionResult`. `IdOrLiteralOrIri` is the lighter type that expression
+// helpers can return without needing vocab position bounds; it gets promoted
+// to `IdOrLocalVocabEntry` via `promoteToLocalVocabEntry` at the boundary.
+using IdOrLocalVocabEntry = std::variant<ValueId, LocalVocabEntry>;
+using IdOrLiteralOrIri =
+    std::variant<ValueId, ad_utility::triple_component::LiteralOrIri>;
+// Printing for GTest.
+void PrintTo(const IdOrLocalVocabEntry& var, std::ostream* os);
+
+/// The result of an expression can either be a vector of bool/double/int/string
+/// a variable (e.g. in BIND (?x as ?y)) or a "Set" of indices, which identifies
+/// the row indices in which a boolean expression evaluates to "true". Constant
+/// results are represented by a vector with only one element.
+namespace detail {
+// For each type T in this tuple, T as well as VectorWithMemoryLimit<T> are
+// possible expression result types.
+using ConstantTypes = std::tuple<IdOrLocalVocabEntry, ValueId>;
+using ConstantTypesAsVector =
+    ad_utility::LiftedTuple<ConstantTypes, VectorWithMemoryLimit>;
+
+// Each type in this tuple also is a possible expression result type.
+using OtherTypes = std::tuple<ad_utility::SetOfIntervals, ::Variable>;
+
+using AllTypesAsTuple =
+    ad_utility::TupleCat<ConstantTypes, ConstantTypesAsVector, OtherTypes>;
+}  // namespace detail
+
+/// An Expression result is a std::variant of all the different types from
+/// the expressionResultDetail namespace (see above).
+using ExpressionResult = ad_utility::TupleToVariant<detail::AllTypesAsTuple>;
+
+/// Only the different types contained in the variant `ExpressionResult` (above)
+/// match this concept.
+template <typename T>
+CPP_concept SingleExpressionResult =
+    ad_utility::SimilarToAnyTypeIn<T, ExpressionResult>;
+
+// Copy an expression result.
+CPP_template(typename ResultT)(
+    requires ad_utility::SimilarTo<ResultT, ExpressionResult>) ExpressionResult
+    copyExpressionResult(ResultT&& result) {
+  auto copyIfCopyable = [](const auto& x)
+      -> CPP_ret(ExpressionResult)(
+          requires SingleExpressionResult<std::decay_t<decltype(x)>>) {
+    using R = std::decay_t<decltype(x)>;
+    if constexpr (ql::concepts::copyable<R>) {
+      return x;
+    } else {
+      static_assert(
+          ad_utility::similarToInstantiation<R, VectorWithMemoryLimit>);
+      return x.clone();
+    }
+  };
+  return std::visit(copyIfCopyable, AD_FWD(result));
+}
+
+/// True iff T represents a constant.
+template <typename T>
+constexpr static bool isConstantResult =
+    ad_utility::SimilarToAnyTypeIn<T, detail::ConstantTypes>;
+
+/// True iff T is one of the ConstantTypesAsVector
+template <typename T>
+constexpr static bool isVectorResult =
+    ad_utility::SimilarToAnyTypeIn<T, detail::ConstantTypesAsVector> ||
+    ad_utility::isSimilar<T, ConstIdColumnRef>;
+
+/// All the additional information which is needed to evaluate a SPARQL
+/// expression.
+struct EvaluationContext {
+  const QueryExecutionContext& _qec;
+  // The VariableToColumnMap of the input
+  const VariableToColumnMap& _variableToColumnMap;
+
+  /// The input of the expression.
+  IdTableView<0> _inputTable;
+
+  /// The indices of the actual range of rows in the _inputTable on which the
+  /// expression is evaluated. For BIND expressions this is always [0,
+  /// _inputTable.size()) but for GROUP BY evaluation we also need only parts
+  /// of the input.
+  size_t _beginIndex = 0;
+  size_t _endIndex = _inputTable.size();
+
+  /// The input is sorted on these columns. This information can be used to
+  /// perform efficient relational operations like `equal` or `less than`
+  qlm::vector<ColumnIndex> _columnsByWhichResultIsSorted;
+
+  /// Let the expression evaluation also respect the memory limit.
+  ad_utility::AllocatorWithLimit<Id> _allocator;
+
+  /// The local vocabulary of the input.
+  LocalVocab& _localVocab;
+
+  // If the expression is part of a GROUP BY then this member has to be set to
+  // the variables by which the input is grouped. These variables will then be
+  // treated as constants.
+  ad_utility::HashSet<Variable> _groupedVariables;
+
+  // Only needed during GROUP BY evaluation.
+  // Stores information about the results from previous expressions of the same
+  // SELECT clause line that might be accessed in the same SELECT clause.
+
+  // This map maps variables that are bound in the select clause to indices.
+  VariableToColumnMap _variableToColumnMapPreviousResults;
+  // This vector contains the last result of the expressions in the SELECT
+  // clause. The correct index for a given variable is obtained from the
+  // `_variableToColumnMapPreviousResults`.
+  std::vector<ExpressionResult> _previousResultsFromSameGroup;
+
+  // Used to modify the behavior of the RAND() expression when it is evaluated
+  // as part of a GROUP BY clause.
+  bool _isPartOfGroupBy = false;
+
+  ad_utility::SharedCancellationHandle cancellationHandle_;
+
+  // A point in time at which the evaluation of the expression is to be
+  // cancelled because of a timeout. This is used by mechanisms that can't use
+  // the `cancellationHandle_` directly, like the sorting in a `COUNT DISTINCT
+  // *` expression.
+  using TimePoint = std::chrono::steady_clock::time_point;
+  TimePoint deadline_;
+
+  /// Constructor for evaluating an expression on the complete input.
+  EvaluationContext(const QueryExecutionContext& qec,
+                    const VariableToColumnMap& variableToColumnMap,
+                    IdTableView<0> inputTable,
+                    const ad_utility::AllocatorWithLimit<Id>& allocator,
+                    LocalVocab& localVocab,
+                    ad_utility::SharedCancellationHandle cancellationHandle,
+                    TimePoint deadline);
+
+  /// Overload that accepts a materialized `IdTable` and converts it to a view.
+  EvaluationContext(const QueryExecutionContext& qec,
+                    const VariableToColumnMap& variableToColumnMap,
+                    const IdTable& inputTable,
+                    const ad_utility::AllocatorWithLimit<Id>& allocator,
+                    LocalVocab& localVocab,
+                    ad_utility::SharedCancellationHandle cancellationHandle,
+                    TimePoint deadline)
+      : EvaluationContext(qec, variableToColumnMap,
+                          inputTable.asStaticView<0>(), allocator, localVocab,
+                          std::move(cancellationHandle), deadline) {}
+
+  bool isResultSortedBy(const Variable& variable);
+  // The size (in number of elements) that this evaluation context refers to.
+  [[nodiscard]] size_t size() const;
+
+  // ____________________________________________________________________________
+  [[nodiscard]] std::optional<ColumnIndex> getColumnIndexForVariable(
+      const Variable& var) const;
+
+  // _____________________________________________________________________________
+  std::optional<ExpressionResult> getResultFromPreviousAggregate(
+      const Variable& var) const;
+
+  // Currently a helper function that returns the index from `qec_`. Might
+  // change in the future so we hide the implementation details behind this
+  // function.
+  const LocalVocabContext& getLocalVocabContext() const;
+};
+
+namespace detail {
+/// Get Id of constant result of type T.
+CPP_template(typename T, typename LocalVocabT)(
+    requires SingleExpressionResult<T> CPP_and isConstantResult<T> CPP_and
+        std::is_rvalue_reference_v<T&&>) Id
+    constantExpressionResultToId(T&& result, LocalVocabT& localVocab) {
+  if constexpr (ad_utility::isSimilar<T, Id>) {
+    return result;
+  } else if constexpr (ad_utility::isSimilar<T, IdOrLocalVocabEntry>) {
+    return std::visit(
+        [&localVocab](auto&& el) mutable {
+          using R = decltype(el);
+          if constexpr (ad_utility::isSimilar<R, LocalVocabEntry>) {
+            return Id::makeFromLocalVocabIndex(
+                localVocab.getIndexAndAddIfNotContained(AD_FWD(el)));
+          } else {
+            static_assert(ad_utility::isSimilar<R, Id>);
+            return el;
+          }
+        },
+        AD_FWD(result));
+  } else {
+    static_assert(ad_utility::alwaysFalse<T>);
+  }
+}
+
+/// A `Function` and one or more `ValueGetters`, that are applied to the
+/// operands of the function before passing them. The number of `ValueGetters`
+/// must either be 1 (the same `ValueGetter` is used for all the operands to
+/// the `Function`), or it must be equal to the number of operands to the
+/// `Function`. This invariant is checked in the `Operation` class template
+/// below, which uses this helper struct.
+template <typename FunctionType, typename... ValueGettersTypes>
+struct FunctionAndValueGetters {
+  using Function = FunctionType;
+  using ValueGetters = std::tuple<ValueGettersTypes...>;
+};
+
+/// A `Function` that only works on certain input types together with a compile
+/// time check, whether a certain set of inputs fulfills these requirements.
+template <typename FunctionT, typename CheckT>
+struct SpecializedFunction {
+  using Function = FunctionT;
+
+  // Check if the function can be applied to arguments of type(s) `Operands`
+  template <typename... Operands>
+  static bool areAllOperandsValid(const Operands&... operands) {
+    return CheckT{}.template operator()<Operands...>(operands...);
+  }
+
+  // Evaluate the function on the `operands`. Return std::nullopt if the
+  // function cannot be evaluated on the `operands`
+  template <typename... Operands>
+  std::optional<ExpressionResult> evaluateIfOperandsAreValid(
+      Operands&&... operands) {
+    if (!areAllOperandsValid<Operands...>(operands...)) {
+      return std::nullopt;
+    } else {
+      if constexpr (ql::concepts::invocable<Function, Operands&&...>) {
+        return Function{}(std::forward<Operands>(operands)...);
+      } else {
+        AD_FAIL();
+      }
+    }
+  }
+};
+
+/// Return true iff there exists a `SpecializedFunction` in the
+/// `SpecializedFunctionsTuple` that can be evaluated on all the `Operands`
+template <typename SpecializedFunctionsTuple, typename... Operands>
+constexpr bool isAnySpecializedFunctionPossible(SpecializedFunctionsTuple&& tup,
+                                                const Operands&... operands) {
+  auto onPack = [&](auto&&... fs) constexpr {
+    return (... || fs.areAllOperandsValid(operands...));
+  };
+
+  return std::apply(onPack, tup);
+}
+
+/// Evaluate the SpecializedFunction, that matches the input. If no such
+/// function exists, return `std::nullopt`.
+template <typename SpecializedFunctionsTuple, typename... Operands>
+std::optional<ExpressionResult> evaluateOnSpecializedFunctionsIfPossible(
+    SpecializedFunctionsTuple&& tup, Operands&&... operands) {
+  std::optional<ExpressionResult> result = std::nullopt;
+
+  auto writeToResult = [&](auto f) {
+    if (!result) {
+      result =
+          f.evaluateIfOperandsAreValid(std::forward<Operands>(operands)...);
+    }
+  };
+
+  auto onSingle = [&](auto&&... els) { (..., writeToResult(els)); };
+  std::apply(onSingle, tup);
+
+  return result;
+}
+
+// Implementation of the `ValueGetterPack` (see below).
+namespace valueGetterPack::detail {
+template <size_t N, typename>
+struct ValueGetterPackImpl;
+
+template <size_t N, typename... ValueGetters>
+struct ValueGetterPackImpl<N, std::tuple<ValueGetters...>> {
+  static_assert(sizeof...(ValueGetters) == 1 || N == sizeof...(ValueGetters));
+  using type = std::conditional_t<
+      sizeof...(ValueGetters) != 1, std::tuple<ValueGetters...>,
+      // `mp_repeat_c` repeats the first argument (a tuple of a single
+      // `ValueGetter` in our case) N times, and then concatenates it (into a
+      // tuple of N-times the same `ValueGetter`.
+      boost::mp11::mp_repeat_c<std::tuple<ValueGetters...>, N>>;
+};
+}  // namespace valueGetterPack::detail
+
+// In the SPARQL expression module, an N-ary operation can either specify `N`
+// different value getters (one for each argument), or a single value getter
+// (the same for each arguments). The following helper function takes the `N` as
+// well as a `std::tuple<ValueGetters...>` where either there have to be `N`
+// value getters in the tuple, or only a single value getter. The result is then
+// always a tuple of `N` value getters, (created by repeating the single value
+// getter n-times if necessary).
+template <size_t N, typename T>
+using ValueGetterPack =
+    typename valueGetterPack::detail::ValueGetterPackImpl<N, T>::type;
+
+// Class for an operation used in a `SparqlExpression`, consisting of the
+// function for computing the operation and the value getters for the operands.
+// The number of operands is fixed.
+//
+// NOTE: This class is defined in the namespace `sparqlExpression` and is
+// different from the class with the same name defined in `Operation.h`
+//
+// An Operation that consists of a `FunctionAndValueGetters` that takes
+// `NumOperands` parameters. The `SpecializedFunction`s can be used to choose a
+// more efficient implementation given the types of the operands. For example,
+// expressions like `logical-or` or `logical-and` can be implemented more
+// efficiently if all the inputs are `SetOfInterval`s`.
+// Note: It is necessary to use the `FunctionAndValueGetters` struct to allow
+// for multiple `ValueGetters` because there can be multiple `ValueGetters` as
+// well as zero or more `SpezializedFunctions`, but there can only be a single
+// parameter pack in C++.
+template <size_t NumOperands,
+          QL_CONCEPT_OR_TYPENAME(
+              ad_utility::isInstantiation<FunctionAndValueGetters>)
+              FunctionAndValueGettersT,
+          QL_CONCEPT_OR_TYPENAME(ad_utility::isInstantiation<
+                                 SpecializedFunction>)... SpecializedFunctions>
+struct Operation {
+ private:
+  using OriginalValueGetters = typename FunctionAndValueGettersT::ValueGetters;
+  static constexpr size_t NV = std::tuple_size_v<OriginalValueGetters>;
+
+ public:
+  constexpr static size_t N = NumOperands;
+  using Function = typename FunctionAndValueGettersT::Function;
+  using ValueGetters = ValueGetterPack<N, OriginalValueGetters>;
+  Function _function;
+  ValueGetters _valueGetters{};
+  std::tuple<SpecializedFunctions...> _specializedFunctions{};
+};
+
+/// Helper variable to decide at compile time, if a type is an
+/// Operation.
+template <typename T>
+constexpr bool isOperation = false;
+
+template <size_t NumOperations, typename... Ts>
+constexpr bool isOperation<Operation<NumOperations, Ts...>> = true;
+
+// Return the common logical size of the `SingleExpressionResults` of a
+// non-aggregate expression. This is either 1 (in case all the `inputs` are
+// constants) or the size of the `context`.
+//
+// NOTE: Aggregates must not use this function, they aggregate one value per
+// row of the `context` also for a constant input (see
+// `AggregateExpression.cpp`).
+CPP_template(typename... Inputs)(requires(SingleExpressionResult<Inputs>&&...))
+    size_t getResultSize(const EvaluationContext& context, const Inputs&...) {
+  return (... && isConstantResult<Inputs>) ? 1ul : context.size();
+}
+
+// Helper to check if an `ExpressionResult` variant holds a constant.
+// Used by the type erased expression.
+// Implementation lives in SparqlExpressionTypes.cpp to avoid instantiating
+// the std::visit vtable (6 alternatives × N TUs) in every including TU.
+bool isConstantExpressionResult(const ExpressionResult& res);
+
+// Helper type to convert the type from `IdOrLiteralOrIri` to
+// `IdOrLocalVocabEntry`. For other types, the type is unchanged.
+template <typename T>
+using PromoteToLocalVocabEntry =
+    std::conditional_t<std::is_same_v<T, IdOrLiteralOrIri>, IdOrLocalVocabEntry,
+                       T>;
+
+// Helper function to upgrade the variant type from `IdOrLiteralOrIri` to
+// `IdOrLocalVocabEntry` by wrapping the `LiteralOrIri` in a `LocalVocabEntry`.
+// For other types, the functor just returns the input as is.
+template <typename T>
+decltype(auto) promoteToLocalVocabEntry(T&& value,
+                                        const LocalVocabContext& context) {
+  if constexpr (std::is_same_v<std::decay_t<T>, IdOrLiteralOrIri>) {
+    return std::visit(
+        ad_utility::OverloadCallOperator{
+            [](Id id) -> IdOrLocalVocabEntry { return id; },
+            [&context](auto&& literalOrIri) -> IdOrLocalVocabEntry {
+              return {LocalVocabEntry{AD_FWD(literalOrIri), context}};
+            }},
+        AD_FWD(value));
+  } else {
+    return AD_FWD(value);
+  }
+}
+
+}  // namespace detail
+}  // namespace sparqlExpression
+
+#endif  // QLEVER_SRC_ENGINE_SPARQLEXPRESSIONS_SPARQLEXPRESSIONTYPES_H

@@ -1,0 +1,111 @@
+<!-- This page has been generated with sparql-anything-documentation-generator module -->
+
+# RDF
+
+RDF files can be targeted like any other format by the option `location`. The content is queried as-is (no facade-x interpretation needed, obviously). 
+
+RDF can also be given with the options `content`, `command` or `read-from-std-in`. In this case there is no file extension, so the `media-type` option is required (e.g. `media-type=text/turtle`); without it, the input is not recognised as RDF.
+
+The triples are loaded in a named graph: its name is the `location`, or, for `content`, `command` and `read-from-std-in`, the root identifier of the source (`http://sparql.xyz/facade-x/data/` followed by an MD5 hash). Use `GRAPH ?g { ... }` to match them.
+
+In addition, the [Command Line Interface (CLI)](../CLI.md) can load static RDF files.
+
+This is useful when you want to break down the task so that RDF files produced by previous SPARQL Anything executions are joined with additional transformations.
+Examples of this can be found in the [tutorials](../TUTORIALS.md).
+
+This feature is enabled with the command line argument `-l|--load` that accepts a file or a directory.
+The files are loaded in a Dataset, which becomes the target for the query execution.
+A single file will be loaded in the default Graph. 
+If pointing to a folder, all RDF files in the folder are loaded, each one on a Named Graph.
+
+See also the documentation of the [Command Line Interface (CLI)](../CLI.md).
+
+
+## Extensions
+
+SPARQL Anything selects this transformer for the following file extensions:
+
+- jsonld
+- nq
+- nt
+- owl
+- rdf
+- trdf
+- trig
+- trix
+- ttl
+
+## Media types
+
+SPARQL Anything selects this transformer for the following media types:
+
+- application/ld+json
+- application/n-quads
+- application/n-triples
+- application/owl+xml
+- application/rdf+thrift
+- application/rdf+xml
+- application/trix+xml
+- text/trig
+- text/turtle
+
+## Default implementation
+
+- [io.github.sparqlanything.rdf.RDFTriplifier](../sparql-anything-rdf/src/main/java/io/github/sparqlanything/rdf/RDFTriplifier.java)
+
+## Default Transformation
+
+### Data
+
+```RDF
+@prefix ex: <http://example.org/> .
+
+ex:subject ex:predicate ex:object .
+
+```
+
+Located at https://sparql-anything.cc/examples/simple.ttl
+
+### Query
+
+```
+CONSTRUCT 
+  { 
+    ?s ?p ?o .
+  }
+WHERE
+  { SERVICE <x-sparql-anything:location=https://sparql-anything.cc/examples/simple.ttl>
+      { GRAPH ?g
+          { ?s  ?p  ?o }
+      }
+  }
+
+```
+
+### Facade-X RDF
+
+```turtle
+PREFIX dc:     <http://purl.org/dc/elements/1.1/>
+PREFIX eg:     <http://www.example.org/>
+PREFIX fx:     <http://sparql.xyz/facade-x/ns/>
+PREFIX fxe:    <http://sparql.xyz/facade-x/engine/>
+PREFIX ja:     <http://jena.hpl.hp.com/2005/11/Assembler#>
+PREFIX owl:    <http://www.w3.org/2002/07/owl#>
+PREFIX rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs:   <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX rss:    <http://purl.org/rss/1.0/>
+PREFIX vcard:  <http://www.w3.org/2001/vcard-rdf/3.0#>
+PREFIX whatwg: <https://html.spec.whatwg.org/#>
+PREFIX xhtml:  <http://www.w3.org/1999/xhtml#>
+PREFIX xsd:    <http://www.w3.org/2001/XMLSchema#>
+PREFIX xyz:    <http://sparql.xyz/facade-x/data/>
+
+<http://example.org/subject>
+        <http://example.org/predicate>  <http://example.org/object> .
+
+```
+
+
+
+
+

@@ -1,0 +1,55 @@
+# Build directory
+build/
+cmake-build*
+
+# End-to-End data
+e2e_data/*
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+*.jar
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Local aux files (IDE, etc)
+.idea
+
+# vim files
+*.swp
+
+# ctags generated tag file
+tags
+src/tags
+sourcelist
+.cache/
+.vscode/
+
+/cmake-build*
+/localIndices
+
+# Test index artifacts that are generated when a unit-test binary is run with
+# the repository root as its working directory.
+/_staticGlobalTestIndex*

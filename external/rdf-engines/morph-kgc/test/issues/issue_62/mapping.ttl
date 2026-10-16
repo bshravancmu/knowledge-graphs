@@ -1,0 +1,37 @@
+@prefix rml: <http://w3id.org/rml/> .
+@prefix ex: <http://www.example.com/> .
+
+<#TriplesMap1>
+    a rml:TriplesMap;
+    rml:logicalSource [
+        rml:source "test/issues/issue_62/data1.csv";
+        rml:referenceFormulation rml:CSV
+    ];
+    rml:subjectMap [
+        rml:template "http://example.com/{id}";
+        rml:class ex:Example
+    ];
+    rml:predicateObjectMap [
+        rml:predicate ex:relation;
+        rml:objectMap [
+        rml:parentTriplesMap <#TriplesMap2>;
+        rml:joinCondition [
+            rml:child "column1";
+            rml:parent "column1";
+            ];
+        rml:joinCondition [
+            rml:child "column2";
+            rml:parent "column2";
+            ];
+        ];
+    ].
+
+<#TriplesMap2>
+    a rml:TriplesMap;
+    rml:logicalSource [
+        rml:source "test/issues/issue_62/data2.csv";
+        rml:referenceFormulation rml:CSV
+    ];
+    rml:subjectMap [
+        rml:template "http://second-example.com/{id}"
+    ].

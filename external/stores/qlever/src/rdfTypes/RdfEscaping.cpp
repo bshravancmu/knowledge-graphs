@@ -1,0 +1,362 @@
+// Copyright 2021, University of Freiburg,
+// Chair of Algorithms and Data Structures.
+// Author: Johannes Kalmbach<joka921> (johannes.kalmbach@gmail.com)
+
+#include "rdfTypes/RdfEscaping.h"
+
+#include <absl/strings/str_cat.h>
+#include <absl/strings/str_replace.h>
+
+#include <charconv>
+#include <ctre-unicode.hpp>
+#include <string>
+
+#include "backports/StartsWithAndEndsWith.h"
+#include "backports/shift.h"
+#include "util/Exception.h"
+#include "util/StringUtils.h"
+
+namespace RdfEscaping {
+using namespace std::string_literals;
+namespace detail {
+
+// CTRE regex patterns for C++17 compatibility
+constexpr ctll::fixed_string csvSpecialCharsRegex = "[\r\n\",]";
+constexpr ctll::fixed_string tsvSpecialCharsRegex = "[\n\t]";
+constexpr ctll::fixed_string xmlSpecialCharsRegex = "[&\"<>']";
+
+// _____________________________________________________________________________
+// Append the UTF-8 encoding of the codepoint that is encoded by the at most 8
+// hexadecimal characters in `hex` to `out`.
+static void appendUtf8CodepointFromHexadecimalCharacters(std::string_view hex,
+                                                         std::string& out) {
+  // The input encodes a single Unicode codepoint, so it is at most 8 hex digits
+  // long (the length of a `\UXXXXXXXX` escape).
+  AD_CONTRACT_CHECK(hex.size() <= 8);
+  uint32_t codepoint = 0;
+  auto result =
+      std::from_chars(hex.data(), hex.data() + hex.size(), codepoint, 16);
+  AD_CORRECTNESS_CHECK(result.ec == std::errc{});
+  ad_utility::utf8EncodeCodepoint(codepoint, out);
+}
+
+// _____________________________________________________________________________
+std::string hexadecimalCharactersToUtf8Codepoint(std::string_view hex) {
+  std::string res;
+  appendUtf8CodepointFromHexadecimalCharacters(hex, res);
+  return res;
+}
+
+/**
+ * Internal helper function. Unescape all string escapes (e.g. "\\n"-> '\n') and
+ * all numeric escapes (e.g. "\\u00E4" -> 'ä'). Using the template bools this
+ * function can be configured to unescape only string escapes, or even only
+ * newlines and backslashes. It throws an exception if an escape sequence that
+ * is not allowed is found.
+ */
+template <bool acceptOnlyNumericEscapes, bool acceptOnlyBackslashAndNewline>
+void unescapeStringAndNumericEscapes(std::string_view input,
+                                     std::string& output) {
+  static_assert(!(acceptOnlyNumericEscapes && acceptOnlyBackslashAndNewline));
+  auto beginIterator = input.begin();
+  auto endIterator = input.end();
+  // Append the `character` to the output, but only if newlines/backslashes are
+  // allowed via the configuration
+  auto pushNewlineOrBackslash = [&output](const char newlineOrBackslash) {
+    if constexpr (!acceptOnlyNumericEscapes || acceptOnlyBackslashAndNewline) {
+      output.push_back(newlineOrBackslash);
+    } else {
+      (void)output;
+      (void)newlineOrBackslash;
+      throw std::runtime_error(
+          "String escapes like \\n or \\t are not allowed in this context");
+    }
+  };
+
+  // Append the `character` to the output, but only if general string escapes
+  // (e.g. "\\t") are allowed via the configuration
+  auto pushOtherStringEscape = [&output](const char otherStringEscape) {
+    if constexpr (!acceptOnlyNumericEscapes && !acceptOnlyBackslashAndNewline) {
+      output.push_back(otherStringEscape);
+    } else {
+      (void)output;
+      (void)otherStringEscape;
+      throw std::runtime_error(
+          "String escapes like \\n or \\t are not allowed in this context");
+    }
+  };
+
+  // Convert `length` hexadecimal characters (e.g. "00e4" from the `iterator`)
+  // to UTF-8 and append them to the output. Throw an exception if numeric
+  // escapes are not allowed via the configuration.
+  auto pushNumericEscape = [&output, &endIterator](const auto& iterator,
+                                                   size_t length) {
+    if constexpr (!acceptOnlyBackslashAndNewline) {
+      AD_CONTRACT_CHECK(iterator + length <= endIterator);
+      // Use `&*iterator` to obtain a raw pointer rather than passing the
+      // iterator directly: newer libc++ wraps the string-view iterator in
+      // `__wrap_iter` and no longer converts it implicitly to `const char*`.
+      // `length` is always positive here, so dereferencing is safe.
+      appendUtf8CodepointFromHexadecimalCharacters(
+          std::string_view(&*iterator, length), output);
+    } else {
+      (void)output;
+      (void)endIterator;
+      throw std::runtime_error(
+          "Numeric escapes like \"\\u00e4\" are not allowed in this "
+          "context");
+    }
+  };
+
+  while (true) {
+    auto nextBackslashIterator = std::find(beginIterator, endIterator, '\\');
+    // Appending the whole range at once (instead of pushing back the single
+    // characters) makes this a `memcpy`. In the common case that the input
+    // contains no escape sequence at all, this is the only work that is done.
+    output.append(beginIterator, nextBackslashIterator);
+    if (nextBackslashIterator == endIterator) {
+      break;
+    }
+    AD_CONTRACT_CHECK(nextBackslashIterator + 1 < endIterator);
+
+    size_t numCharactersFromInput = 2;  // backslash + 1 character
+    switch (*(nextBackslashIterator + 1)) {
+      case 't':
+        pushOtherStringEscape('\t');
+        break;
+      case 'n':
+        pushNewlineOrBackslash('\n');
+        break;
+      case 'r':
+        pushOtherStringEscape('\r');
+        break;
+      case 'b':
+        pushOtherStringEscape('\b');
+        break;
+      case 'f':
+        pushOtherStringEscape('\f');
+        break;
+      case '"':
+        pushOtherStringEscape('\"');
+        break;
+      case '\'':
+        pushOtherStringEscape('\'');
+        break;
+      case '\\':
+        pushNewlineOrBackslash('\\');
+        break;
+      case 'u': {
+        pushNumericEscape(nextBackslashIterator + 2, 4);
+        numCharactersFromInput = 6;  // \UXXXX
+        break;
+      }
+      case 'U': {
+        pushNumericEscape(nextBackslashIterator + 2, 8);
+        numCharactersFromInput = 10;  // \UXXXXXXXX
+        break;
+      }
+
+      default:
+        AD_CONTRACT_CHECK(false,
+                          "Unsupported escape sequence found in RDF literal \"",
+                          input, "\"");
+    }
+    beginIterator = nextBackslashIterator + numCharactersFromInput;
+  }
+}
+}  // namespace detail
+
+// _____________________________________________________________________________
+std::string unescapeNewlinesAndBackslashes(std::string_view literal) {
+  std::string result;
+  RdfEscaping::detail::unescapeStringAndNumericEscapes<false, true>(literal,
+                                                                    result);
+  return result;
+}
+
+// ____________________________________________________________________________
+std::string escapeNewlinesAndBackslashes(std::string_view literal) {
+  return absl::StrReplaceAll(literal, {{"\n", "\\n"}, {R"(\)", R"(\\)"}});
+}
+
+// ____________________________________________________________________________
+void unescapeLiteral(std::string_view input, std::string& res) {
+  detail::unescapeStringAndNumericEscapes<false, false>(input, res);
+}
+
+// ____________________________________________________________________________
+void unescapeLiteralWithQuotesRemoved(std::string_view input,
+                                      std::string& res) {
+  if (ql::starts_with(input, R"(""")") || ql::starts_with(input, R"(''')")) {
+    AD_CONTRACT_CHECK(ql::ends_with(input, input.substr(0, 3)));
+    input.remove_prefix(3);
+    input.remove_suffix(3);
+  } else {
+    AD_CONTRACT_CHECK(ql::starts_with(input, "\"") ||
+                      ql::starts_with(input, "'"));
+    AD_CONTRACT_CHECK(ql::ends_with(input, input[0]));
+    input.remove_prefix(1);
+    input.remove_suffix(1);
+  }
+
+  unescapeLiteral(input, res);
+}
+
+// ________________________________________________________________________
+std::string normalizeRDFLiteral(const std::string_view origLiteral) {
+  auto literal = origLiteral;
+
+  // always start with one double quote "
+  std::string res = "\"";
+  unescapeLiteralWithQuotesRemoved(literal, res);
+  res.push_back('\"');
+  return res;
+}
+
+// ____________________________________________________________________________
+std::string validRDFLiteralFromNormalized(std::string_view normLiteral) {
+  AD_CONTRACT_CHECK(ql::starts_with(normLiteral, '"'));
+  size_t posSecondQuote = normLiteral.find('"', 1);
+  AD_CONTRACT_CHECK(posSecondQuote != std::string::npos);
+  size_t posLastQuote = normLiteral.rfind('"');
+  // If there are only two quotes (the first and the last, which every
+  // normalized literal has), there is nothing to do.
+  if (posSecondQuote == posLastQuote &&
+      normLiteral.find_first_of("\\\n\r") == std::string::npos) {
+    return std::string{normLiteral};
+  }
+  // Otherwise escape first all backlashes then all quotes (the order is
+  // important) in the part between the first and the last quote and leave the
+  // rest unchanged.
+  std::string_view normalizedContent = normLiteral.substr(1, posLastQuote - 1);
+  std::string content = absl::StrReplaceAll(
+      normalizedContent,
+      {{R"(\)", R"(\\)"}, {"\n", "\\n"}, {"\r", "\\r"}, {R"(")", R"(\")"}});
+  return absl::StrCat("\"", content, normLiteral.substr(posLastQuote));
+}
+
+// __________________________________________________________________________
+static void unescapeIriWithoutBrackets(std::string_view input,
+                                       std::string& res) {
+  // Only numeric escapes are allowed for iriefs.
+  RdfEscaping::detail::unescapeStringAndNumericEscapes<true, false>(input, res);
+}
+
+// __________________________________________________________________________
+static void unescapeIriWithBrackets(std::string_view input, std::string& res) {
+  AD_CONTRACT_CHECK(ql::starts_with(input, "<") && ql::ends_with(input, ">"));
+  input.remove_prefix(1);
+  input.remove_suffix(1);
+  unescapeIriWithoutBrackets(input, res);
+}
+
+// __________________________________________________________________________
+std::string_view unescapeIriref(std::string_view iriref, std::string& buffer) {
+  AD_CONTRACT_CHECK(ql::starts_with(iriref, "<") && ql::ends_with(iriref, ">"));
+  AD_CONTRACT_CHECK(buffer.empty());
+  // Fast path: an IRI that contains no backslash at all has no escape
+  // sequences, so the input can be used as it is. This is by far the most
+  // common case when parsing RDF input.
+  if (iriref.find('\\') == std::string_view::npos) {
+    return iriref;
+  }
+  // Unescaping never makes the IRI longer (the shortest numeric escape,
+  // `\uXXXX`, is six characters long and expands to at most three bytes), so a
+  // single allocation suffices.
+  buffer.reserve(iriref.size());
+  buffer.push_back('<');
+  unescapeIriWithBrackets(iriref, buffer);
+  buffer.push_back('>');
+  return buffer;
+}
+
+// __________________________________________________________________________
+std::string unescapeIriref(std::string_view iriref) {
+  std::string result;
+  unescapeIriref(iriref, result);
+  // `result` is only filled if the IRI actually contained escape sequences, in
+  // which case it already holds the unescaped IRI.
+  if (result.empty()) {
+    result = iriref;
+  }
+  return result;
+}
+
+// The characters that may follow a backslash in a "reserved character escape
+// sequence" of a prefixed IRI.
+static constexpr std::string_view escapableCharacters = "_~.-!$&'()*+,;=/?#@%";
+
+// __________________________________________________________________________
+std::string unescapePrefixedIri(std::string_view literal) {
+  constexpr auto npos = std::string_view::npos;
+  auto pos = literal.find('\\');
+  // The vast majority of prefixed IRIs contain no escape sequence at all.
+  if (pos == npos) [[likely]] {
+    return std::string{literal};
+  }
+  std::string_view origLiteral = literal;
+  std::string res;
+  res.reserve(literal.size());
+  while (pos != npos) {
+    res.append(literal.begin(), literal.begin() + pos);
+    // The linear search is cheap enough, as it is only performed for IRIs that
+    // actually contain a backslash, which the vast majority of knowledge graphs
+    // never use.
+    AD_CONTRACT_CHECK(pos + 1 < literal.size() &&
+                          escapableCharacters.find(literal[pos + 1]) != npos,
+                      "Could not unescape the prefixed iri ", origLiteral);
+    res += literal[pos + 1];
+
+    literal.remove_prefix(pos + 2);
+    pos = literal.find('\\');
+  }
+  // the remainder
+  res.append(literal);
+  return res;
+}
+
+// __________________________________________________________________________
+std::string escapeForCsv(std::string input) {
+  if (!ctre::search<detail::csvSpecialCharsRegex>(input)) [[likely]] {
+    return input;
+  }
+  return absl::StrCat("\"", absl::StrReplaceAll(input, {{"\"", "\"\""}}), "\"");
+}
+
+// __________________________________________________________________________
+std::string escapeForTsv(std::string input) {
+  if (ctre::search<detail::tsvSpecialCharsRegex>(input)) [[unlikely]] {
+    absl::StrReplaceAll({{"\t", " "}, {"\n", "\\n"}}, &input);
+  }
+  return input;
+}
+
+// __________________________________________________________________________
+std::string escapeForXml(std::string input) {
+  if (ctre::search<detail::xmlSpecialCharsRegex>(input)) [[unlikely]] {
+    absl::StrReplaceAll({{"&", "&amp;"},
+                         {"<", "&lt;"},
+                         {">", "&gt;"},
+                         {"\"", "&quot;"},
+                         {"'", "&apos;"}},
+                        &input);
+  }
+  return input;
+}
+
+// __________________________________________________________________________
+std::string normalizedContentFromLiteralOrIri(std::string&& input) {
+  if (ql::starts_with(input, '<')) {
+    AD_CORRECTNESS_CHECK(ql::ends_with(input, '>'));
+    ql::shift_left(input.begin(), input.end(), 1);
+    input.resize(input.size() - 2);
+  } else if (ql::starts_with(input, '"')) {
+    auto posLastQuote = static_cast<int64_t>(input.rfind('"'));
+    AD_CORRECTNESS_CHECK(posLastQuote > 0);
+    ql::shift_left(input.begin(), input.begin() + posLastQuote, 1);
+    input.resize(posLastQuote - 1);
+  }
+  return std::move(input);
+}
+
+}  // namespace RdfEscaping

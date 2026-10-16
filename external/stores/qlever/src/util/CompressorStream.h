@@ -1,0 +1,64 @@
+// Copyright 2022, University of Freiburg,
+// Chair of Algorithms and Data Structures.
+// Author: Robin Textor-Falconi (textorr@informatik.uni-freiburg.de)
+
+#ifndef QLEVER_SRC_UTIL_COMPRESSORSTREAM_H
+#define QLEVER_SRC_UTIL_COMPRESSORSTREAM_H
+
+// For some include orders the EOF constant is not defined although `<cstdio>`
+// was included, so we define it manually.
+// TODO<joka921> Find out where this happens.
+#ifndef EOF
+#define EOF std::char_traits<char>::eof()
+#endif
+#include <boost/iostreams/filter/gzip.hpp>
+#include <boost/iostreams/filtering_stream.hpp>
+#include <string>
+
+#include "util/Generator.h"
+#include "util/http/ContentEncodingHelper.h"
+
+namespace ad_utility::streams {
+namespace io = boost::iostreams;
+using ad_utility::content_encoding::CompressionMethod;
+
+/**
+ * Takes a range of strings. Behavior: The concatenation of all yielded strings
+ * is the compression, specified by the `compressionMethod` applied to the
+ * concatenation of all the strings from the range.
+ */
+template <typename Range>
+cppcoro::generator<std::string> compressStream(
+    Range range, CompressionMethod compressionMethod) {
+  // NOTE: `stringBuffer` must be declared before `filteringStream` so that it
+  // is destroyed after it. The `filteringStream` holds a reference to
+  // `stringBuffer` via `io::back_inserter`. If the coroutine is destroyed
+  // mid-iteration, the destructor of `filteringStream` flushes pending data
+  // into `stringBuffer`, which must still be alive at that point.
+  std::string stringBuffer;
+  io::filtering_ostream filteringStream;
+
+  // setup compression method
+  if (compressionMethod == CompressionMethod::DEFLATE) {
+    filteringStream.push(io::zlib_compressor(io::zlib::best_speed));
+  } else if (compressionMethod == CompressionMethod::GZIP) {
+    filteringStream.push(io::gzip_compressor(io::gzip::best_speed));
+  }
+  filteringStream.push(io::back_inserter(stringBuffer), 0);
+
+  for (const auto& value : range) {
+    filteringStream << value;
+    if (!stringBuffer.empty()) {
+      co_yield stringBuffer;
+      stringBuffer.clear();
+    }
+  }
+  // reset() flushes the stream and puts the remaining bytes into stringBuffer.
+  filteringStream.reset();
+  if (!stringBuffer.empty()) {
+    co_yield stringBuffer;
+  }
+}
+}  // namespace ad_utility::streams
+
+#endif  // QLEVER_SRC_UTIL_COMPRESSORSTREAM_H

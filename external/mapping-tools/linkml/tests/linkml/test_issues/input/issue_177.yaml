@@ -1,0 +1,27 @@
+id: http://example.org/tests/issue177
+
+types:
+  string:
+    base: str
+    uri: xsd:string
+  integer:
+    base: int
+    uri: xsd:int
+
+default_range: string
+
+classes:
+  c1:
+    tree_root: true
+    slots:
+      - sa
+      - sb
+
+  c2:
+    slots:
+      - sb
+
+slots:
+  sa:
+  sb:
+    range: integer

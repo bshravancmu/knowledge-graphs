@@ -1,0 +1,416 @@
+@prefix rr: <http://www.w3.org/ns/r2rml#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix fnml: <http://semweb.mmlab.be/ns/fnml#> .
+@prefix fno: <http://w3id.org/function/ontology#> .
+@prefix rml: <http://semweb.mmlab.be/ns/rml#> .
+@prefix ql: <http://semweb.mmlab.be/ns/ql#> .
+@prefix : <http://mapping.example.com/> .
+@prefix ov: <http://open.vocab.org/terms/> .
+
+:map_workshops_0 rml:logicalSource :source_0 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "workshops" ;
+	rr:subjectMap :s_0 ;
+	rr:predicateObjectMap :pom_0, :pom_1, :pom_2, :pom_3, :pom_4, :pom_5, :pom_6, :pom_7, :pom_8 .
+
+:source_0 rdf:type rml:LogicalSource ;
+	rml:source "csv/general-info.csv" ;
+	rml:referenceFormulation ql:CSV .
+
+:s_0 rdf:type rr:SubjectMap ;
+	rr:template "https://kgb-workshop.org/resources/Event/{id}" .
+
+:pom_0 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_0 ;
+	rr:objectMap :om_0 .
+
+:pm_0 rdf:type rr:PredicateMap ;
+	rr:constant rdf:type .
+
+:om_0 rdf:type rr:ObjectMap ;
+	rr:constant "http://schema.org/Event" ;
+	rr:termType rr:IRI .
+
+:pom_1 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_1 ;
+	rr:objectMap :om_1 .
+
+:pm_1 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/name> .
+
+:om_1 rdf:type rr:ObjectMap ;
+	rml:reference "title" ;
+	rr:termType rr:Literal .
+
+:pom_2 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_2 ;
+	rr:objectMap :om_2 .
+
+:pm_2 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/duration> .
+
+:om_2 rdf:type rr:ObjectMap ;
+	rml:reference "duration" ;
+	rr:termType rr:Literal .
+
+:pom_3 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_3 ;
+	rr:objectMap :om_3 .
+
+:pm_3 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/startDate> .
+
+:om_3 rdf:type rr:ObjectMap ;
+	rml:reference "startDate" ;
+	rr:termType rr:Literal .
+
+:pom_4 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_4 ;
+	rr:objectMap :om_4 .
+
+:pm_4 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/endDate> .
+
+:om_4 rdf:type rr:ObjectMap ;
+	rml:reference "endDate" ;
+	rr:termType rr:Literal .
+
+:pom_5 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_5 ;
+	rr:objectMap :om_5 .
+
+:pm_5 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/location> .
+
+:om_5 rdf:type rr:ObjectMap ;
+	rml:reference "location" ;
+	rr:termType rr:Literal .
+
+:pom_6 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_6 ;
+	rr:objectMap :om_6 .
+
+:pm_6 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/superEvent> .
+
+:om_6 rdf:type rr:ObjectMap ;
+	rml:reference "superEvent" ;
+	rr:termType rr:Literal .
+
+:pom_7 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_7 ;
+	rr:objectMap :om_7 .
+
+:pm_7 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/subEvent> .
+
+:pom_8 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_8 ;
+	rr:objectMap :om_8 .
+
+:pm_8 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/organizer> .
+
+:map_topics_0 rml:logicalSource :source_1 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "topics" ;
+	rr:subjectMap :s_1 ;
+	rr:predicateObjectMap :pom_9, :pom_10 .
+
+:source_1 rdf:type rml:LogicalSource ;
+	rml:source "csv/topics.csv" ;
+	rml:referenceFormulation ql:CSV .
+
+:s_1 rdf:type rr:SubjectMap ;
+	rr:template "https://kgb-workshop.org/resources/Topic/{id}" .
+
+:pom_9 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_9 ;
+	rr:objectMap :om_9 .
+
+:pm_9 rdf:type rr:PredicateMap ;
+	rr:constant rdf:type .
+
+:om_9 rdf:type rr:ObjectMap ;
+	rr:constant "http://schema.org/CreativeWork" ;
+	rr:termType rr:IRI .
+
+:pom_10 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_10 ;
+	rr:objectMap :om_10 .
+
+:pm_10 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/name> .
+
+:om_10 rdf:type rr:ObjectMap ;
+	rml:reference "name" ;
+	rr:termType rr:Literal .
+
+:map_subtopics_0 rml:logicalSource :source_2 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "subtopics" ;
+	rr:subjectMap :s_2 ;
+	rr:predicateObjectMap :pom_11 .
+
+:source_2 rdf:type rml:LogicalSource ;
+	rml:source "csv/subtopics.csv" ;
+	rml:referenceFormulation ql:CSV .
+
+:s_2 rdf:type rr:SubjectMap ;
+	rr:template "https://kgb-workshop.org/resources/Topic/{id}" .
+
+:pom_11 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_11 ;
+	rr:objectMap :om_11 .
+
+:pm_11 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/keyword> .
+
+:om_11 rdf:type rr:ObjectMap ;
+	rml:reference "subtopic" ;
+	rr:termType rr:Literal .
+
+:map_pc_0 rml:logicalSource :source_3 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "pc" ;
+	rr:subjectMap :s_3 ;
+	rr:predicateObjectMap :pom_12, :pom_13, :pom_14, :pom_15 .
+
+:source_3 rdf:type rml:LogicalSource ;
+	rml:source "csv/pc.csv" ;
+	rml:referenceFormulation ql:CSV .
+
+:s_3 rdf:type rr:SubjectMap ;
+	rr:template "https://kgb-workshop.org/resources/ProgramCommittee/{id}" .
+
+:pom_12 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_12 ;
+	rr:objectMap :om_12 .
+
+:pm_12 rdf:type rr:PredicateMap ;
+	rr:constant rdf:type .
+
+:om_12 rdf:type rr:ObjectMap ;
+	rr:constant "http://schema.org/Person" ;
+	rr:termType rr:IRI .
+
+:pom_13 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_13 ;
+	rr:objectMap :om_13 .
+
+:pm_13 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/performerIn> .
+
+:om_13 rdf:type rr:ObjectMap ;
+	rr:constant "http://kgb.rml.io/resources/Event/kgb2019" ;
+	rr:termType rr:IRI .
+
+:pom_14 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_14 ;
+	rr:objectMap :om_14 .
+
+:pm_14 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/name> .
+
+:om_14 rdf:type rr:ObjectMap ;
+	rml:reference "name" ;
+	rr:termType rr:Literal .
+
+:pom_15 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_15 ;
+	rr:objectMap :om_15 .
+
+:pm_15 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/memberOf> .
+
+:om_15 rdf:type rr:ObjectMap ;
+	rml:reference "organization" ;
+	rr:termType rr:Literal .
+
+:map_dates_0 rml:logicalSource :source_4 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "dates" ;
+	rr:subjectMap :s_4 ;
+	rr:predicateObjectMap :pom_16, :pom_17, :pom_18, :pom_19 .
+
+:source_4 rdf:type rml:LogicalSource ;
+	rml:source "csv/important-dates.csv" ;
+	rml:referenceFormulation ql:CSV .
+
+:s_4 rdf:type rr:SubjectMap ;
+	rr:template "https://kgb-workshop.org/resources/ImportantDates/{date}" .
+
+:pom_16 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_16 ;
+	rr:objectMap :om_16 .
+
+:pm_16 rdf:type rr:PredicateMap ;
+	rr:constant rdf:type .
+
+:om_16 rdf:type rr:ObjectMap ;
+	rr:constant "http://schema.org/Event" ;
+	rr:termType rr:IRI .
+
+:pom_17 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_17 ;
+	rr:objectMap :om_17 .
+
+:pm_17 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/name> .
+
+:om_17 rdf:type rr:ObjectMap ;
+	rml:reference "event" ;
+	rr:termType rr:Literal .
+
+:pom_18 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_18 ;
+	rr:objectMap :om_18 .
+
+:pm_18 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/startDate> .
+
+:om_18 rdf:type rr:ObjectMap ;
+	rml:reference "date" ;
+	rr:termType rr:Literal .
+
+:pom_19 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_19 ;
+	rr:objectMap :om_19 .
+
+:pm_19 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/description> .
+
+:om_19 rdf:type rr:ObjectMap ;
+	rml:reference "description" ;
+	rr:termType rr:Literal .
+
+:map_organizers_0 rml:logicalSource :source_5 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "organizers" ;
+	rr:subjectMap :s_5 ;
+	rr:predicateObjectMap :pom_20, :pom_21, :pom_22, :pom_23, :pom_24, :pom_25, :pom_26, :pom_27, :pom_28, :pom_29 .
+
+:source_5 rdf:type rml:LogicalSource ;
+	rml:source "csv/organizers.csv" ;
+	rml:referenceFormulation ql:CSV .
+
+:s_5 rdf:type rr:SubjectMap ;
+	rr:template "https://kgb-workshop.org/resources/Organizer/{id}" .
+
+:pom_20 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_20 ;
+	rr:objectMap :om_20 .
+
+:pm_20 rdf:type rr:PredicateMap ;
+	rr:constant rdf:type .
+
+:om_20 rdf:type rr:ObjectMap ;
+	rr:constant "http://schema.org/Person" ;
+	rr:termType rr:IRI .
+
+:pom_21 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_21 ;
+	rr:objectMap :om_21 .
+
+:pm_21 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/name> .
+
+:om_21 rdf:type rr:ObjectMap ;
+	rml:reference "name" ;
+	rr:termType rr:Literal .
+
+:pom_22 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_22 ;
+	rr:objectMap :om_22 .
+
+:pm_22 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/sameAs> .
+
+:om_22 rdf:type rr:ObjectMap ;
+	rml:reference "webpage" ;
+	rr:termType rr:Literal .
+
+:pom_23 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_23 ;
+	rr:objectMap :om_23 .
+
+:pm_23 rdf:type rr:PredicateMap ;
+	rr:constant ov:twitter-id .
+
+:om_23 rdf:type rr:ObjectMap ;
+	rml:reference "twitter" ;
+	rr:termType rr:Literal .
+
+:pom_24 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_24 ;
+	rr:objectMap :om_24 .
+
+:pm_24 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/memberOf> .
+
+:om_24 rdf:type rr:ObjectMap ;
+	rml:reference "organization" ;
+	rr:termType rr:Literal .
+
+:pom_25 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_25 ;
+	rr:objectMap :om_25 .
+
+:pm_25 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/image> .
+
+:om_25 rdf:type rr:ObjectMap ;
+	rr:template "http://kgb-workshop.org/img/{photo}" ;
+	rr:termType rr:Literal .
+
+:pom_26 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_26 ;
+	rr:objectMap :om_26 .
+
+:pm_26 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/description> .
+
+:om_26 rdf:type rr:ObjectMap ;
+	rml:reference "biography" ;
+	rr:termType rr:Literal .
+
+:pom_27 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_27 ;
+	rr:objectMap :om_27 .
+
+:pm_27 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/email> .
+
+:om_27 rdf:type rr:ObjectMap ;
+	rml:reference "email" ;
+	rr:termType rr:Literal .
+
+:pom_28 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_28 ;
+	rr:objectMap :om_28 .
+
+:pm_28 rdf:type rr:PredicateMap ;
+	rr:constant <http://schema.org/jobTitle> .
+
+:om_28 rdf:type rr:ObjectMap ;
+	rml:reference "role" ;
+	rr:termType rr:Literal .
+
+:pom_29 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_29 ;
+	rr:objectMap :om_29 .
+
+:pm_29 rdf:type rr:PredicateMap ;
+	rr:constant <http://example.org/linkedin> .
+
+:om_29 rdf:type rr:ObjectMap ;
+	rml:reference "linkedin" ;
+	rr:termType rr:Literal .
+
+:om_7 rdf:type rr:ObjectMap ;
+	rr:parentTriplesMap :map_dates_0 .
+
+:om_8 rdf:type rr:ObjectMap ;
+	rr:parentTriplesMap :map_organizers_0 .
+

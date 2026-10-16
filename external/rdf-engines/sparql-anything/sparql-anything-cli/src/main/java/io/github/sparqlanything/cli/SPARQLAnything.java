@@ -1,0 +1,904 @@
+/*
+ * Copyright (c) 2026 SPARQL Anything Contributors @ http://github.com/sparql-anything
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+
+package io.github.sparqlanything.cli;
+
+import com.github.jsonldjava.shaded.com.google.common.io.Files;
+import io.github.basilapi.basil.sparql.*;
+import io.github.sparqlanything.engine.FXSymbol;
+import io.github.sparqlanything.engine.FacadeX;
+import io.github.sparqlanything.engine.FacadeXOpExecutor;
+import io.github.sparqlanything.model.SPARQLAnythingConstants;
+import io.github.sparqlanything.model.Utils;
+import org.apache.commons.cli.ParseException;
+import org.apache.commons.io.FileUtils;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.jena.datatypes.xsd.XSDDatatype;
+import org.apache.jena.graph.Node;
+import org.apache.jena.graph.NodeFactory;
+import org.apache.jena.query.*;
+import org.apache.jena.rdf.model.Model;
+import org.apache.jena.rdf.model.ModelFactory;
+import org.apache.jena.rdf.model.RDFNode;
+import org.apache.jena.riot.Lang;
+import org.apache.jena.riot.RDFDataMgr;
+import org.apache.jena.riot.RDFParserRegistry;
+import org.apache.jena.riot.RDFWriter;
+import org.apache.jena.riot.ReaderRIOTFactory;
+import org.apache.jena.riot.SysRIOT;
+import org.apache.jena.sparql.algebra.Algebra;
+import org.apache.jena.sparql.core.ResultBinding;
+import org.apache.jena.sparql.core.Var;
+import org.apache.jena.sparql.engine.binding.Binding;
+import org.apache.jena.sparql.engine.main.QC;
+import org.apache.jena.sparql.mgt.Explain;
+import org.apache.jena.sys.JenaSystem;
+import org.apache.jena.riot.system.StreamRDF;
+import org.apache.jena.riot.system.StreamRDFWriter;
+import org.apache.jena.riot.RDFLanguages;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.commons.io.output.CloseShieldOutputStream;
+
+import java.io.*;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.net.MalformedURLException;
+import java.net.URISyntaxException;
+import java.net.URL;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.*;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.regex.Pattern;
+
+import org.apache.jena.riot.ResultSetMgr;
+import org.apache.jena.riot.resultset.ResultSetLang;
+import java.nio.charset.StandardCharsets;
+
+public class SPARQLAnything {
+
+
+	private static final Logger logger = LoggerFactory.getLogger(SPARQLAnything.class);
+	private static final Long duration = null;
+
+	// TODO This should be moved to the engine module
+	private static void initSPARQLAnythingEngine() {
+		JenaSystem.init();
+
+		// Setting up the Geosparql module if the dependency is included
+		try {
+			Class<?> k = Class.forName("org.apache.jena.geosparql.configuration.GeoSPARQLConfig");
+			Method m = k.getMethod("setupMemoryIndex");
+			m.invoke(null);
+		} catch (ClassNotFoundException e) {
+			//logger.warn("jena-geosparql dependency not available");
+		} catch (NoSuchMethodException e) {
+			logger.warn("NoSuchMethodException");
+		} catch (InvocationTargetException e) {
+			logger.warn("InvocationTargetException");
+		} catch (IllegalAccessException e) {
+			logger.warn("IllegalAccessException");
+		}
+
+		// Register the JSON-LD parser factory for extension  .json
+		ReaderRIOTFactory parserFactoryJsonLD = new RiotUtils.ReaderRIOTFactoryJSONLD();
+		RDFParserRegistry.registerLangTriples(RiotUtils.JSON, parserFactoryJsonLD);
+		// Setup FX executor
+		QC.setFactory(ARQ.getContext(), FacadeX.ExecutorFactory);
+	}
+
+	private static QueryExecution createQueryExecution(Query query, Dataset kb, String[] configurations) {
+		QueryExecution qExec = QueryExecutionFactory.create(query, kb);
+		setConfigurationsToContext(configurations, qExec);
+		return qExec;
+	}
+	private static void executeQuery(String outputFormat, Dataset kb, Query query, PrintStream pw, String[] configurations, boolean stream, String base)
+		throws FileNotFoundException {
+		Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.BEFORE_QUERY_EXECUTION);
+
+		try (QueryExecution qe = createQueryExecution(query, kb, configurations)) {
+			if (query.isSelectType()) {
+				ResultSet rs = qe.execSelect();
+				switch (outputFormat) {
+					case "JSON":
+						ResultSetFormatter.outputAsJSON(pw, rs);
+						break;
+					case "XML":
+						ResultSetFormatter.outputAsXML(pw, rs);
+						break;
+					case "CSV":
+						ResultSetFormatter.outputAsCSV(pw, rs);
+						break;
+					case "TEXT":
+						pw.println(ResultSetFormatter.asText(rs));
+						break;
+					default:
+						throw new RuntimeException("Unsupported format: " + outputFormat);
+				}
+
+			} else if (query.isAskType()) {
+				Boolean ask = qe.execAsk();
+				switch (outputFormat) {
+					case "JSON":
+						ResultSetFormatter.outputAsJSON(pw, ask);
+						break;
+					case "XML":
+						ResultSetFormatter.outputAsXML(pw, ask);
+						break;
+					case "CSV":
+						ResultSetFormatter.outputAsCSV(pw, ask);
+						break;
+					case "TEXT":
+						pw.print(ask);
+						break;
+					default:
+						throw new RuntimeException("Unsupported format: " + outputFormat);
+				}
+			} else if (query.isConstructType() || query.isDescribeType()) {
+				Lang streamLang = stream ? streamableLang(outputFormat) : null;
+				if (streamLang != null) {
+					// #635 Stream each triple/quad as it is produced — no in-memory Model,
+					// so memory is ~constant and duplicates are preserved.
+					StreamRDF out = StreamRDFWriter.getWriterStream(pw, streamLang);
+					out.start();
+					if (base != null) out.base(base);
+					try {
+						if (RDFLanguages.isQuads(streamLang) && query.isConstructType()) {
+							qe.execConstructQuads().forEachRemaining(out::quad);
+						} else {
+							(query.isConstructType() ? qe.execConstructTriples() : qe.execDescribeTriples())
+								.forEachRemaining(out::triple);
+						}
+					} finally {
+						out.finish();
+					}
+				} else {
+					Model m;
+					Dataset d = null;
+					if (query.isConstructType()) {
+						d = qe.execConstructDataset();
+						// .execConstructDataset (instead of .execConstruct) so we can construct quads too
+						// as described here: https://jena.apache.org/documentation/query/construct-quad.html
+						m = d.getDefaultModel();
+					} else {
+						m = qe.execDescribe();
+						// d = new DatasetImpl(m);
+					}
+					if (outputFormat.equals("JSON") || outputFormat.equals("JSONLD")) {
+						// JSON-LD format.equals(Lang.JSONLD11.getName())
+						RDFDataMgr.write(pw, m, Lang.JSONLD);
+					} else if (outputFormat.equals("JSONLD11")) {
+						RDFDataMgr.write(pw, m, Lang.JSONLD11);
+					} else if (outputFormat.equals("TTL")) {
+						RDFWriter.create().source(m).lang(Lang.TTL).base(base).output(pw);
+					} else if (outputFormat.equals("XML")) {
+						RDFWriter.create().source(m).lang(Lang.RDFXML).base(base)
+							.set(SysRIOT.sysRdfWriterProperties, base == null ? Map.of() : Map.of("xmlbase", base))
+							.output(pw);
+					} else if (outputFormat.equals("TRIG")) {
+						RDFWriter.create().source(Objects.requireNonNull(d)).lang(Lang.TRIG).base(base).output(pw);
+					} else if (outputFormat.equals("NT")) {
+						// N-Triples
+						RDFDataMgr.write(pw, m, Lang.NT);
+					} else if (outputFormat.equals("NQ")) {
+						// NQ
+						RDFDataMgr.write(pw, Objects.requireNonNull(d), Lang.NQ);
+					} else if (outputFormat.equals("TRIX")) {
+						// TRIG
+						RDFDataMgr.write(pw, Objects.requireNonNull(d), Lang.TRIX);
+					} else if (outputFormat.equals("CSV")) {
+						// CSV
+						ResultSet rs = RiotUtils.asResultSet(Objects.requireNonNull(d.asDatasetGraph()));
+						ResultSetFormatter.outputAsCSV(pw, rs);
+					} else {
+						throw new RuntimeException("Unsupported format: " + outputFormat);
+					}
+				}
+			}
+		}
+		Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.AFTER_QUERY_EXECUTION);
+	}
+
+	// #635 Line/block RDF formats that StreamRDFWriter can serialise incrementally.
+	private static Lang streamableLang(String outputFormat) {
+		// outputFormat is normalised by CLI.normaliseFormat
+		if (outputFormat.equals("NT")) return Lang.NT;
+		if (outputFormat.equals("NQ")) return Lang.NQ;
+		if (outputFormat.equals("TTL")) return Lang.TTL;
+		if (outputFormat.equals("TRIG")) return Lang.TRIG;
+		return null;
+	}
+
+	private static PrintStream getPrintStream(String fileName, boolean append) throws IOException {
+
+		if (fileName != null) {
+			Files.createParentDirs(new File(fileName));
+			return new PrintStream(new FileOutputStream(fileName, append));
+		}
+
+		// #677 Callers close the returned stream (try-with-resources): never close System.out,
+		// as several iterations (-v) may write to it
+		return new PrintStream(CloseShieldOutputStream.wrap(System.out), true);
+	}
+
+	public static Query bindParameters(Specification specification, QuerySolution qs) throws Exception {
+		VariablesBinder binder = new VariablesBinder(specification);
+
+		List<String> missing = new ArrayList<>();
+		for (QueryParameter qp : specification.getParameters()) {
+			logger.trace("Looking into parameter {} ({})", qp.getName(), qp.isOptional());
+			logger.trace("Checking against qs {}", qs);
+			if (qs.contains("?" + qp.getName())) {
+				RDFNode value = qs.get("?" + qp.getName());
+				logger.debug("Setting {}->{}", qp.getName(), value.toString());
+				binder.bind(qp.getName(), value.toString());
+			} else if (!qp.isOptional()) {
+				logger.warn("Missing parameter: {}", qp.getName());
+				missing.add(qp.getName());
+			}
+		}
+
+		if (!missing.isEmpty()) {
+			StringBuilder ms = new StringBuilder();
+			ms.append("Missing mandatory query parameters: ");
+			for (String p : missing) {
+				ms.append(p);
+				ms.append("\t");
+			}
+			ms.append("\n");
+			logger.error("Available query parameters not sufficient: {}", qs);
+			throw new Exception(ms.toString());
+		}
+		Query q = binder.toQuery();
+		logger.trace("Query after bindParameters: \n{}\n", q);
+		return q;
+	}
+
+	public static String prepareOutputFromPattern(String template, QuerySolution qs) {
+		logger.trace(" - template: {}", template);
+		Iterator<String> vars = qs.varNames();
+		while (vars.hasNext()) {
+
+			String var = vars.next();
+
+			Pattern p = Pattern.compile("[\\?|\\$]" + var + "([^0-9a-z_])",
+				Pattern.DOTALL | Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CHARACTER_CLASS);
+			template = p.matcher(template).replaceAll(qs.get(var).toString() + "$1");
+			if (logger.isTraceEnabled()) {
+				logger.trace(" - var: {}", var);
+				logger.trace(" - replacement: {}", qs.get(var).toString());
+				logger.trace(" - template: {}", template);
+			}
+		}
+		return template;
+	}
+
+	private static class ArgValuesAsResultSet implements ResultSetRewindable {
+		private final String[] values;
+		private List<String> variables;
+		private Set<Binding> bindings;
+		private Iterator<Binding> iterator;
+		private Model model;
+		private int row;
+
+		ArgValuesAsResultSet(String[] values) {
+			this.values = values;
+			reset();
+		}
+
+		@Override
+		public void reset() {
+			this.variables = new ArrayList<>();
+			this.bindings = new HashSet<>();
+			this.model = ModelFactory.createDefaultModel();
+			row = 0;
+			// Populate
+			HashMap<String, Set<Pair<String, String>>> var_val_map = new HashMap<>();
+			for (String value : values) {
+				String var = value.substring(0, value.indexOf('='));
+				String val = value.substring(value.indexOf('=') + 1);
+				if (!var_val_map.containsKey(var)) {
+					var_val_map.put(var, new HashSet<>());
+				}
+				logger.debug("Value: {} -> {}", var, val);
+				// If integer check if value represents range
+				if (val.matches("^[0-9]+\\.\\.\\.[0-9]+$")) {
+					logger.trace("Range");
+					String[] vv = val.split("\\.\\.\\.");
+					int from = Integer.parseInt(vv[0]);
+					int to = Integer.parseInt(vv[1]);
+					logger.trace("Value: {} -> range({},{})", var, from, to);
+					for (int x = from; x <= to; x++) {
+						var_val_map.get(var).add(Pair.of(var, Integer.toString(x)));
+					}
+				} else {
+					var_val_map.get(var).add(Pair.of(var, val));
+				}
+			}
+			// Generate bindings
+			Set<Set<Object>> sets;
+			if (var_val_map.size() > 1) {
+				sets = cartesianProduct(var_val_map.values().toArray(new HashSet[var_val_map.size()]));
+			} else {
+				sets = new HashSet<>();
+
+				for (Pair<String, String> p : var_val_map.entrySet().iterator().next().getValue()) {
+					Set<Object> singleton = new HashSet<>();
+					singleton.add(p);
+					sets.add(singleton);
+				}
+			}
+			for (Set<Object> s : sets) {
+				final Map<Var, Node> bins = new HashMap<>();
+				for (Object j : s) {
+					Pair<String, String> p = (Pair<String, String>) j;
+					String var = p.getLeft();
+					String val = p.getRight();
+					bins.put(Var.alloc(var), NodeFactory.createLiteralDT(val, XSDDatatype.XSDstring));
+				}
+
+				this.bindings.add(new Binding() {
+					@Override
+					public Iterator<Var> vars() {
+						return bins.keySet().iterator();
+					}
+
+					@Override
+					public Set<Var> varsMentioned() {
+						throw new UnsupportedOperationException("Not implemented!");
+					}
+
+					@Override
+					public boolean contains(Var var) {
+						return bins.containsKey(var);
+					}
+
+					@Override
+					public Node get(Var var) {
+						return bins.get(var);
+					}
+
+					@Override
+					public int size() {
+						return bins.size();
+					}
+
+					@Override
+					public boolean isEmpty() {
+						return bins.isEmpty();
+					}
+
+					@Override
+					public Binding detach() {
+						throw new UnsupportedOperationException();
+					}
+
+					@Override
+					public void forEach(BiConsumer<Var, Node> action) {
+						// TODO Auto-generated method stub
+						for (Var v : bins.keySet()) {
+							Node n = bins.get(v);
+							action.accept(v, n);
+						}
+					}
+				});
+			}
+			this.iterator = bindings.iterator();
+		}
+
+		@Override
+		public int size() {
+			return bindings.size();
+		}
+
+		@Override
+		public boolean hasNext() {
+			return iterator.hasNext();
+		}
+
+		@Override
+		public QuerySolution next() {
+			return nextSolution();
+		}
+
+		@Override
+		public void forEachRemaining(Consumer<? super QuerySolution> consumer) {
+			throw new UnsupportedOperationException("forEachRemaining not implemented");
+		}
+
+		@Override
+		public QuerySolution nextSolution() {
+			return new ResultBinding(this.model, nextBinding());
+		}
+
+		@Override
+		public Binding nextBinding() {
+			row += 1;
+			return iterator.next();
+		}
+
+		@Override
+		public int getRowNumber() {
+			return row;
+		}
+
+		@Override
+		public List<String> getResultVars() {
+			return Collections.unmodifiableList(variables);
+		}
+
+		@Override
+		public Model getResourceModel() {
+			return this.model;
+		}
+
+		@Override
+		public void close() {
+			this.model.close();
+		}
+
+		// Credits: https://stackoverflow.com/a/714256/1035608
+		public static Set<Set<Object>> cartesianProduct(Set<?>... sets) {
+			if (sets.length < 2)
+				throw new IllegalArgumentException(
+					"Can't have a product of fewer than two sets (got " + sets.length + ")");
+
+			return _cartesianProduct(0, sets);
+		}
+
+		private static Set<Set<Object>> _cartesianProduct(int index, Set<?>... sets) {
+			Set<Set<Object>> ret = new HashSet<>();
+			if (index == sets.length) {
+				ret.add(new HashSet<>());
+			} else {
+				for (Object obj : sets[index]) {
+					for (Set<Object> set : _cartesianProduct(index + 1, sets)) {
+						set.add(obj);
+						ret.add(set);
+					}
+				}
+			}
+			return ret;
+		}
+	}
+
+	public static ResultSet prepareResultSetFromArgValues(String[] values) {
+		return new ArgValuesAsResultSet(values);
+	}
+
+	static {
+		Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.LOAD_MAIN_CLASS);
+	}
+
+	private static void setConfigurationsToContext(String[] configurations, QueryExecution qExec) {
+		if (configurations != null) {
+			// If the query has no FX service clauses the options will be added
+			ServiceFinder sf = new ServiceFinder();
+			Algebra.compile(qExec.getQuery()).visit(sf);
+
+
+			if (!sf.hasFxService()) {
+				qExec.getContext().setTrue(SPARQLAnythingConstants.NO_SERVICE_MODE);
+			} else {
+				logger.warn("Options passed with -c may be overwritten by options of the SERVICE IRI or in BGP of the query.");
+			}
+
+			for (String configuration : configurations) {
+				String[] configurationSplit = configuration.split("=");
+				qExec.getContext().set(FXSymbol.create(configurationSplit[0]), configurationSplit[1]);
+			}
+		}
+	}
+
+
+	private static String getOutputPattern(CLI cli, String outputFileName) {
+		String outputPattern = cli.getOutputPattern();
+		if (outputPattern != null && outputFileName != null) {
+			logger.warn("Option 'output' is ignored: 'output-pattern' given.");
+		}
+		return outputPattern;
+	}
+
+	private static void strategy(CLI cli) {
+		Integer strategy = cli.getStrategy();
+		if (strategy != null) {
+			if (strategy == 1 || strategy == 0 || strategy == 2) {
+				ARQ.getContext().set(FacadeXOpExecutor.strategy, strategy);
+			} else {
+				logger.error("Invalid value for parameter 'strategy': {}", strategy);
+			}
+		}
+	}
+
+	private static void explain(CLI cli) {
+		if (cli.isExplain()) {
+			ARQ.setExecutionLogging(Explain.InfoLevel.ALL);
+		}
+	}
+
+	/**
+	 * Loads a SPARQL result set file given with -v. The format is chosen from the file extension
+	 * (.srj/.json, .srx/.xml, .tsv, .csv) or, for other extensions, from the first character.
+	 */
+	static ResultSet loadResultSet(String fileName) throws IOException {
+		// Same resolution as the File.exists() check in executeQueryWithValues;
+		// File accepts "/D:/..." (URL.getFile() form) on Windows, Paths.get does not (#687 regression)
+		Path path = new File(fileName).toPath();
+		Lang lang = resultSetLang(path);
+		try (InputStream in = new BufferedInputStream(java.nio.file.Files.newInputStream(path))) {
+			// Materialise: the reader streams from 'in', which is closed when this method returns
+			return ResultSetFactory.copyResults(ResultSetMgr.read(in, lang));
+		}
+	}
+
+	private static Lang resultSetLang(Path path) throws IOException {
+		String name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+		if (name.endsWith(".srj") || name.endsWith(".json")) {
+			return ResultSetLang.RS_JSON;
+		}
+		if (name.endsWith(".srx") || name.endsWith(".xml")) {
+			return ResultSetLang.RS_XML;
+		}
+		if (name.endsWith(".tsv")) {
+			return ResultSetLang.RS_TSV;
+		}
+		if (name.endsWith(".csv")) {
+			return ResultSetLang.RS_CSV;
+		}
+		// Unknown extension: look at the first non-blank character
+		try (Reader r = java.nio.file.Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+			int c;
+			do {
+				c = r.read();
+			} while (c != -1 && Character.isWhitespace(c));
+			if (c == '{') {
+				return ResultSetLang.RS_JSON;
+			}
+			if (c == '<') {
+				return ResultSetLang.RS_XML;
+			}
+			if (c == '?') {
+				return ResultSetLang.RS_TSV;
+			}
+		}
+		return ResultSetLang.RS_CSV;
+	}
+
+	private static void executeQueryWithValues(CLI cli, String query, Dataset kb, String outputFileName, String outputPattern, String[] values, String[] configurations) throws UnknownQueryTypeException {
+		ResultSet parameters;
+		if (values.length == 1 && new File(values[0]).exists()) {
+			logger.debug("Input file name given");
+			try {
+				parameters = loadResultSet(values[0]);
+			} catch (IOException e) {
+				throw new RuntimeException("Cannot read the result set file given with -v: " + values[0], e);
+			}
+		} else {
+			parameters = new ArgValuesAsResultSet(values);
+		}
+		// Specifications
+		Specification specification = SpecificationFactory.create("", query);
+		String base = cli.getBase(QueryFactory.create(query));
+		// Iterate over parameters
+		while (parameters.hasNext()) {
+			QuerySolution qs = parameters.nextSolution();
+			Query q;
+			try {
+				q = bindParameters(specification, qs);
+			} catch (Exception e1) {
+				logger.error("An exception occurred while evaluating the input parameters", e1);
+				logger.error(
+					"Iteration " + parameters.getRowNumber() + " failed with error: " + e1.getMessage());
+				continue;
+			}
+			String outputFile = null;
+			if (outputPattern != null) {
+				outputFile = prepareOutputFromPattern(outputPattern, qs);
+			} else {
+				if (outputFileName != null) {
+					if (outputFileName != null) {
+						// Number the output files whenever there is more than one binding set (#<issue>)
+						boolean multiple = parameters.getRowNumber() > 1 || parameters.hasNext();
+						outputFile = FilenameUtils.removeExtension(outputFileName) + (multiple ? "-" + parameters.getRowNumber() : "") + "." + FilenameUtils.getExtension(outputFileName);
+					}
+				}
+				// else stays null and output goes to STDOUT
+			}
+			// #528 Check no-clobber if output file already exists.
+			if (outputFile != null && cli.getOutputNoClobber() && new File(outputFile).exists()) {
+				logger.info("Skipping: `no-clobber` is on and file exists (iteration " + parameters.getRowNumber() + ")");
+				continue;
+			}
+			// Remember if we are calling OS for a new file
+			boolean newFile = outputFile != null && !new File(outputFile).exists();
+			try (PrintStream ps = getPrintStream(outputFile, cli.getOutputAppend())) {
+				logger.trace("Executing Query: {}", q);
+				executeQuery(cli.getFormat(q), kb, q, ps, configurations, cli.getStream(), base);
+			} catch (Exception e1) {
+				logger.error(
+					"Iteration " + parameters.getRowNumber() + " failed with error: " + e1.getMessage());
+				if (logger.isDebugEnabled()) {
+					logger.error("Details:", e1);
+				}
+				// If an error occurred and the file is empty, delete the file.
+				if (outputFile != null) {
+					File f = new File(outputFile);
+					if (newFile && f.exists() && f.length() == 0) {
+						f.delete();
+					}
+				}
+			}
+		}
+	}
+
+//	private static Dataset createDataset(String load) {
+//		Dataset kb = DatasetFactory.createGeneral();
+//		if (load != null) {
+//
+//			logger.info("Loading data from: {}", load);
+//			Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.BEFORE_LOAD);
+//			// XXX Check if load is a URI first
+//			File loadSource;
+//			try {
+//				loadSource = new File(new URL(load).toURI());
+//			} catch (MalformedURLException | URISyntaxException e) {
+//				loadSource = new File(load);
+//			} catch (IllegalArgumentException e) {
+//				// Not a file: URL (e.g. http, https): load it like a single file, in the default graph
+//				RDFDataMgr.read(kb, load);
+//				Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.AFTER_LOAD);
+//				return kb;
+//			}
+//			if (loadSource.isDirectory()) {
+//
+//				logger.info("Loading files from directory: {}", loadSource);
+//				// If directory, load all files
+//				Collection<File> files = FileUtils.listFiles(loadSource, null, true);
+//				for (File f : files) {
+//					logger.info("Adding file to be loaded: {}", f);
+//					try {
+//						Model m = ModelFactory.createDefaultModel();
+//						// read into the model.
+//						m.read(f.getAbsolutePath());
+//						kb.addNamedModel(f.toURI().toString(), m);
+//					} catch (Exception e) {
+//						logger.error("An error occurred while loading {}", f);
+//						logger.error(" - Problem was: {}", e.getMessage());
+//						if (logger.isDebugEnabled()) {
+//							logger.error("", e);
+//						}
+//					}
+//				}
+//
+//				logger.info("Loaded {} triples", kb.asDatasetGraph().getUnionGraph().size());
+//			} else if (loadSource.isFile()) {
+//				// If it is a file, load it
+//				logger.info("Load file: {}", loadSource);
+//				Path base = Paths.get(".");
+//				try {
+//					Path p = loadSource.toPath();
+//					if (!p.isAbsolute()) {
+//						p = base.relativize(loadSource.toPath());
+//					}
+//					kb = DatasetFactory.create(p.toFile().toURI().toString());
+//				} catch (Exception e) {
+//					logger.error("An error occurred while loading {}", loadSource);
+//					logger.error(" - Problem was: ", e);
+//				}
+//			} else {
+//				if (!loadSource.exists()) {
+//					logger.error("Option 'load' failed (resource does not exist): {}", loadSource);
+//				} else {
+//					logger.error("Option 'load' failed (not a file or directory): {}", loadSource);
+//				}
+//				return kb;
+//			}
+//			Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.AFTER_LOAD);
+//		}
+//
+//		return kb;
+//	}
+
+	/**
+	 * Loads the RDF given with -l. Each source (a file, a URL, or each file of a folder) is loaded in a named graph,
+	 * named after its URI. Named graphs in quad formats (TriG, N-Quads) keep their names.
+	 * The default graph is the union of all the loaded graphs.
+	 */
+	private static Dataset createDataset(String load) {
+		Dataset kb = DatasetFactory.createGeneral();
+		if (load == null) {
+			return kb;
+		}
+		logger.info("Loading data from: {}", load);
+		Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.BEFORE_LOAD);
+		File loadSource;
+		try {
+			loadSource = new File(new URL(load).toURI());
+		} catch (MalformedURLException | URISyntaxException e) {
+			loadSource = new File(load);
+		} catch (IllegalArgumentException e) {
+			// Not a file: URL (e.g. http, https)
+			loadSource = null;
+		}
+		if (loadSource == null) {
+			addSource(kb, load, load);
+		} else if (loadSource.isDirectory()) {
+			logger.info("Loading files from directory: {}", loadSource);
+			for (File f : FileUtils.listFiles(loadSource, null, true)) {
+				logger.info("Adding file to be loaded: {}", f);
+				try {
+					addSource(kb, f.toURI().toString(), f.getAbsolutePath());
+				} catch (Exception e) {
+					logger.error("An error occurred while loading {}", f);
+					logger.error(" - Problem was: {}", e.getMessage());
+					if (logger.isDebugEnabled()) {
+						logger.error("", e);
+					}
+				}
+			}
+		} else if (loadSource.isFile()) {
+			logger.info("Load file: {}", loadSource);
+			try {
+				addSource(kb, loadSource.toURI().toString(), loadSource.getAbsolutePath());
+			} catch (Exception e) {
+				logger.error("An error occurred while loading {}", loadSource);
+				logger.error(" - Problem was: ", e);
+			}
+		} else {
+			if (!loadSource.exists()) {
+				logger.error("Option 'load' failed (resource does not exist): {}", loadSource);
+			} else {
+				logger.error("Option 'load' failed (not a file or directory): {}", loadSource);
+			}
+			return kb;
+		}
+		logger.info("Loaded {} triples", kb.asDatasetGraph().getUnionGraph().size());
+		Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.AFTER_LOAD);
+		// The default graph is the union of the named graphs (the graphs are linked, not copied)
+		org.apache.jena.sparql.core.DatasetGraph loaded = kb.asDatasetGraph();
+		org.apache.jena.sparql.core.DatasetGraph union = org.apache.jena.sparql.core.DatasetGraphFactory.createGeneral(loaded.getUnionGraph());
+		loaded.listGraphNodes().forEachRemaining(name -> union.addGraph(name, loaded.getGraph(name)));
+		return DatasetFactory.wrap(union);
+	}
+
+	private static void addSource(Dataset kb, String graphName, String location) {
+		Dataset source = RDFDataMgr.loadDataset(location);
+		if (!source.getDefaultModel().isEmpty()) {
+			kb.addNamedModel(graphName, source.getDefaultModel());
+		}
+		source.listNames().forEachRemaining(name -> kb.addNamedModel(name, source.getNamedModel(name)));
+	}
+
+	public static String callMain(String[] args) throws Exception {
+		// Thanks to: https://stackoverflow.com/a/8708357/1035608
+		// Create a stream to hold the output
+		ByteArrayOutputStream baos = new ByteArrayOutputStream();
+		PrintStream ps = new PrintStream(baos);
+		// IMPORTANT: Save the old System.out!
+		PrintStream old = System.out;
+		// Tell Java to use your special stream
+		System.setOut(ps);
+		// Print some output: goes to your special stream
+		run(args);
+		// Put things back
+		System.out.flush();
+		System.setOut(old);
+		// Show what happened
+		return baos.toString();
+	}
+
+	private static void printProfileIfEnabled(CLI cli) throws FileNotFoundException {
+		if (cli.getProfile() != null) {
+			String outFile = cli.getProfile();
+			if (outFile.isEmpty()) {
+				outFile = "profile.tsv";
+			}
+			Utils.printProfile(outFile);
+		}
+	}
+
+	public static void main(String[] args) throws Exception {
+		int status = run(args);
+		if (status != 0) {
+			System.exit(status);
+		}
+	}
+
+	/** Exit status for an invalid command line (unknown option, missing argument). */
+	static final int EXIT_USAGE = 2;
+	/** Exit status for a query that cannot be read or parsed, or a missing input file. */
+	static final int EXIT_ERROR = 1;
+
+	/**
+	 * Runs the CLI and returns the exit status, without calling System.exit, so it can be used
+	 * from tests (see callMain). Errors not handled here propagate as exceptions.
+	 */
+	static int run(String[] args) throws Exception {
+		Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.PROCESS_STARTS);
+		if(logger.isDebugEnabled()){
+			logger.debug("SPARQL anything");
+			logger.debug("args: {}", Arrays.toString(args));
+		}
+
+		CLI cli = new CLI();
+		if (args.length == 0) {
+			cli.printHelp();
+			return EXIT_USAGE;
+		}
+
+		try {
+			cli.parse(args);
+
+			// If the arguments include --help just print and exit
+			if(cli.getHelp()){
+				cli.printHelp();
+				return EXIT_USAGE;
+			}
+
+			Utils.loadJARs(cli.getLoadJar());
+			String query = cli.getQuery();
+			explain(cli);
+			strategy(cli);
+			Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.BEFORE_INIT);
+			initSPARQLAnythingEngine();
+			Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.AFTER_INIT);
+
+			Dataset kb = createDataset(cli.getLoad());
+
+			String outputFileName = cli.getOutputFile();
+			String[] values = cli.getValues();
+			String[] configurations = cli.getConfigurations();
+			String outputPattern = getOutputPattern(cli, outputFileName);
+			if (values == null) {
+				logger.debug("No input file");
+
+				// #528 Check no-clobber if output file already exists.
+				if (outputFileName != null && cli.getOutputNoClobber() && new File(outputFileName).exists()) {
+					logger.info("skipping: no-clobber is on and file exists");
+					return 0;
+				}
+				Query q = QueryFactory.create(query);
+				try (PrintStream ps = getPrintStream(outputFileName, cli.getOutputAppend())) {
+					executeQuery(cli.getFormat(q), kb, q, ps, configurations, cli.getStream(), cli.getBase(q));
+				}
+			} else {
+				executeQueryWithValues(cli, query, kb, outputFileName, outputPattern, values, configurations);
+			}
+
+			Utils.profile(SPARQLAnythingConstants.PROFILE_EVENT.PROCESS_ENDS);
+			printProfileIfEnabled(cli);
+
+		} catch (ParseException e) {
+			// commons-cli: unknown option, missing argument, ...
+			logger.error("Invalid command line: {}", e.getMessage());
+			cli.printHelp();
+			return EXIT_USAGE;
+		} catch (FileNotFoundException e) {
+			logger.error("File not found: {}", e.getMessage());
+			return EXIT_ERROR;
+		} catch (QueryParseException e) {
+			logger.error("SPARQL syntax error: {}", e.getMessage());
+			return EXIT_ERROR;
+		}
+		return 0;
+
+	}
+}

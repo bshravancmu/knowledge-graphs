@@ -1,0 +1,53 @@
+// Copyright 2015, University of Freiburg,
+// Chair of Algorithms and Data Structures.
+// Author: Björn Buchhold (buchhold@informatik.uni-freiburg.de)
+
+#ifndef QLEVER_SRC_GLOBAL_ID_H
+#define QLEVER_SRC_GLOBAL_ID_H
+
+#include <cstddef>
+#include <cstdint>
+#include <type_traits>
+
+#include "global/FoldedValueId.h"
+
+// The implementation of `Id`. Every file that needs `Id` or `ValueId` includes
+// this header, not the implementation header.
+//
+// TODO<pas-kes> Once the split layout exists, choose between
+// `foldedValueId::ValueId` and `SplitLayoutId` here via
+// `QLEVER_USE_SPLIT_LAYOUT`.
+using Id = foldedValueId::ValueId;
+using ValueId = Id;
+using Score = float;
+
+// `Id`s are copied around a lot, in particular in bulk (see the `IdTable`
+// class, in particular `IdTable::insertAtEnd`). Only for trivially copyable
+// types do the compilers turn such a bulk copy into a single `std::memmove`
+// instead of a scalar loop. Make sure that this property is not accidentally
+// lost by adding a user-provided copy constructor, copy assignment operator,
+// or destructor to `ValueId`.
+static_assert(std::is_trivially_copyable_v<Id>);
+
+// The number of bytes of one entry of an `IdTable` column, both in memory and
+// in the packed byte representation on disk (index and spill files). Use it for
+// the size of column entries, and `sizeof(Id)` only for the size of standalone
+// `Id` objects.
+//
+// NOTE: The constant depends on the layout of `Id`, so it lives next to the
+// definition of `Id` and has to change together with it. With a split layout
+// (separate payload and datatype columns), a column entry is smaller than a
+// standalone `Id`, which is padded.
+inline constexpr size_t BYTES_PER_ID_COLUMN_ENTRY = sizeof(Id);
+
+// TODO<joka921> Make the following ID and index types strong.
+using ColumnIndex = uint64_t;
+
+// TODO<joka921> The following IDs only appear within the text index in the
+// `Index` class, so they should not be public.
+using WordIndex = uint64_t;
+using WordOrEntityIndex = uint64_t;
+using TextBlockIndex = uint64_t;
+using CompressionCode = uint64_t;
+
+#endif  // QLEVER_SRC_GLOBAL_ID_H

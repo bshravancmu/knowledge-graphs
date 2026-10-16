@@ -1,0 +1,4410 @@
+// Copyright 2015 - 2025, University of Freiburg
+// Chair of Algorithms and Data Structures
+// Authors: Björn Buchhold <buchhold@cs.uni-freiburg.de> [2015 - 2017]
+//          Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
+
+#include <absl/strings/str_cat.h>
+#include <gmock/gmock.h>
+
+#include <range/v3/view/cartesian_product.hpp>
+
+#include "./printers/PayloadVariablePrinters.h"
+#include "./util/ParsedQueryTestHelpers.h"
+#include "./util/RuntimeParametersTestHelpers.h"
+#include "QueryPlannerTestHelpers.h"
+#include "engine/QueryPlanner.h"
+#include "parser/GraphPatternOperation.h"
+#include "parser/MagicServiceQuery.h"
+#include "rdfTypes/Variable.h"
+#include "util/GTestHelpers.h"
+#include "util/ParsedQueryTestHelpers.h"
+#include "util/RuntimeParametersTestHelpers.h"
+#include "util/TripleComponentTestHelpers.h"
+
+namespace h = queryPlannerTestHelpers;
+namespace {
+using Var = Variable;
+constexpr auto iri = ad_utility::testing::iri;
+using ad_utility::testing::parseQuery;
+using queryPlannerTestHelpers::NamedTag;
+}  // namespace
+using ::testing::HasSubstr;
+
+QueryPlanner makeQueryPlanner() {
+  return QueryPlanner{ad_utility::testing::getQec(),
+                      std::make_shared<ad_utility::CancellationHandle<>>()};
+}
+
+TEST(QueryPlanner, createTripleGraph) {
+  using TripleGraph = QueryPlanner::TripleGraph;
+  using Node = QueryPlanner::TripleGraph::Node;
+  using std::vector;
+
+  {
+    ParsedQuery pq = parseQuery(
+        "PREFIX : <http://rdf.myprefix.com/>\n"
+        "PREFIX ns: <http://rdf.myprefix.com/ns/>\n"
+        "PREFIX xxx: <http://rdf.myprefix.com/xxx/>\n"
+        "SELECT ?x ?z \n "
+        "WHERE \t {?x :myrel ?y. ?y ns:myrel ?z.?y xxx:rel2 "
+        "<http://abc.de>}");
+    QueryPlanner qp = makeQueryPlanner();
+    auto tg = qp.createTripleGraph(
+        &pq._rootGraphPattern._graphPatterns[0].getBasic());
+    TripleGraph expected =
+        TripleGraph(std::vector<std::pair<Node, std::vector<size_t>>>(
+            {std::make_pair<Node, vector<size_t>>(
+                 QueryPlanner::TripleGraph::Node(
+                     0, SparqlTriple(Var{"?x"},
+                                     iri("<http://rdf.myprefix.com/myrel>"),
+                                     Var{"?y"})),
+                 {1, 2}),
+             std::make_pair<Node, vector<size_t>>(
+                 QueryPlanner::TripleGraph::Node(
+                     1, SparqlTriple(Var{"?y"},
+                                     iri("<http://rdf.myprefix.com/ns/myrel>"),
+                                     Var{"?z"})),
+                 {0, 2}),
+             std::make_pair<Node, vector<size_t>>(
+                 QueryPlanner::TripleGraph::Node(
+                     2, SparqlTriple(Var{"?y"},
+                                     iri("<http://rdf.myprefix.com/xxx/rel2>"),
+                                     iri("<http://abc.de>"))),
+                 {0, 1})}));
+
+    ASSERT_TRUE(tg.isSimilar(expected));
+  }
+
+  {
+    ParsedQuery pq =
+        parseQuery("SELECT ?x WHERE {?x ?p <X>. ?x ?p2 <Y>. <X> ?p <Y>}");
+    QueryPlanner qp = makeQueryPlanner();
+    auto tg = qp.createTripleGraph(&pq.children()[0].getBasic());
+    TripleGraph expected =
+        TripleGraph(std::vector<std::pair<Node, std::vector<size_t>>>(
+            {std::make_pair<Node, vector<size_t>>(
+                 QueryPlanner::TripleGraph::Node(
+                     0, SparqlTriple(Var{"?x"}, Var{"?p"}, iri("<X>"))),
+                 {1, 2}),
+             std::make_pair<Node, vector<size_t>>(
+                 QueryPlanner::TripleGraph::Node(
+                     1, SparqlTriple(Var{"?x"}, Var{"?p2"}, iri("<Y>"))),
+                 {0}),
+             std::make_pair<Node, vector<size_t>>(
+                 QueryPlanner::TripleGraph::Node(
+                     2, SparqlTriple(iri("<X>"), Var{"?p"}, iri("<Y>"))),
+                 {0})}));
+    ASSERT_TRUE(tg.isSimilar(expected));
+  }
+
+  {
+    ParsedQuery pq = parseQuery(
+        "SELECT ?x WHERE { ?x <is-a> <Book> . \n"
+        "?x <Author> <Anthony_Newman_(Author)> }");
+    QueryPlanner qp = makeQueryPlanner();
+    auto tg = qp.createTripleGraph(&pq.children()[0].getBasic());
+
+    TripleGraph expected =
+        TripleGraph(std::vector<std::pair<Node, std::vector<size_t>>>({
+            std::make_pair<Node, vector<size_t>>(
+                QueryPlanner::TripleGraph::Node(
+                    0, SparqlTriple(Var{"?x"}, iri("<is-a>"), iri("<Book>"))),
+                {1}),
+            std::make_pair<Node, vector<size_t>>(
+                QueryPlanner::TripleGraph::Node(
+                    1, SparqlTriple(Var{"?x"}, iri("<Author>"),
+                                    iri("<Anthony_Newman_(Author)>"))),
+                {0}),
+        }));
+    ASSERT_TRUE(tg.isSimilar(expected));
+  }
+}
+
+TEST(QueryPlanner, testCpyCtorWithKeepNodes) {
+  {
+    ParsedQuery pq =
+        parseQuery("SELECT ?x WHERE {?x ?p <X>. ?x ?p2 <Y>. <X> ?p <Y>}");
+    QueryPlanner qp = makeQueryPlanner();
+    auto tg = qp.createTripleGraph(&pq.children()[0].getBasic());
+    ASSERT_EQ(2u, tg._nodeMap.find(0)->second->_variables.size());
+    ASSERT_EQ(2u, tg._nodeMap.find(1)->second->_variables.size());
+    ASSERT_EQ(1u, tg._nodeMap.find(2)->second->_variables.size());
+    ASSERT_EQ(
+        "0 {s: ?x, p: ?p, o: <X>} : (1, 2)\n"
+        "1 {s: ?x, p: ?p2, o: <Y>} : (0)\n"
+        "2 {s: <X>, p: ?p, o: <Y>} : (0)",
+        tg.asString());
+    {
+      std::vector<size_t> keep;
+      QueryPlanner::TripleGraph tgnew(tg, keep);
+      ASSERT_EQ("", tgnew.asString());
+    }
+    {
+      std::vector<size_t> keep;
+      keep.push_back(0);
+      keep.push_back(1);
+      keep.push_back(2);
+      QueryPlanner::TripleGraph tgnew(tg, keep);
+      ASSERT_EQ(
+          "0 {s: ?x, p: ?p, o: <X>} : (1, 2)\n"
+          "1 {s: ?x, p: ?p2, o: <Y>} : (0)\n"
+          "2 {s: <X>, p: ?p, o: <Y>} : (0)",
+          tgnew.asString());
+      ASSERT_EQ(2u, tgnew._nodeMap.find(0)->second->_variables.size());
+      ASSERT_EQ(2u, tgnew._nodeMap.find(1)->second->_variables.size());
+      ASSERT_EQ(1u, tgnew._nodeMap.find(2)->second->_variables.size());
+    }
+    {
+      std::vector<size_t> keep;
+      keep.push_back(0);
+      QueryPlanner::TripleGraph tgnew(tg, keep);
+      ASSERT_EQ("0 {s: ?x, p: ?p, o: <X>} : ()", tgnew.asString());
+      ASSERT_EQ(2u, tgnew._nodeMap.find(0)->second->_variables.size());
+    }
+    {
+      std::vector<size_t> keep;
+      keep.push_back(0);
+      keep.push_back(1);
+      QueryPlanner::TripleGraph tgnew(tg, keep);
+      ASSERT_EQ(
+          "0 {s: ?x, p: ?p, o: <X>} : (1)\n"
+          "1 {s: ?x, p: ?p2, o: <Y>} : (0)",
+          tgnew.asString());
+      ASSERT_EQ(2u, tgnew._nodeMap.find(0)->second->_variables.size());
+      ASSERT_EQ(2u, tgnew._nodeMap.find(1)->second->_variables.size());
+    }
+  }
+}
+
+TEST(QueryPlanner, testBFSLeaveOut) {
+  {
+    ParsedQuery pq =
+        parseQuery("SELECT ?x WHERE {?x ?p <X>. ?x ?p2 <Y>. <X> ?p <Y>}");
+    QueryPlanner qp = makeQueryPlanner();
+    auto tg = qp.createTripleGraph(&pq.children()[0].getBasic());
+    ASSERT_EQ(3u, tg._adjLists.size());
+    ad_utility::HashSet<size_t> lo;
+    auto out = tg.bfsLeaveOut(0, lo);
+    ASSERT_EQ(3u, out.size());
+    lo.insert(1);
+    out = tg.bfsLeaveOut(0, lo);
+    ASSERT_EQ(2u, out.size());
+    lo.insert(2);
+    out = tg.bfsLeaveOut(0, lo);
+    ASSERT_EQ(1u, out.size());
+    lo.clear();
+    lo.insert(0);
+    out = tg.bfsLeaveOut(1, lo);
+    ASSERT_EQ(1u, out.size());
+  }
+  {
+    ParsedQuery pq =
+        parseQuery("SELECT ?x WHERE {<A> <B> ?x. ?x <C> ?y. ?y <X> <Y>}");
+    QueryPlanner qp = makeQueryPlanner();
+    auto tg = qp.createTripleGraph(&pq.children()[0].getBasic());
+    ad_utility::HashSet<size_t> lo;
+    auto out = tg.bfsLeaveOut(0, lo);
+    ASSERT_EQ(3u, out.size());
+    lo.insert(1);
+    out = tg.bfsLeaveOut(0, lo);
+    ASSERT_EQ(1u, out.size());
+    lo.insert(2);
+    out = tg.bfsLeaveOut(0, lo);
+    ASSERT_EQ(1u, out.size());
+    lo.clear();
+    lo.insert(0);
+    out = tg.bfsLeaveOut(1, lo);
+    ASSERT_EQ(2u, out.size());
+  }
+}
+
+TEST(QueryPlanner, indexScanZeroVariables) {
+  auto scan = h::IndexScanFromStrings;
+  using enum Permutation::Enum;
+  h::expect(
+      "SELECT * \n "
+      "WHERE \t {<x> <y> <z>}",
+      scan("<x>", "<y>", "<z>"));
+  h::expect(
+      "SELECT * \n "
+      "WHERE \t {<x> <y> <z> . <x> <y> ?z}",
+      h::CartesianProductJoin(scan("<x>", "<y>", "<z>"),
+                              scan("<x>", "<y>", "?z")));
+}
+
+TEST(QueryPlanner, indexScanOneVariable) {
+  auto scan = h::IndexScanFromStrings;
+  using enum Permutation::Enum;
+  h::expect(
+      "PREFIX : <http://rdf.myprefix.com/>\n"
+      "SELECT ?x \n "
+      "WHERE \t {?x :myrel :obj}",
+      scan("?x", "<http://rdf.myprefix.com/myrel>",
+           "<http://rdf.myprefix.com/obj>", {POS}));
+
+  h::expect(
+      "PREFIX : <http://rdf.myprefix.com/>\n"
+      "SELECT ?x \n "
+      "WHERE \t {:subj :myrel ?x}",
+      scan("<http://rdf.myprefix.com/subj>", "<http://rdf.myprefix.com/myrel>",
+           "?x", {PSO}));
+}
+
+TEST(QueryPlanner, indexScanTwoVariables) {
+  auto scan = h::IndexScanFromStrings;
+  using enum Permutation::Enum;
+
+  h::expect(
+      "PREFIX : <http://rdf.myprefix.com/>\n"
+      "SELECT ?x \n "
+      "WHERE \t {?x :myrel ?y}",
+      scan("?x", "<http://rdf.myprefix.com/myrel>", "?y", {POS, PSO}));
+}
+
+TEST(QueryPlanner, joinOfTwoScans) {
+  auto scan = h::IndexScanFromStrings;
+  using enum Permutation::Enum;
+  h::expect(
+      "PREFIX : <pre/>\n"
+      "SELECT ?x \n "
+      "WHERE \t {:s1 :r ?x. :s2 :r ?x}",
+      h::Join(scan("<pre/s1>", "<pre/r>", "?x"),
+              scan("<pre/s2>", "<pre/r>", "?x")));
+
+  h::expect(
+      "PREFIX : <pre/>\n"
+      "SELECT ?x ?y \n "
+      "WHERE  {?y :r ?x . :s2 :r ?x}",
+      h::Join(scan("?y", "<pre/r>", "?x"), scan("<pre/s2>", "<pre/r>", "?x")));
+
+  h::expect(
+      "PREFIX : <pre/>\n"
+      "SELECT ?x ?y ?z \n "
+      "WHERE {?y :r ?x. ?z :r ?x}",
+      h::Join(scan("?y", "<pre/r>", "?x"), scan("?z", "<pre/r>", "?x")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, joinOfFullScans) {
+  auto scan = h::IndexScanFromStrings;
+  // Join between two full index scans on a single column
+  h::expect("SELECT * {?s ?p ?x. ?x ?p2 ?o2 .}",
+            h::Join(scan("?s", "?p", "?x"), scan("?x", "?p2", "?o2")));
+
+  // Join between two full index scans on two columns.
+  h::expect(
+      "SELECT * {?s ?p ?x. ?x ?p2 ?s .}",
+      h::MultiColumnJoin(scan("?s", "?p", "?x"), scan("?x", "?p2", "?s")));
+
+  // Join between two full index scans, one of which has a FILTER which can be
+  // applied before the JOIN.
+  h::expect("SELECT * {?s ?p ?x. ?x ?p2 ?o2 . FILTER (?s = ?p)}",
+            h::Join(h::Filter("?s = ?p", scan("?s", "?p", "?x")),
+                    scan("?x", "?p2", "?o2")));
+}
+
+TEST(QueryPlanner, testActorsBornInEurope) {
+  auto scan = h::IndexScanFromStrings;
+  using enum ::OrderBy::AscOrDesc;
+  h::expect(
+      "PREFIX : <pre/>\n"
+      "SELECT ?a \n "
+      "WHERE {?a :profession :Actor . ?a :born-in ?c. ?c :in :Europe}\n"
+      "ORDER BY ?a",
+      h::OrderBy(
+          {{Variable{"?a"}, Asc}},
+          h::UnorderedJoins(scan("?a", "<pre/profession>", "<pre/Actor>"),
+                            scan("?a", "<pre/born-in>", "?c"),
+                            scan("?c", "<pre/in>", "<pre/Europe>"))));
+}
+
+TEST(QueryPlanner, testStarTwoFree) {
+  auto scan = h::IndexScanFromStrings;
+  h::expect(
+      "PREFIX : <http://rdf.myprefix.com/>\n"
+      "PREFIX ns: <http://rdf.myprefix.com/ns/>\n"
+      "PREFIX xxx: <http://rdf.myprefix.com/xxx/>\n"
+      "SELECT ?x ?z \n "
+      "WHERE \t {?x :myrel ?y. ?y ns:myrel ?z. ?y xxx:rel2 "
+      "<http://abc.de>}",
+      h::UnorderedJoins(
+          scan("?x", "<http://rdf.myprefix.com/myrel>", "?y"),
+          scan("?y", "<http://rdf.myprefix.com/ns/myrel>", "?z"),
+          scan("?y", "<http://rdf.myprefix.com/xxx/rel2>", "<http://abc.de>")));
+}
+
+TEST(QueryPlanner, testFilterAfterSeed) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec(
+      "<s> <r> <x>, <x2>, <x3>. <s2> <r> <y1>, <y2>, <y3>.");
+  // The following query leads to a different query plan with the dynamic
+  // programming and the greedy query planner, because the greedy planner
+  // also applies the filters greedily.
+  std::string query =
+      "SELECT ?x ?y ?z WHERE {"
+      "?x <r> ?y . ?y <r> ?z . "
+      "FILTER(?x != ?y) }";
+  h::expectDynamicProgramming(
+      query,
+      h::Filter("?x != ?y",
+                h::Join(scan("?x", "<r>", "?y"), scan("?y", "<r>", "?z"))),
+      qec);
+  h::expectGreedy(query,
+                  h::Join(h::Filter("?x != ?y", scan("?x", "<r>", "?y")),
+                          scan("?y", "<r>", "?z")),
+                  qec);
+}
+
+TEST(QueryPlanner, testFilterAfterJoin) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<s> <r> <x>");
+  h::expect(
+      "SELECT ?x ?y ?z WHERE {"
+      "?x <r> ?y . ?y <r> ?z . "
+      "FILTER(?x != ?z) }",
+      h::Filter("?x != ?z",
+                h::Join(scan("?x", "<r>", "?y"), scan("?y", "<r>", "?z"))),
+      qec);
+}
+
+// Regression test for https://github.com/ad-freiburg/qlever/issues/3429 : A
+// filter must not be applied to a subtree in which one of its variables might
+// be UNDEF, because a subsequent join can still bind that variable, in which
+// case the filter has to be evaluated on the bound value.
+TEST(QueryPlanner, filtersAreNotAppliedToPossiblyUndefinedVariables) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<s> <r> <x>. <s> <r2> <y>.");
+
+  // `?p` might be UNDEF because of the `VALUES` clause. Applying the filter
+  // directly to the `VALUES` clause would remove the UNDEF row and thus make
+  // the whole result empty, although the correct result is "all triples with a
+  // predicate other than `<r>`".
+  auto undefValues = h::ValuesClause("VALUES (?p) { (UNDEF) }");
+  std::string queryWithUndef =
+      "SELECT * { ?s ?p ?o . FILTER(?p != <r>) VALUES ?p { UNDEF } }";
+  // The greedy planner applies the filter to the index scan, where `?p` is
+  // always defined.
+  h::expectGreedy(queryWithUndef,
+                  h::Join(h::Sort(undefValues),
+                          h::Filter("?p != <r>", scan("?s", "?p", "?o"))),
+                  qec);
+  // The dynamic programming planner applies it after the join.
+  h::expectDynamicProgramming(
+      queryWithUndef,
+      h::Filter("?p != <r>",
+                h::Join(h::Sort(undefValues), scan("?s", "?p", "?o"))),
+      qec);
+
+  // The definedness is tracked per variable: `?s` is always defined by the
+  // `VALUES` clause, so the filter on `?s` may still be applied to it (and to
+  // the index scan), while the filter on the possibly undefined `?o` may only
+  // be applied at the very end.
+  std::string queryWithTwoFilters =
+      "SELECT * { ?s <r> ?x . VALUES (?s ?o) { (<s> UNDEF) } "
+      "FILTER(?s != <x>) FILTER(?o != <y>) }";
+  auto valuesWithFilter = h::Sort(h::Filter(
+      "?s != <x>", h::ValuesClause("VALUES (?s\t?o) { (<s> UNDEF) }")));
+  h::expectGreedy(
+      queryWithTwoFilters,
+      h::Filter("?o != <y>",
+                h::Join(valuesWithFilter,
+                        h::Filter("?s != <x>", scan("?s", "<r>", "?x")))),
+      qec);
+
+  // Sanity check that filters are still applied as early as possible if all
+  // their variables are always defined.
+  h::expectGreedy(
+      "SELECT * { ?s ?p ?o . FILTER(?p != <r>) VALUES ?p { <r2> } }",
+      h::Join(h::Sort(h::Filter("?p != <r>",
+                                h::ValuesClause("VALUES (?p) { (<r2>) }"))),
+              h::Filter("?p != <r>", scan("?s", "?p", "?o"))),
+      qec);
+}
+
+// Test that a non-deterministic filter is applied only at the end of the
+// group graph pattern, not to one side of a join.
+TEST(QueryPlanner, nonDeterministicFiltersAreAppliedLast) {
+  auto scan = h::IndexScanFromStrings;
+  auto join = h::Join(scan("?s", "<p>", "?o"), scan("?s", "<q>", "?y"));
+  h::expectGreedy("SELECT * { ?s <p> ?o . ?s <q> ?y FILTER(?o > 3) }",
+                  h::Join(h::Filter("?o > 3", scan("?s", "<p>", "?o")),
+                          scan("?s", "<q>", "?y")));
+  h::expectGreedy(
+      "SELECT * { ?s <p> ?o . ?s <q> ?y FILTER(?o > 3 && RAND() < 0.5) }",
+      h::Filter("?o > 3 && RAND() < 0.5", join));
+  h::expectGreedy("SELECT * { ?s <p> ?o . ?s <q> ?y FILTER(RAND() < 0.5) }",
+                  h::Filter("RAND() < 0.5", join));
+  h::expectDynamicProgramming(
+      "SELECT * { ?s <p> ?o . ?s <q> ?y FILTER(RAND() < 0.5) }",
+      h::Filter("RAND() < 0.5", join));
+  // The same holds for an `EXISTS` with a non-deterministic argument.
+  h::expectGreedy(
+      "SELECT * { ?s <p> ?o . ?s <q> ?y "
+      "FILTER EXISTS { ?s <r> ?b FILTER(RAND() < 0.5) } }",
+      h::Filter("EXISTS { ?s <r> ?b FILTER(RAND() < 0.5) }",
+                h::ExistsJoin(join, ::testing::_)));
+}
+
+TEST(QueryPlanner, threeVarTriples) {
+  auto scan = h::IndexScanFromStrings;
+  using enum Permutation::Enum;
+
+  h::expect(
+      "SELECT ?x ?p ?o WHERE {"
+      "<s> <p> ?x . ?x ?p ?o }",
+      h::Join(scan("<s>", "<p>", "?x", {SPO, PSO}),
+              scan("?x", "?p", "?o", {SPO, SOP})));
+
+  h::expect(
+      "SELECT ?x ?p ?o WHERE {"
+      "<s> ?x <o> . ?x ?p ?o }",
+      h::Join(scan("<s>", "?x", "<o>", {SOP, OSP}),
+              scan("?x", "?p", "?o", {SPO, SOP})));
+
+  h::expect(
+      "SELECT ?s ?p ?o WHERE {"
+      "<s> <p> ?p . ?s ?p ?o }",
+      h::Join(scan("<s>", "<p>", "?p", {SPO, PSO}),
+              scan("?s", "?p", "?o", {PSO, POS})));
+}
+
+TEST(QueryPlanner, threeVarTriplesTCJ) {
+  auto qec = ad_utility::testing::getQec("<s> <p> <x>");
+  auto scan = h::IndexScanFromStrings;
+  h::expect(
+      "SELECT ?x ?p ?o WHERE {"
+      "<s> ?p ?x . ?x ?p ?o }",
+      h::MultiColumnJoin(scan("<s>", "?p", "?x"), scan("?x", "?p", "?o")), qec);
+
+  h::expect(
+      "SELECT ?s ?p ?o WHERE {"
+      "?s ?p ?o . ?s ?p <x> }",
+      h::MultiColumnJoin(scan("?s", "?p", "?o"), scan("?s", "?p", "<x>")), qec);
+}
+
+TEST(QueryPlanner, threeVarXthreeVarException) {
+  auto scan = h::IndexScanFromStrings;
+  h::expect(
+      "SELECT ?s ?s2 WHERE {"
+      "?s ?p ?o . ?s2 ?p ?o }",
+      h::MultiColumnJoin(scan("?s", "?p", "?o"), scan("?s2", "?p", "?o")));
+}
+
+TEST(QueryExecutionTreeTest, testBooksbyNewman) {
+  auto scan = h::IndexScanFromStrings;
+  h::expect(
+      "SELECT ?x WHERE { ?x <is-a> <Book> . "
+      "?x <Author> <Anthony_Newman_(Author)> }",
+      h::Join(scan("?x", "<is-a>", "<Book>"),
+              scan("?x", "<Author>", "<Anthony_Newman_(Author)>")));
+}
+
+TEST(QueryExecutionTreeTest, testBooksGermanAwardNomAuth) {
+  auto scan = h::IndexScanFromStrings;
+  h::expect(
+      "SELECT ?x ?y WHERE { "
+      "?x <is-a> <Person> . "
+      "?x <Country_of_nationality> <Germany> . "
+      "?x <Author> ?y . "
+      "?y <is-a> <Award-Nominated_Work> }",
+      h::UnorderedJoins(scan("?x", "<is-a>", "<Person>"),
+                        scan("?x", "<Country_of_nationality>", "<Germany>"),
+                        scan("?x", "<Author>", "?y"),
+                        scan("?y", "<is-a>", "<Award-Nominated_Work>")));
+}
+
+TEST(QueryExecutionTreeTest, testPlantsEdibleLeaves) {
+  auto scan = h::IndexScanFromStrings;
+  auto wordScan = h::TextIndexScanForWord;
+  auto entityScan = h::TextIndexScanForEntity;
+  h::expect(
+      "SELECT ?a WHERE  {?a <is-a> <Plant> . ?c ql:contains-entity ?a. ?c "
+      "ql:contains-word \"edible leaves\"}",
+      h::UnorderedJoins(scan("?a", "<is-a>", "<Plant>"),
+                        wordScan(Var{"?c"}, "edible"),
+                        wordScan(Var{"?c"}, "leaves"),
+                        entityScan(Var{"?c"}, Var{"?a"}, "edible")));
+}
+
+TEST(QueryExecutionTreeTest, testCoOccFreeVar) {
+  auto scan = h::IndexScanFromStrings;
+  auto wordScan = h::TextIndexScanForWord;
+  auto entityScan = h::TextIndexScanForEntity;
+  h::expect(
+      "PREFIX : <> SELECT ?x ?y WHERE { ?x :is-a :Politician . ?c "
+      "ql:contains-entity ?x . ?c ql:contains-word \"friend*\" . ?c "
+      "ql:contains-entity ?y }",
+      h::UnorderedJoins(scan("?x", "<is-a>", "<Politician>"),
+                        entityScan(Var{"?c"}, Var{"?x"}, "friend*"),
+                        wordScan(Var{"?c"}, "friend*"),
+                        entityScan(Var{"?c"}, Var{"?y"}, "friend*")));
+}
+
+TEST(QueryExecutionTreeTest, testPoliticiansFriendWithScieManHatProj) {
+  auto scan = h::IndexScanFromStrings;
+  auto wordScan = h::TextIndexScanForWord;
+  auto entityScan = h::TextIndexScanForEntity;
+  h::expect(
+      "SELECT ?p ?s"
+      "WHERE {"
+      "?a <is-a> <Politician> . "
+      "?c ql:contains-entity ?a ."
+      "?c ql:contains-word \"friend*\" ."
+      "?c ql:contains-entity ?s ."
+      "?s <is-a> <Scientist> ."
+      "?c2 ql:contains-entity ?s ."
+      "?c2 ql:contains-word \"manhattan project\"}",
+      h::UnorderedJoins(scan("?a", "<is-a>", "<Politician>"),
+                        entityScan(Var{"?c"}, Var{"?a"}, "friend*"),
+                        wordScan(Var{"?c"}, "friend*"),
+                        entityScan(Var{"?c"}, Var{"?s"}, "friend*"),
+                        scan("?s", "<is-a>", "<Scientist>"),
+                        entityScan(Var{"?c2"}, Var{"?s"}, "manhattan"),
+                        wordScan(Var{"?c2"}, "manhattan"),
+                        wordScan(Var{"?c2"}, "project")));
+}
+
+TEST(QueryExecutionTreeTest, testCyclicQuery) {
+  ParsedQuery pq = parseQuery(
+      "SELECT ?x ?y ?m WHERE { ?x <Spouse_(or_domestic_partner)> ?y . "
+      "?x <Film_performance> ?m . ?y <Film_performance> ?m }");
+  QueryPlanner qp = makeQueryPlanner();
+  auto qet = qp.createExecutionTree(pq);
+
+  // There are four possible outcomes of this test with the same size
+  // estimate. It is currently very hard to make the query planning
+  // deterministic in a test scenario, so we allow all four candidates
+
+  // delete all whitespace from the strings to make the matching easier.
+  auto strip = [](std::string s) {
+    s.erase(std::remove_if(s.begin(), s.end(), ::isspace), s.end());
+    return s;
+  };
+  std::string possible1 = strip(
+      "{\n  MULTI_COLUMN_JOIN\n    {\n    SCAN PSO with P = "
+      "\"<Film_performance>\"\n    qet-width: 2 \n  }\n  join-columns: [0 & "
+      "1]\n  |X|\n    {\n    SORT(internal) on columns:asc(2) asc(1) \n    "
+      "{\n      JOIN\n      {\n        SCAN PSO with P = "
+      "\"<Film_performance>\"\n        qet-width: 2 \n      } join-column: "
+      "[0]\n      |X|\n      {\n        SCAN PSO with P = "
+      "\"<Spouse_(or_domestic_partner)>\"\n        qet-width: 2 \n      } "
+      "join-column: [0]\n      qet-width: 3 \n    }\n    qet-width: 3 \n  "
+      "}\n  join-columns: [2 & 1]\n  qet-width: 3 \n}");
+  std::string possible2 = strip(
+      "{\n  MULTI_COLUMN_JOIN\n    {\n    SCAN POS with P = "
+      "\"<Film_performance>\"\n    qet-width: 2 \n  }\n  join-columns: [0 & "
+      "1]\n  |X|\n    {\n    SORT(internal) on columns:asc(1) asc(2) \n    "
+      "{\n      JOIN\n      {\n        SCAN PSO with P = "
+      "\"<Film_performance>\"\n        qet-width: 2 \n      } join-column: "
+      "[0]\n      |X|\n      {\n        SCAN PSO with P = "
+      "\"<Spouse_(or_domestic_partner)>\"\n        qet-width: 2 \n      } "
+      "join-column: [0]\n      qet-width: 3 \n    }\n    qet-width: 3 \n  "
+      "}\n  join-columns: [1 & 2]\n  qet-width: 3 \n}");
+  std::string possible3 = strip(
+      "{\n  MULTI_COLUMN_JOIN\n    {\n    SCAN POS with P = "
+      "\"<Spouse_(or_domestic_partner)>\"\n    qet-width: 2 \n  }\n  "
+      "join-columns: [0 & 1]\n  |X|\n    {\n    SORT(internal) on "
+      "columns:asc(1) asc(2) \n    {\n      JOIN\n      {\n        SCAN POS "
+      "with P = \"<Film_performance>\"\n        qet-width: 2 \n      } "
+      "join-column: [0]\n      |X|\n      {\n        SCAN POS with P = "
+      "\"<Film_performance>\"\n        qet-width: 2 \n      } join-column: "
+      "[0]\n      qet-width: 3 \n    }\n    qet-width: 3 \n  }\n  "
+      "join-columns: [1 & 2]\n  qet-width: 3 \n}");
+  std::string possible4 = strip(R"xxx(MULTI_COLUMN_JOIN
+        {
+          SCAN PSO with P = "<Film_performance>"
+          qet-width: 2
+        } join-columns: [0 & 1]
+        |X|
+        {
+          SORT(internal) on columns:asc(1) asc(2)
+          {
+            JOIN
+            {
+              SCAN POS with P = "<Spouse_(or_domestic_partner)>"
+              qet-width: 2
+            } join-column: [0]
+            |X|
+            {
+              SCAN PSO with P = "<Film_performance>"
+              qet-width: 2
+            } join-column: [0]
+            qet-width: 3
+          }
+          qet-width: 3
+        } join-columns: [1 & 2]
+        qet-width: 3
+        })xxx");
+  std::string possible5 = strip(R"xxx(MULTI_COLUMN_JOIN
+{
+  SCAN POS with P = "<Film_performance>"
+  qet-width: 2
+} join-columns: [0 & 1]
+|X|
+{
+  SORT / ORDER BY on columns:asc(2) asc(1)
+  {
+    JOIN
+    {
+      SCAN POS with P = "<Spouse_(or_domestic_partner)>"
+      qet-width: 2
+    } join-column: [0]
+    |X|
+    {
+      SCAN PSO with P = "<Film_performance>"
+      qet-width: 2
+    } join-column: [0]
+    qet-width: 3
+  }
+  qet-width: 3
+} join-columns: [2 & 1]
+qet-width: 3
+}
+)xxx");
+
+  auto actual = strip(qet->getCacheKey());
+
+  if (actual != possible1 && actual != possible2 && actual != possible3 &&
+      actual != possible4 && actual != possible5) {
+    // TODO<joka921> Make this work, there are just too many possibilities.
+    /*
+    FAIL() << "query execution tree is none of the possible trees, it is "
+              "actually "
+           << qet->getCacheKey() << '\n' << actual << '\n'
+           */
+  }
+}
+
+TEST(QueryExecutionTreeTest, testFormerSegfaultTriFilter) {
+  ParsedQuery pq = parseQuery(
+      "PREFIX fb: <http://rdf.freebase.com/ns/>\n"
+      "SELECT DISTINCT ?1 ?0 WHERE {\n"
+      "fb:m.0fkvn fb:government.government_office_category.officeholders "
+      "?0 "
+      ".\n"
+      "?0 fb:government.government_position_held.jurisdiction_of_office "
+      "fb:m.0vmt .\n"
+      "?0 fb:government.government_position_held.office_holder ?1 .\n"
+      "FILTER (?1 != fb:m.0fkvn) .\n"
+      "FILTER (?1 != fb:m.0vmt) .\n"
+      "FILTER (?1 != fb:m.018mts)"
+      "} LIMIT 300");
+  QueryPlanner qp = makeQueryPlanner();
+  auto qet = qp.createExecutionTree(pq);
+  ASSERT_TRUE(qet->containsVariable(Variable{"?1"}));
+  ASSERT_TRUE(qet->containsVariable(Variable{"?0"}));
+}
+
+TEST(QueryPlanner, testSimpleOptional) {
+  auto scan = h::IndexScanFromStrings;
+  h::expect(
+      "SELECT ?a ?b \n "
+      "WHERE  {?a <rel1> ?b . OPTIONAL { ?a <rel2> ?c }}",
+      h::OptionalJoin(scan("?a", "<rel1>", "?b"), scan("?a", "<rel2>", "?c")));
+  h::expect(
+      "SELECT ?a ?b \n "
+      "WHERE  {?a <rel1> ?b . "
+      "OPTIONAL { ?a <rel2> ?c }} ORDER BY ?b",
+      h::OrderBy({{Variable{"?b"}, ::OrderBy::AscOrDesc::Asc}},
+                 h::OptionalJoin(scan("?a", "<rel1>", "?b"),
+                                 scan("?a", "<rel2>", "?c"))));
+  // The second OPTIONAL is connected to the result of the first one.
+  h::expect(
+      "SELECT * { ?a <rel1> ?b OPTIONAL { ?a <rel2> ?c } "
+      "OPTIONAL { ?a <rel3> ?d } }",
+      h::OptionalJoin(h::OptionalJoin(scan("?a", "<rel1>", "?b"),
+                                      scan("?a", "<rel2>", "?c")),
+                      scan("?a", "<rel3>", "?d")));
+}
+
+TEST(QueryPlanner, SimpleTripleOneVariable) {
+  using enum Permutation::Enum;
+
+  auto scan = h::IndexScanFromStrings;
+  // With only one variable, there are always two permutations that will yield
+  // exactly the same result. The query planner consistently chooses one of
+  // them.
+  h::expect("SELECT * WHERE { ?s <p> <o> }", scan("?s", "<p>", "<o>", {POS}));
+  h::expect("SELECT * WHERE { <s> ?p <o> }", scan("<s>", "?p", "<o>", {SOP}));
+  h::expect("SELECT * WHERE { <s> <p> ?o }", scan("<s>", "<p>", "?o", {PSO}));
+}
+
+TEST(QueryPlanner, SimpleTripleTwoVariables) {
+  using enum Permutation::Enum;
+
+  // In the following tests we need the query planner to be aware that the index
+  // contains the entities `<s> <p> <o>` that are used below, otherwise it will
+  // estimate that and Index scan has the same cost as an Index scan followed by
+  // a sort (because both plans have a cost of zero if the index scan is known
+  // to be empty).
+
+  auto qec = ad_utility::testing::getQec("<s> <p> <o>");
+  auto scan = h::IndexScanFromStrings;
+
+  // Fixed predicate.
+
+  // Without `Order By`, two orderings are possible, both are fine.
+  h::expect("SELECT * WHERE { ?s <p> ?o }", scan("?s", "<p>", "?o", {POS, PSO}),
+            qec);
+  // Must always be a single index scan, never index scan + sorting.
+  h::expect("SELECT * WHERE { ?s <p> ?o } INTERNAL SORT BY ?o",
+            scan("?s", "<p>", "?o", {POS}), qec);
+  h::expect("SELECT * WHERE { ?s <p> ?o } INTERNAL SORT BY ?s",
+            scan("?s", "<p>", "?o", {PSO}), qec);
+
+  // Fixed subject.
+  h::expect("SELECT * WHERE { <s> ?p ?o }", scan("<s>", "?p", "?o", {SOP, SPO}),
+            qec);
+  h::expect("SELECT * WHERE { <s> ?p ?o } INTERNAL SORT BY ?o",
+            scan("<s>", "?p", "?o", {SOP}), qec);
+  h::expect("SELECT * WHERE { <s> ?p ?o } INTERNAL SORT BY ?p",
+            scan("<s>", "?p", "?o", {SPO}), qec);
+
+  // Fixed object.
+  h::expect("SELECT * WHERE { <s> ?p ?o }", scan("<s>", "?p", "?o", {SOP, SPO}),
+            qec);
+  h::expect("SELECT * WHERE { <s> ?p ?o } INTERNAL SORT BY ?o",
+            scan("<s>", "?p", "?o", {SOP}), qec);
+  h::expect("SELECT * WHERE { <s> ?p ?o } INTERNAL SORT BY ?p",
+            scan("<s>", "?p", "?o", {SPO}), qec);
+}
+
+TEST(QueryPlanner, SimpleTripleThreeVariables) {
+  using enum Permutation::Enum;
+
+  // Fixed predicate.
+  // Don't care about the sorting.
+  h::expect("SELECT * WHERE { ?s ?p ?o }",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"},
+                         {SPO, SOP, PSO, POS, OSP, OPS}));
+
+  // Sorted by one variable, two possible permutations remain.
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?s",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {SPO, SOP}));
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?p",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {POS, PSO}));
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?o",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {OSP, OPS}));
+
+  // Sorted by two variables, this makes the permutation unique.
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?s ?o",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {SOP}));
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?s ?p",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {SPO}));
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?o ?s",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {OSP}));
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?o ?p",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {OPS}));
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?p ?s",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {PSO}));
+  h::expect("SELECT * WHERE { ?s ?p ?o } INTERNAL SORT BY ?p ?o",
+            h::IndexScan(Var{"?s"}, Var{"?p"}, Var{"?o"}, {POS}));
+}
+
+TEST(QueryPlanner, CartesianProductJoin) {
+  auto scan = h::IndexScanFromStrings;
+  h::expect(
+      "SELECT ?x ?p ?o WHERE {"
+      "<s> <p> ?o . ?a <b> <c> }",
+      h::CartesianProductJoin(scan("<s>", "<p>", "?o"),
+                              scan("?a", "<b>", "<c>")));
+  // This currently fails because of a bug, we have to fix the bug...
+  h::expect(
+      "SELECT ?x ?p ?o WHERE {"
+      "<s> ?p ?o . ?a ?b ?c }",
+      h::CartesianProductJoin(scan("<s>", "?p", "?o"), scan("?a", "?b", "?c")));
+  h::expect(
+      "SELECT * WHERE {"
+      "?s <p> <o> . ?s <p2> ?o2 . ?x <b> ?c }",
+      h::CartesianProductJoin(
+          h::Join(scan("?s", "<p>", "<o>"), scan("?s", "<p2>", "?o2")),
+          scan("?x", "<b>", "?c")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, DistinctIsPushedDown) {
+  auto scan = h::IndexScanFromStrings;
+
+  // `SELECT DISTINCT *` over a full index scan `?s ?p ?o` is a no-op: the scan
+  // already produces distinct rows, so no `Distinct` operation is added.
+  h::expect("SELECT DISTINCT * WHERE { ?s ?p ?o }", scan("?s", "?p", "?o"));
+
+  // The `DISTINCT` is pushed through the `CartesianProductJoin` into its
+  // children instead of being applied on top of the (potentially huge)
+  // product. Here both children are single-variable scans that are already
+  // distinct, so no `Distinct` operation is added at all.
+  h::expect("SELECT DISTINCT * WHERE { <s> <p> ?o . ?a <b> <c> }",
+            h::CartesianProductJoin(scan("<s>", "<p>", "?o"),
+                                    scan("?a", "<b>", "<c>")));
+
+  // Test based on https://github.com/ad-freiburg/qlever/issues/1895.
+  h::expect(
+      "SELECT DISTINCT * WHERE { ?s <p> <o> . ?s <p2> <o2> . ?x <b> <c> }",
+      h::CartesianProductJoin(
+          h::Distinct({0}, h::Join(scan("?s", "<p>", "<o>"),
+                                   scan("?s", "<p2>", "<o2>"))),
+          scan("?x", "<b>", "<c>")));
+}
+
+namespace {
+// A helper function to recreate the internal variables added by the query
+// planner for transitive paths.
+std::string internalVar(int i) {
+  return absl::StrCat(QLEVER_INTERNAL_VARIABLE_QUERY_PLANNER_PREFIX, i);
+}
+}  // namespace
+
+TEST(QueryPlanner, TransitivePathUnbound) {
+  auto scan = h::IndexScanFromStrings;
+  TransitivePathSide left{std::nullopt, 0, Variable("?x"), 0};
+  TransitivePathSide right{std::nullopt, 1, Variable("?y"), 1};
+  h::expect(
+      "SELECT ?x ?y WHERE {"
+      "?x <p>+ ?y }",
+      h::transitivePath(left, right, 1, std::numeric_limits<size_t>::max(),
+                        scan(internalVar(0), "<p>", internalVar(1))));
+}
+
+TEST(QueryPlanner, TransitivePathLeftId) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<s> <p> <o>");
+
+  using ad_utility::triple_component::Iri;
+
+  TransitivePathSide left{std::nullopt, 0, Iri::fromIriref("<s>"), 0};
+  TransitivePathSide right{std::nullopt, 1, Variable("?y"), 1};
+  h::expect(
+      "SELECT ?y WHERE { <s> <p>+ ?y }",
+      h::transitivePath(left, right, 1, std::numeric_limits<size_t>::max(),
+                        scan(internalVar(0), "<p>", internalVar(1))),
+      qec);
+}
+
+TEST(QueryPlanner, TransitivePathRightId) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<s> <p> <o>");
+
+  using ad_utility::triple_component::Iri;
+
+  TransitivePathSide left{std::nullopt, 1, Variable("?x"), 0};
+  TransitivePathSide right{std::nullopt, 0, Iri::fromIriref("<o>"), 1};
+  h::expect(
+      "SELECT ?y WHERE { ?x <p>+ <o> }",
+      h::transitivePath(left, right, 1, std::numeric_limits<size_t>::max(),
+                        scan(internalVar(0), "<p>", internalVar(1))),
+      qec);
+}
+
+TEST(QueryPlanner, TransitivePathBindLeft) {
+  auto scan = h::IndexScanFromStrings;
+  TransitivePathSide left{std::nullopt, 0, Variable("?x"), 0};
+  TransitivePathSide right{std::nullopt, 1, Variable("?y"), 1};
+  h::expect(
+      "SELECT ?x ?y WHERE {"
+      "<s> <p> ?x."
+      "?x <p>* ?y }",
+      h::transitivePath(left, right, 0, std::numeric_limits<size_t>::max(),
+                        scan("<s>", "<p>", "?x"),
+                        scan(internalVar(0), "<p>", internalVar(1))));
+}
+
+TEST(QueryPlanner, TransitivePathBindRight) {
+  auto scan = h::IndexScanFromStrings;
+  TransitivePathSide left{std::nullopt, 1, Variable("?x"), 0};
+  TransitivePathSide right{std::nullopt, 0, Variable("?y"), 1};
+  h::expect(
+      "SELECT ?x ?y WHERE {"
+      "?x <p>* ?y."
+      "?y <p> <o> }",
+      h::transitivePath(
+          left, right, 0, std::numeric_limits<size_t>::max(),
+          scan("?y", "<p>", "<o>"),
+          scan(internalVar(0), "<p>", internalVar(1), {Permutation::POS})),
+      ad_utility::testing::getQec("<x> <p> <o>. <x2> <p> <o2>"));
+}
+
+TEST(QueryPlanner, PathSearchSingleTarget) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x>")};
+  std::vector<Id> targets{getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
+}
+
+TEST(QueryPlanner, PathSearchMultipleTargets) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x>")};
+  std::vector<Id> targets{getId("<y>"), getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <y> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
+}
+
+TEST(QueryPlanner, PathSearchMultipleSourcesAndTargets) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec =
+      ad_utility::testing::getQec("<x1> <p> <y>. <x2> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x1>"), getId("<x2>")};
+  std::vector<Id> targets{getId("<y>"), getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x1> ;"
+      "pathSearch:source <x2> ;"
+      "pathSearch:target <y> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
+}
+
+TEST(QueryPlanner, PathSearchMultipleSourcesAndTargetsCartesian) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec =
+      ad_utility::testing::getQec("<x1> <p> <y>. <x2> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x1>"), getId("<x2>")};
+  std::vector<Id> targets{getId("<y>"), getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x1> ;"
+      "pathSearch:source <x2> ;"
+      "pathSearch:target <y> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:cartesian true;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
+}
+
+TEST(QueryPlanner, PathSearchMultipleSourcesAndTargetsNonCartesian) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec =
+      ad_utility::testing::getQec("<x1> <p> <y>. <x2> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x1>"), getId("<x2>")};
+  std::vector<Id> targets{getId("<y>"), getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {},
+                                 false};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x1> ;"
+      "pathSearch:source <x2> ;"
+      "pathSearch:target <y> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:cartesian false;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, numPathsPerTarget) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec =
+      ad_utility::testing::getQec("<x1> <p> <y>. <x2> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x1>"), getId("<x2>")};
+  std::vector<Id> targets{getId("<y>"), getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {},
+                                 true,
+                                 1};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x1> ;"
+      "pathSearch:source <x2> ;"
+      "pathSearch:target <y> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:numPathsPerTarget 1;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, maxDepth) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec =
+      ad_utility::testing::getQec("<x1> <p> <y>. <x2> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x1>"), getId("<x2>")};
+  std::vector<Id> targets{getId("<y>"), getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {},
+                                 true,
+                                 std::nullopt,
+                                 2};
+  h::expect(
+      R"(
+PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>
+SELECT ?start ?end ?path ?edge WHERE {
+  SERVICE pathSearch: {
+    _:path pathSearch:algorithm pathSearch:allPaths ;
+           pathSearch:source <x1> ;
+           pathSearch:source <x2> ;
+           pathSearch:target <y> ;
+           pathSearch:target <z> ;
+           pathSearch:pathColumn ?path ;
+           pathSearch:edgeColumn ?edge ;
+           pathSearch:start ?start ;
+           pathSearch:end ?end ;
+           pathSearch:maxDepth 2 ;
+    {
+      SELECT * WHERE {
+        ?start <p> ?end .
+      }
+    }
+  }
+}
+)",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end")), qec);
+}
+
+TEST(QueryPlanner, PathSearchWithEdgeProperties) {
+  auto scan = h::IndexScanFromStrings;
+  auto join = h::Join;
+  auto qec = ad_utility::testing::getQec(
+      "<x> <p1> <m1>. <m1> <p2> <y>. <y> <p1> <m2>. <m2> <p2> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x>")};
+  std::vector<Id> targets{getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {Variable("?middle")}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:edgeProperty ?middle;"
+      "{SELECT * WHERE {"
+      "?start <p1> ?middle."
+      "?middle <p2> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true,
+                    h::Sort(join(scan("?start", "<p1>", "?middle"),
+                                 scan("?middle", "<p2>", "?end")))),
+      qec);
+}
+
+TEST(QueryPlanner, PathSearchWithMultipleEdgePropertiesAndTargets) {
+  auto scan = h::IndexScanFromStrings;
+  auto join = h::UnorderedJoins;
+  auto qec = ad_utility::testing::getQec(
+      "<x> <p1> <m1>."
+      "<m1> <p3> <n1>."
+      "<m1> <p2> <y>."
+      "<y> <p1> <m2>."
+      "<m2> <p3> <n2>."
+      "<m2> <p2> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x>")};
+  std::vector<Id> targets{getId("<z>"), getId("<y>")};
+  PathSearchConfiguration config{
+      PathSearchAlgorithm::ALL_PATHS,
+      sources,
+      targets,
+      Variable("?start"),
+      Variable("?end"),
+      Variable("?path"),
+      Variable("?edge"),
+      {Variable("?middle"), Variable("?middleAttribute")}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:target <y> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:edgeProperty ?middle;"
+      "pathSearch:edgeProperty ?middleAttribute;"
+      "{SELECT * WHERE {"
+      "?start <p1> ?middle."
+      "?middle <p3> ?middleAttribute."
+      "?middle <p2> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true,
+                    h::Sort(join(scan("?start", "<p1>", "?middle"),
+                                 scan("?middle", "<p3>", "?middleAttribute"),
+                                 scan("?middle", "<p2>", "?end")))),
+      qec);
+}
+
+TEST(QueryPlanner, PathSearchJoinOnEdgeProperty) {
+  auto scan = h::IndexScanFromStrings;
+  auto join = h::Join;
+  auto qec = ad_utility::testing::getQec(
+      "<x> <p1> <m1>. <m1> <p2> <y>. <y> <p1> <m2>. <m2> <p2> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x>")};
+  std::vector<Id> targets{getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {Variable("?middle")}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "VALUES ?middle {<m1>} "
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:edgeProperty ?middle;"
+      "{SELECT * WHERE {"
+      "?start <p1> ?middle."
+      "?middle <p2> ?end."
+      "}}}}",
+      join(h::Sort(h::ValuesClause("VALUES (?middle) { (<m1>) }")),
+           h::Sort(
+               h::pathSearch(config, true, true,
+                             h::Sort(join(scan("?start", "<p1>", "?middle"),
+                                          scan("?middle", "<p2>", "?end")))))),
+      qec);
+}
+
+TEST(QueryPlanner, PathSearchSourceBound) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  Variable sources{"?source"};
+  std::vector<Id> targets{getId("<z>")};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "VALUES ?source {<x>}"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end"),
+                    h::ValuesClause("VALUES (?source) { (<x>) }")),
+      qec);
+}
+
+TEST(QueryPlanner, PathSearchTargetBound) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  std::vector<Id> sources{getId("<x>")};
+  Variable targets{"?target"};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "VALUES ?target {<z>}"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target ?target ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end"),
+                    h::ValuesClause("VALUES (?target) { (<z>) }")),
+      qec);
+}
+
+TEST(QueryPlanner, PathSearchBothBound) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  Variable sources{"?source"};
+  Variable targets{"?target"};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "VALUES (?source ?target) {(<x> <z>)}"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source ;"
+      "pathSearch:target ?target ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end"),
+                    h::ValuesClause("VALUES (?source\t?target) { (<x> <z>) }")),
+      qec);
+}
+
+TEST(QueryPlanner, PathSearchBothBoundIndividually) {
+  auto scan = h::IndexScanFromStrings;
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  Variable sources{"?source"};
+  Variable targets{"?target"};
+  PathSearchConfiguration config{PathSearchAlgorithm::ALL_PATHS,
+                                 sources,
+                                 targets,
+                                 Variable("?start"),
+                                 Variable("?end"),
+                                 Variable("?path"),
+                                 Variable("?edge"),
+                                 {}};
+  h::expect(
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "VALUES (?source) {(<x>)}"
+      "VALUES (?target) {(<z>)}"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source ;"
+      "pathSearch:target ?target ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}",
+      h::pathSearch(config, true, true, scan("?start", "<p>", "?end"),
+                    h::ValuesClause("VALUES (?source) { (<x>) }"),
+                    h::ValuesClause("VALUES (?target) { (<z>) }")),
+      qec);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchMissingStart) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(h::parseAndPlan(std::move(query), qec),
+                                        HasSubstr("Missing parameter <start>"),
+                                        parsedQuery::PathSearchException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchMultipleStarts) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start1;"
+      "pathSearch:start ?start2;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("parameter `<start>` has already been set to variable "
+                "`?start1` and cannot be set to variable `?start2`"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchMissingEnd) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(h::parseAndPlan(std::move(query), qec),
+                                        HasSubstr("Missing parameter <end>"),
+                                        parsedQuery::PathSearchException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchMultipleEnds) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end1;"
+      "pathSearch:end ?end2;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("parameter `<end>` has already been set to variable `?end1`"
+                " and cannot be set to variable `?end2`"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchStartNotVariable) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start <error>;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The value `<error>` for parameter `<start>`"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchPredicateNotIri) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path ?algorithm pathSearch:allPaths ;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(h::parseAndPlan(std::move(query), qec),
+                                        HasSubstr("Parameters must be IRIs"),
+                                        InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchUnsupportedArgument) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "<unsupportedArgument> ?error;"
+      "pathSearch:source <x> ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("Unsupported argument <unsupportedArgument> in PathSearch"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchTwoVariablesForSource) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("Only one variable is allowed per search side"),
+      parsedQuery::PathSearchException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchUnsupportedElement) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "VALUES ?middle {<m1>}"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr(
+          "Unsupported element in a magic service query of type `path search`"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchUnsupportedAlgorithm) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:shortestPath ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("Unsupported algorithm in pathSearch"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchWrongArgumentCartesian) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:cartesian <false>;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The parameter <cartesian> expects a boolean"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchWrongArgumentNumPathsPerTarget) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:numPathsPerTarget <five>;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The parameter <numPathsPerTarget> expects an integer"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchWrongArgumentMaxDepth) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:maxDepth <two>;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The parameter <maxDepth> expects an integer"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchNegativeMaxDepth) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm pathSearch:allPaths ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "pathSearch:maxDepth -1;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The parameter <maxDepth> must not be negative"),
+      InvalidSparqlQueryException);
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, PathSearchWrongArgumentAlgorithm) {
+  auto qec = ad_utility::testing::getQec("<x> <p> <y>. <y> <p> <z>");
+  auto getId = ad_utility::testing::makeGetId(qec->getIndex());
+
+  auto query =
+      "PREFIX pathSearch: <https://qlever.cs.uni-freiburg.de/pathSearch/>"
+      "SELECT ?start ?end ?path ?edge WHERE {"
+      "SERVICE pathSearch: {"
+      "_:path pathSearch:algorithm 1 ;"
+      "pathSearch:source ?source1 ;"
+      "pathSearch:source ?source2 ;"
+      "pathSearch:target <z> ;"
+      "pathSearch:pathColumn ?path ;"
+      "pathSearch:edgeColumn ?edge ;"
+      "pathSearch:start ?start;"
+      "pathSearch:end ?end;"
+      "{SELECT * WHERE {"
+      "?start <p> ?end."
+      "}}}}";
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+      h::parseAndPlan(std::move(query), qec),
+      HasSubstr("The <algorithm> value has to be an IRI"),
+      InvalidSparqlQueryException);
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, BindAtBeginningOfQuery) {
+  h::expect(
+      "SELECT * WHERE {"
+      " BIND (3 + 5 AS ?x) }",
+      h::Bind(h::NeutralElement(), "3 + 5", Variable{"?x"}));
+}
+
+namespace {
+// Get a `QueryExecutionContext` with a text index. This is used in several
+// tests below.
+auto getQecWithTextIndex = []() {
+  ad_utility::testing::TestIndexConfig config{
+      "<a> <p> \"this text contains some words and is part of the test\" . <a> "
+      "<p> <testEntity> . <a> <p> \"picking the right text can be a hard "
+      "test\" . <a> <p> \"only this text contains the word opti \" . "
+      "<a> <p> \"testing and picking\""};
+  config.createTextIndex = true;
+  return ad_utility::testing::getQec(std::move(config));
+};
+}  // namespace
+
+// __________________________________________________________________________
+TEST(QueryPlanner, TextIndexScanForWord) {
+  auto qec = getQecWithTextIndex();
+  auto wordScan = h::TextIndexScanForWord;
+
+  h::expect("SELECT * WHERE { ?text ql:contains-word \"test*\" }",
+            wordScan(Var{"?text"}, "test*"), qec);
+
+  h::expect("SELECT * WHERE { ?text2 ql:contains-word \"test\" }",
+            wordScan(Var{"?text2"}, "test"), qec);
+
+  h::expect(
+      "SELECT * WHERE { ?text2 ql:contains-word \"multiple words* test\" }",
+      h::UnorderedJoins(wordScan(Var{"?text2"}, "test"),
+                        wordScan(Var{"?text2"}, "words*"),
+                        wordScan(Var{"?text2"}, "multiple")),
+      qec);
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("SELECT * WHERE { ?text ql:contains-word <test> . }"),
+      ::testing::ContainsRegex(
+          "ql:contains-word has to be followed by a string in quotes"));
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, TextIndexScanForEntity) {
+  auto qec = getQecWithTextIndex();
+
+  auto wordScan = h::TextIndexScanForWord;
+  auto entityScan = h::TextIndexScanForEntity;
+  h::expect(
+      "SELECT * WHERE { ?text ql:contains-entity ?scientist . ?text "
+      "ql:contains-word \"test*\" }",
+      h::Join(wordScan(Var{"?text"}, "test*"),
+              entityScan(Var{"?text"}, Var{"?scientist"}, "test*")),
+      qec);
+
+  h::expect(
+      "SELECT * WHERE { ?text ql:contains-entity <testEntity> . ?text "
+      "ql:contains-word \"test\" }",
+      h::Join(wordScan(Var{"?text"}, "test"),
+              entityScan(Var{"?text"}, "<testEntity>", "test")),
+      qec);
+
+  // Test case sensitivity
+  h::expect(
+      "SELECT * WHERE { ?text ql:contains-entity <testEntity> . ?text "
+      "ql:contains-word \"TeST\" }",
+      h::Join(wordScan(Var{"?text"}, "test"),
+              entityScan(Var{"?text"}, "<testEntity>", "test")),
+      qec);
+
+  // NOTE: It is important that the TextIndexScanForEntity uses "opti", because
+  // we also want to test here if the QueryPlanner assigns the optimal word to
+  // the Operation.
+  h::expect(
+      "SELECT * WHERE { ?text ql:contains-word \"picking*\" . ?text "
+      "ql:contains-entity <testEntity> . ?text ql:contains-word "
+      "\"opti\" . ?text ql:contains-word \"testi*\"}",
+      h::UnorderedJoins(entityScan(Var{"?text"}, "<testEntity>", "opti"),
+                        wordScan(Var{"?text"}, "testi*"),
+                        wordScan(Var{"?text"}, "opti"),
+                        wordScan(Var{"?text"}, "picking*")),
+      qec);
+
+  ParsedQuery pq =
+      parseQuery("SELECT * WHERE { ?text ql:contains-entity ?scientist . }");
+  QueryPlanner qp = makeQueryPlanner();
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      qp.createExecutionTree(pq),
+      ::testing::ContainsRegex(
+          "Missing ql:contains-word statement. A ql:contains-entity statement "
+          "always also needs corresponding ql:contains-word statement."));
+}
+
+TEST(QueryPlanner, TextSearchService) {
+  // Check query errors
+  // No BasicGraphPattern in SERVICE
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?fail ."
+                 "?fail qlts:contains-word \"fail\" ."
+                 "}"
+                 "}"
+                 "}"),
+      ::testing::HasSubstr("Unsupported element in a magic service query of "
+                           "type `full text search`"));
+
+  // Predicate contains
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains \"fail\" ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr(
+          "The predicate <contains> needs a variable as subject and one as "
+          "object. The subject given was: ?t. The object given was: \"fail\""));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t1 qlts:contains ?conf ."
+                 "?t2 qlts:contains ?conf ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr("Each text search config should only be linked to a "
+                           "single text variable. The second text variable "
+                           "given was: ?t2. The config variable was: ?conf"));
+
+  // Predicate word
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "\"fail\" qlts:word \"test\" ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr("The predicate <word> needs a variable as "
+                           "subject. The subject given was: \"fail\""));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:word \"test\" ."
+                 "?conf qlts:word \"fail\" ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr(
+          "Each text search config should have exactly one occurrence of "
+          "either <word> or <entity>."));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:word ?word ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr("The predicate <word> needs a literal as "
+                           "object. The object given was: ?word"));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:word \"\" ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr("The predicate <word> shouldn't have an "
+                           "empty literal as object."));
+
+  // Predicate entity
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "\"fail\" qlts:entity ?e ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr("The predicate <entity> needs a variable "
+                           "as subject. The subject given was: \"fail\""));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:entity ?e ."
+                 "?conf qlts:word \"fail\" ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr(
+          "Each text search config should have exactly one occurrence of "
+          "either <word> or <entity>."));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:entity 13 ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr(
+          "The predicate <entity> needs a variable as subject and an "
+          "IRI, literal or variable as object. The object given was: 13"));
+
+  // Predicate prefix-match
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:word \"test\" ."
+                 "?conf qlts:prefix-match \"fail\" ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr(
+          "The predicate <prefix-match> needs a variable as subject and one "
+          "as object. The subject given was: ?conf. The object given was: "
+          "\"fail\""));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:word \"test\" ."
+                 "?conf qlts:prefix-match ?match1 ."
+                 "?conf qlts:prefix-match ?match2 ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr(
+          "Each text search config should only contain at most one "
+          "<prefix-match>. The second match variable given was: ?match2. The "
+          "config variable was: ?conf"));
+
+  // Predicate score
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:word \"test\" ."
+                 "?conf qlts:score 100 ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr(
+          "The predicate <score> needs a variable as subject and one "
+          "as object. The subject given was: ?conf. The object given was: "
+          "100"));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 "?t qlts:contains ?conf ."
+                 "?conf qlts:word \"test\" ."
+                 "?conf qlts:score ?score1 ."
+                 "?conf qlts:score ?score2 ."
+                 "}"
+                 "}"),
+      ::testing::HasSubstr(
+          "Each text search config should only contain at most one "
+          "<score>. The second match variable given was: ?score2. The "
+          "config variable was: ?conf"));
+
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      parseQuery("PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+                 "SELECT * WHERE {"
+                 "SERVICE qlts: {"
+                 " {}"
+                 "}"
+                 "}"),
+      ::testing::HasSubstr("nested group graph patterns are not supported"));
+
+  // toConfigs errors
+  // No word or entity
+  ParsedQuery pq = parseQuery(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:prefix-match ?fail ] ."
+      "}"
+      "}");
+  QueryPlanner qp = makeQueryPlanner();
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      qp.createExecutionTree(pq),
+      ::testing::HasSubstr(
+          "Text search service needs configs with exactly one occurrence of "
+          "either <word> or <entity>."));
+
+  // No text variable defined
+  pq = parseQuery(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:word \"test\" ."
+      "}"
+      "}");
+  qp = makeQueryPlanner();
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      qp.createExecutionTree(pq),
+      ::testing::HasSubstr(
+          "Text search service needs a text variable that is linked to one or "
+          "multiple text search config variables with the predicate "
+          "<contains>. \n"
+          "The config variable can then be used with the predicates: "
+          "<word>, <entity>, <prefix-match>, <score>. \n"
+          "<word>: This predicate needs a literal as object which has "
+          "one word with optionally a * at the end. This word or prefix is "
+          "then used to search the text index. \n"
+          "<entity>: This predicate needs a variable, IRI or literal "
+          "as object. If a variable is given this variable can be used outside "
+          "of this service. If an IRI or literal is given the entity is fixed. "
+          "The entity given is then used to search the text index. \n"
+          "A config should contain exactly one occurrence of either "
+          "<word> or <entity>. \n"
+          "<prefix-match>: This predicate should only be used in a text search "
+          "config with a word that is a prefix. The object should be a "
+          "variable. That variable specifies the variable for the prefix "
+          "match.\n"
+          "<score>: The object of this predicate should be a variable. "
+          "That variable specifies the column name for the column containing "
+          "the scores of the respective word or entity search. \n"
+          "The config variable was: ?t"));
+
+  // <prefix-match> in a word search on a non prefix
+  pq = parseQuery(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains ?conf ."
+      "?conf qlts:word \"test\" ."
+      "?conf qlts:prefix-match ?test_match ."
+      "}"
+      "}");
+  qp = makeQueryPlanner();
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      qp.createExecutionTree(pq),
+      ::testing::HasSubstr(
+          "The text search config shouldn't define a variable for the prefix "
+          "match column if the word isn't a prefix. The config variable was: "
+          "?conf. The word was: \"test\". The text variable bound to was: ?t"));
+
+  // Entity search on a text variable that has no word-search
+  pq = parseQuery(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t1 qlts:contains [qlts:word \"test\" ] ."
+      "?t2 qlts:contains [qlts:entity ?fail ] ."
+      "}"
+      "}");
+  qp = makeQueryPlanner();
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      qp.createExecutionTree(pq),
+      ::testing::HasSubstr("Entity search has to happen on a text variable "
+                           "that is also contained in a word search. Text "
+                           "variable: ?t2 is not contained in a word search."));
+
+  // Begin checking query execution trees
+  auto qec = getQecWithTextIndex();
+
+  auto wordScanConf = h::TextIndexScanForWordConf;
+  auto entityScanConf = h::TextIndexScanForEntityConf;
+
+  // Single word
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test\" ] ."
+      "}"
+      "}",
+      wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "test"}), qec);
+
+  // Single word with prefix
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test*\" ] ."
+      "}"
+      "}",
+      wordScanConf(TextIndexScanForWordConfiguration{
+          Var{"?t"}, "test*", Var{"?t"}.getMatchingWordVariable("test"),
+          std::nullopt, true}),
+      qec);
+
+  // Double word
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test\" ] ."
+      "?t qlts:contains [qlts:word \"part\" ] ."
+      "}"
+      "}",
+      h::Join(
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "test"}),
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "part"})),
+      qec);
+
+  // One word and one entity with variable for entity
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test\" ] ."
+      "?t qlts:contains [qlts:entity ?e ] ."
+      "}"
+      "}",
+      h::Join(
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "test"}),
+          entityScanConf(TextIndexScanForEntityConfiguration{
+              Var{"?t"},
+              Var{"?e"},
+              "test",
+              std::nullopt,
+              {},
+              VarOrFixedEntity(qec, Var{"?e"})})),
+      qec);
+
+  // One word and one entity with literal for entity
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test\" ] ."
+      "?t qlts:contains [qlts:entity \"<a>\" ] ."
+      "}"
+      "}",
+      h::Join(
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "test"}),
+          entityScanConf(TextIndexScanForEntityConfiguration{
+              Var{"?t"},
+              "<a>",
+              "test",
+              std::nullopt,
+              {},
+              VarOrFixedEntity(qec, "<a>")})),
+      qec);
+
+  // One word and one entity with IRI for entity
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test\" ] ."
+      "?t qlts:contains [qlts:entity <a> ] ."
+      "}"
+      "}",
+      h::Join(
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "test"}),
+          entityScanConf(TextIndexScanForEntityConfiguration{
+              Var{"?t"},
+              "<a>",
+              "test",
+              std::nullopt,
+              {},
+              VarOrFixedEntity(qec, "<a>")})),
+      qec);
+
+  // Check for three
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test\" ] ."
+      "?t qlts:contains [qlts:word \"part\" ] ."
+      "?t qlts:contains [qlts:word \"words\" ] ."
+      "}"
+      "}",
+      h::UnorderedJoins(
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "test"}),
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "part"}),
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "words"})),
+      qec);
+
+  // Check if correct word is chosen with entity scan
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"picking*\" ] ."
+      "?t qlts:contains [qlts:entity <a> ] ."
+      "?t qlts:contains [qlts:word \"opti\" ] ."
+      "?t qlts:contains [qlts:word \"testi*\" ] ."
+      "}"
+      "}",
+      h::UnorderedJoins(
+          entityScanConf(TextIndexScanForEntityConfiguration{
+              Var{"?t"},
+              "<a>",
+              "opti",
+              std::nullopt,
+              {},
+              VarOrFixedEntity(qec, "<a>")}),
+          wordScanConf(TextIndexScanForWordConfiguration{
+              Var{"?t"}, "testi*", Var{"?t"}.getMatchingWordVariable("testi"),
+              std::nullopt, true}),
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "opti"}),
+          wordScanConf(TextIndexScanForWordConfiguration{
+              Var{"?t"}, "picking*",
+              Var{"?t"}.getMatchingWordVariable("picking"), std::nullopt,
+              true})),
+      qec);
+
+  // Check full word config
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test*\"; qlts:prefix-match "
+      "?test_match; qlts:score ?test_score ] ."
+      "}"
+      "}",
+      wordScanConf(TextIndexScanForWordConfiguration{
+          Var{"?t"}, "test*", Var{"?test_match"}, Var{"?test_score"}, true}),
+      qec);
+
+  // Check full entity config
+  h::expect(
+      "PREFIX qlts: <https://qlever.cs.uni-freiburg.de/textSearch/> "
+      "SELECT * WHERE {"
+      "SERVICE qlts: {"
+      "?t qlts:contains [qlts:word \"test\"] ."
+      "?t qlts:contains [qlts:entity ?e; qlts:score ?e_score] "
+      "."
+      "}"
+      "}",
+      h::Join(
+          wordScanConf(TextIndexScanForWordConfiguration{Var{"?t"}, "test"}),
+          entityScanConf(TextIndexScanForEntityConfiguration{
+              Var{"?t"},
+              Var{"?e"},
+              "test",
+              Var{"?e_score"},
+              {},
+              VarOrFixedEntity(qec, Var{"?e"})})),
+      qec);
+}
+
+TEST(QueryPlanner, TextLimit) {
+  auto qec = getQecWithTextIndex();
+
+  auto wordScan = h::TextIndexScanForWord;
+  auto entityScan = h::TextIndexScanForEntity;
+
+  // Only contains word
+  h::expect("SELECT * WHERE { ?text ql:contains-word \"test*\" } TEXTLIMIT 10",
+            wordScan(Var{"?text"}, "test*"), qec);
+
+  // Contains fixed entity
+  h::expect(
+      "SELECT * WHERE { ?text ql:contains-word \"test*\" . ?text "
+      "ql:contains-entity <testEntity> } TEXTLIMIT 10",
+      h::TextLimit(10,
+                   h::Join(wordScan(Var{"?text"}, "test*"),
+                           entityScan(Var{"?text"}, "<testEntity>", "test*")),
+                   Var{"?text"}, std::vector<Variable>{},
+                   std::vector<Variable>{
+                       Var{"?text"}.getEntityScoreVariable("<testEntity>")}),
+      qec);
+
+  // Contains entity
+  h::expect(
+      "SELECT * WHERE { ?text ql:contains-entity ?scientist . ?text "
+      "ql:contains-word \"test*\" } TEXTLIMIT 10",
+      h::TextLimit(
+          10,
+          h::Join(wordScan(Var{"?text"}, "test*"),
+                  entityScan(Var{"?text"}, Var{"?scientist"}, "test*")),
+          Var{"?text"}, std::vector<Variable>{Var{"?scientist"}},
+          std::vector<Variable>{
+              Var{"?text"}.getEntityScoreVariable(Var{"?scientist"})}),
+      qec);
+
+  // Contains entity and fixed entity
+  h::expect(
+      "SELECT * WHERE { ?text ql:contains-entity ?scientist . ?text "
+      "ql:contains-word \"test*\" . ?text ql:contains-entity <testEntity>} "
+      "TEXTLIMIT 5",
+      h::TextLimit(5,
+                   h::UnorderedJoins(
+                       wordScan(Var{"?text"}, "test*"),
+                       entityScan(Var{"?text"}, Var{"?scientist"}, "test*"),
+                       entityScan(Var{"?text"}, "<testEntity>", "test*")),
+                   Var{"?text"}, std::vector<Variable>{Var{"?scientist"}},
+                   std::vector<Variable>{
+                       Var{"?text"}.getEntityScoreVariable(Var{"?scientist"}),
+                       Var{"?text"}.getEntityScoreVariable("<testEntity>")}),
+      qec);
+
+  // Contains two entities
+  h::expect(
+      "SELECT * WHERE { ?text ql:contains-entity ?scientist . ?text "
+      "ql:contains-word \"test*\" . ?text ql:contains-entity ?scientist2} "
+      "TEXTLIMIT 5",
+      h::TextLimit(
+          5,
+          h::UnorderedJoins(
+              wordScan(Var{"?text"}, "test*"),
+              entityScan(Var{"?text"}, Var{"?scientist"}, "test*"),
+              entityScan(Var{"?text"}, Var{"?scientist2"}, "test*")),
+          Var{"?text"},
+          std::vector<Variable>{Var{"?scientist"}, Var{"?scientist2"}},
+          std::vector<Variable>{
+              Var{"?text"}.getEntityScoreVariable(Var{"?scientist"}),
+              Var{"?text"}.getEntityScoreVariable(Var{"?scientist2"})}),
+      qec);
+
+  // Contains two text variables. Also checks if the textlimit at an efficient
+  // place in the query
+  h::expect(
+      "SELECT * WHERE { ?text1 ql:contains-entity ?scientist1 . ?text1 "
+      "ql:contains-word \"test*\" . ?text2 ql:contains-word \"test*\" . ?text2 "
+      "ql:contains-entity ?author1 . ?text2 ql:contains-entity ?author2 } "
+      "TEXTLIMIT 5",
+      h::CartesianProductJoin(
+          h::TextLimit(
+              5,
+              h::Join(wordScan(Var{"?text1"}, "test*"),
+                      entityScan(Var{"?text1"}, Var{"?scientist1"}, "test*")),
+              Var{"?text1"}, std::vector<Variable>{Var{"?scientist1"}},
+              std::vector<Variable>{
+                  Var{"?text1"}.getEntityScoreVariable(Var{"?scientist1"})}),
+          h::TextLimit(
+              5,
+              h::UnorderedJoins(
+                  wordScan(Var{"?text2"}, "test*"),
+                  entityScan(Var{"?text2"}, Var{"?author1"}, "test*"),
+                  entityScan(Var{"?text2"}, Var{"?author2"}, "test*")),
+              Var{"?text2"},
+              std::vector<Variable>{Var{"?author1"}, Var{"?author2"}},
+              std::vector<Variable>{
+                  Var{"?text2"}.getEntityScoreVariable(Var{"?author1"}),
+                  Var{"?text2"}.getEntityScoreVariable(Var{"?author2"})})),
+      qec);
+}
+
+TEST(QueryPlanner, NonDistinctVariablesInTriple) {
+  auto eq = [](std::string_view l, std::string_view r) {
+    return absl::StrCat(l, "=", r);
+  };
+
+  h::expect("SELECT * WHERE {?s ?p ?s}",
+            h::Filter(eq(internalVar(0), "?s"),
+                      h::IndexScanFromStrings(internalVar(0), "?p", "?s")));
+  h::expect("SELECT * WHERE {?s ?s ?o}",
+            h::Filter(eq(internalVar(0), "?s"),
+                      h::IndexScanFromStrings(internalVar(0), "?s", "?o")));
+  h::expect("SELECT * WHERE {?s ?p ?p}",
+            h::Filter(eq(internalVar(0), "?p"),
+                      h::IndexScanFromStrings("?s", "?p", internalVar(0))));
+  h::expect("SELECT * WHERE {?s ?s ?s}",
+            h::Filter(eq(internalVar(1), "?s"),
+                      h::Filter(eq(internalVar(0), "?s"),
+                                h::IndexScanFromStrings(internalVar(1), "?s",
+                                                        internalVar(0)))));
+  h::expect("SELECT * WHERE {?s <is-a> ?s}",
+            h::Filter(eq(internalVar(0), "?s"),
+                      h::IndexScanFromStrings("?s", "<is-a>", internalVar(0))));
+  h::expect("SELECT * WHERE {<s> ?p ?p}",
+            h::Filter(eq(internalVar(0), "?p"),
+                      h::IndexScanFromStrings("<s>", "?p", internalVar(0))));
+  h::expect("SELECT * WHERE {?s ?s <o>}",
+            h::Filter(eq(internalVar(0), "?s"),
+                      h::IndexScanFromStrings(internalVar(0), "?s", "<o>")));
+}
+
+TEST(QueryPlanner, emptyGroupGraphPattern) {
+  h::expect("SELECT * WHERE {}", h::NeutralElement());
+  h::expect("SELECT * WHERE { {} }", h::NeutralElement());
+  h::expect("SELECT * WHERE { {} {} }",
+            h::CartesianProductJoin(h::NeutralElement(), h::NeutralElement()));
+  h::expect("SELECT * WHERE { {} UNION {} }",
+            h::Union(h::NeutralElement(), h::NeutralElement()));
+  h::expect("SELECT * WHERE { {} { SELECT * WHERE {}}}",
+            h::CartesianProductJoin(h::NeutralElement(), h::NeutralElement()));
+}
+
+// __________________________________________________________________________
+TEST(QueryPlanner, TooManyTriples) {
+  std::string query = "SELECT * WHERE {";
+  for (size_t i = 0; i < 65; i++) {
+    query = absl::StrCat(query, " ?x <p> ?y .");
+  }
+  query = absl::StrCat(query, "}");
+  ParsedQuery pq = parseQuery(query);
+  QueryPlanner qp = makeQueryPlanner();
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      qp.createExecutionTree(pq),
+      ::testing::ContainsRegex("At most 64 triples allowed at the moment."));
+}
+
+// ___________________________________________________________________________
+TEST(QueryPlanner, CountAvailablePredicates) {
+  h::expect(
+      "SELECT ?p (COUNT(DISTINCT ?s) as ?cnt) WHERE { ?s ?p ?o} GROUP BY ?p",
+      h::countAvailablePredicates(
+          0, Var{"?p"}, Var{"?cnt"},
+          h::IndexScanFromStrings("?s", HAS_PATTERN_PREDICATE, "?p")));
+  h::expect(
+      "SELECT ?p (COUNT(DISTINCT ?s) as ?cnt) WHERE { ?s ql:has-predicate "
+      "?p} "
+      "GROUP BY ?p",
+      h::countAvailablePredicates(
+          0, Var{"?p"}, Var{"?cnt"},
+          h::IndexScanFromStrings("?s", HAS_PATTERN_PREDICATE, "?p")));
+  // TODO<joka921> Add a test for the case with subtrees with and without
+  // rewriting of triples.
+}
+
+// Check that a MINUS operation that only refers to unbound variables is deleted
+// by the query planner.
+TEST(QueryPlanner, UnboundMinusIgnored) {
+  h::expect("SELECT * WHERE {MINUS{?x <is-a> ?y}}", h::NeutralElement());
+  h::expect("SELECT * { ?a <is-a> ?b MINUS { ?x <is-a> ?y } }",
+            h::QetWithWarnings({"MINUS clause that shares no variables"},
+                               h::IndexScanFromStrings("?a", "<is-a>", "?b")));
+  // Regression tests for https://github.com/ad-freiburg/qlever/issues/3556:
+  // The variables of a MINUS are not part of its result, so they must not
+  // connect a later MINUS.
+  h::expect(
+      "SELECT * { ?a <is-a> ?b MINUS { ?x <is-a> ?y } MINUS { ?z <is-a> ?y } }",
+      h::IndexScanFromStrings("?a", "<is-a>", "?b"));
+  h::expect(
+      "SELECT * { ?a <is-a> ?b MINUS { ?a <is-a> ?y } MINUS { ?z <is-a> ?y } }",
+      h::Minus(h::IndexScanFromStrings("?a", "<is-a>", "?b"),
+               h::IndexScanFromStrings("?a", "<is-a>", "?y")));
+  // The same holds for a later OPTIONAL.
+  h::expect(
+      "SELECT * { ?a <is-a> ?b MINUS { ?a <is-a> ?c } "
+      "OPTIONAL { ?c <is-a> ?d } }",
+      h::CartesianProductJoin(
+          h::Minus(h::IndexScanFromStrings("?a", "<is-a>", "?b"),
+                   h::IndexScanFromStrings("?a", "<is-a>", "?c")),
+          h::NeutralOptional(h::IndexScanFromStrings("?c", "<is-a>", "?d"))));
+}
+
+// ___________________________________________________________________________
+TEST(QueryPlanner, SimpleMinus) {
+  h::expect("SELECT * WHERE { ?a <is-a> ?b MINUS{?a <is-a> ?b}}",
+            h::Minus(h::IndexScanFromStrings("?a", "<is-a>", "?b"),
+                     h::IndexScanFromStrings("?a", "<is-a>", "?b")));
+  // The second MINUS is connected to the result of the first one.
+  h::expect(
+      "SELECT * { ?a <is-a> ?b MINUS { ?a <is-a> ?c } MINUS { ?a <is-a> ?d } }",
+      h::Minus(h::Minus(h::IndexScanFromStrings("?a", "<is-a>", "?b"),
+                        h::IndexScanFromStrings("?a", "<is-a>", "?c")),
+               h::IndexScanFromStrings("?a", "<is-a>", "?d")));
+  // A MINUS is connected to the variables of a preceding OPTIONAL.
+  h::expect(
+      "SELECT * { ?a <is-a> ?b OPTIONAL { ?a <is-a> ?c } "
+      "MINUS { ?c <is-a> ?d } }",
+      h::Minus(h::Sort(h::OptionalJoin(
+                   h::IndexScanFromStrings("?a", "<is-a>", "?b"),
+                   h::IndexScanFromStrings("?a", "<is-a>", "?c"))),
+               h::IndexScanFromStrings("?c", "<is-a>", "?d")));
+}
+
+// ___________________________________________________________________________
+TEST(QueryPlanner, CancellationCancelsQueryPlanning) {
+  auto cancellationHandle =
+      std::make_shared<ad_utility::CancellationHandle<>>();
+
+  QueryPlanner qp{ad_utility::testing::getQec(), cancellationHandle};
+  auto pq = parseQuery("SELECT * WHERE { ?x ?y ?z }");
+
+  cancellationHandle->cancel(ad_utility::CancellationState::MANUAL);
+
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(qp.createExecutionTree(pq),
+                                        HasSubstr("Query planning"),
+                                        ad_utility::CancellationException);
+}
+
+// ___________________________________________________________________________
+TEST(QueryPlanner, DatasetClause) {
+  auto scan = h::IndexScanFromStrings;
+  using Graphs = ad_utility::HashSet<std::string>;
+  h::expect("SELECT * FROM <x> FROM <y> WHERE { ?x ?y ?z}",
+            scan("?x", "?y", "?z", {}, Graphs{"<x>", "<y>"}));
+
+  h::expect("SELECT * FROM <x> FROM <y> { SELECT * {?x ?y ?z}}",
+            scan("?x", "?y", "?z", {}, Graphs{"<x>", "<y>"}));
+
+  h::expect("SELECT * FROM <x> FROM NAMED <z> WHERE { GRAPH <z> {?x ?y ?z}}",
+            scan("?x", "?y", "?z", {}, Graphs{"<z>"}));
+  h::expect("SELECT * FROM <x> WHERE { GRAPH <z> {?x ?y ?z}}",
+            scan("?x", "?y", "?z", {}, Graphs{}));
+
+  auto g1 = Graphs{"<g1>"};
+  auto g2 = Graphs{"<g2>"};
+  h::expect(
+      "SELECT * FROM <g1> FROM NAMED <g2> { <a> ?p <x>. {<b> ?p <y>} GRAPH "
+      "<g2> { <c> ?p <z> "
+      "{SELECT * {<d> ?p <z2>}}} <e> ?p <z3> }",
+      h::UnorderedJoins(
+          scan("<a>", "?p", "<x>", {}, g1), scan("<b>", "?p", "<y>", {}, g1),
+          scan("<c>", "?p", "<z>", {}, g2), scan("<d>", "?p", "<z2>", {}, g2),
+          scan("<e>", "?p", "<z3>", {}, g1)));
+
+  auto g12 = Graphs{"<g1>", "<g2>"};
+  auto noGraphs = Graphs{};
+  auto varG = std::vector{Variable{"?g"}};
+  std::vector<ColumnIndex> graphCol{ADDITIONAL_COLUMN_GRAPH_ID};
+  h::expect(
+      "SELECT * FROM <x> FROM NAMED <g1> FROM NAMED <g2> WHERE { GRAPH ?g {<a> "
+      "<b> <c>}}",
+      scan("<a>", "<b>", "<c>", {}, g12, varG, graphCol));
+
+  h::expect("SELECT * FROM <x> WHERE { GRAPH ?g {<a> <b> <c>}}",
+            scan("<a>", "<b>", "<c>", {}, noGraphs, varG, graphCol));
+
+  // `GROUP BY` inside a `GRAPH ?g` clause.
+  h::expect(
+      "SELECT * FROM <g1> FROM NAMED <g2> { GRAPH ?g "
+      "{ "
+      "{SELECT ?p {<d> ?p <z2>} GROUP BY ?p}"
+      "} }",
+      h::Bind(h::GroupBy({Variable{"?p"}, Variable{internalVar(0)}}, {},
+                         h::Sort(scan("<d>", "?p", "<z2>", {}, g2,
+                                      {Variable{internalVar(0)}}, {3}))),
+              internalVar(0), Variable{"?g"}));
+
+  // A complex example with graph variables.
+  h::expect(
+      "SELECT * FROM <g1> FROM NAMED <g2> { <a> ?p <x>. {<b> ?p <y>} GRAPH ?g "
+      "{ <c> ?p <z> "
+      "{SELECT ?p {<d> ?p <z2>} GROUP BY ?p}"
+      "{SELECT * {<d> ?p <z2>}}"
+      "} <e> ?p <z3> }",
+      h::UnorderedJoins(
+          scan("<a>", "?p", "<x>", {}, g1), scan("<b>", "?p", "<y>", {}, g1),
+          scan("<c>", "?p", "<z>", {}, g2, varG, graphCol),
+          h::Bind(h::GroupBy({Variable{"?p"}, Variable{internalVar(0)}}, {},
+                             h::Sort(scan("<d>", "?p", "<z2>", {}, g2,
+                                          {Variable{internalVar(0)}}, {3}))),
+                  internalVar(0), Variable{"?g"}),
+          scan("<d>", "?p", "<z2>", {}, g2, varG, graphCol),
+          scan("<e>", "?p", "<z3>", {}, g1)));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, graphVariablesWithinPattern) {
+  auto scan = h::IndexScanFromStrings;
+  // Single variable
+  h::expect("SELECT * { GRAPH ?x { ?x <b> <c> } }",
+            h::Filter("?x = ?_QLever_internal_variable_qp_0",
+                      scan("?x", "<b>", "<c>", {}, NamedTag{},
+                           {Variable{internalVar(0)}}, {3})));
+  h::expect("SELECT * { GRAPH ?x { <a> ?x <c> } }",
+            h::Filter("?x = ?_QLever_internal_variable_qp_0",
+                      scan("<a>", "?x", "<c>", {}, NamedTag{},
+                           {Variable{internalVar(0)}}, {3})));
+  h::expect("SELECT * { GRAPH ?x { <a> <b> ?x } }",
+            h::Filter("?x = ?_QLever_internal_variable_qp_0",
+                      scan("<a>", "<b>", "?x", {}, NamedTag{},
+                           {Variable{internalVar(0)}}, {3})));
+  // Two variables
+  h::expect(
+      "SELECT * { GRAPH ?x { ?x ?x <c> } }",
+      h::Filter("?x = ?_QLever_internal_variable_qp_1",
+                h::Filter("?_QLever_internal_variable_qp_0=?x",
+                          scan(internalVar(0), "?x", "<c>", {}, NamedTag{},
+                               {Variable{internalVar(1)}}, {3}))));
+  h::expect(
+      "SELECT * { GRAPH ?x { ?x <b> ?x } }",
+      h::Filter("?x = ?_QLever_internal_variable_qp_1",
+                h::Filter("?_QLever_internal_variable_qp_0=?x",
+                          scan("?x", "<b>", internalVar(0), {}, NamedTag{},
+                               {Variable{internalVar(1)}}, {3}))));
+  h::expect(
+      "SELECT * { GRAPH ?x { <a> ?x ?x } }",
+      h::Filter("?x = ?_QLever_internal_variable_qp_1",
+                h::Filter("?_QLever_internal_variable_qp_0=?x",
+                          scan("<a>", "?x", internalVar(0), {}, NamedTag{},
+                               {Variable{internalVar(1)}}, {3}))));
+  // Three variables
+  h::expect(
+      "SELECT * { GRAPH ?x { ?x ?x ?x } }",
+      h::Filter("?x = ?_QLever_internal_variable_qp_2",
+                h::Filter("?_QLever_internal_variable_qp_1=?x",
+                          h::Filter("?_QLever_internal_variable_qp_0=?x",
+                                    scan(internalVar(1), "?x", internalVar(0),
+                                         {}, NamedTag{},
+                                         {Variable{internalVar(2)}}, {3})))));
+  // Three distinct variables
+  h::expect("SELECT * { GRAPH ?x { ?x ?y ?z } }",
+            h::Filter("?x = ?_QLever_internal_variable_qp_0",
+                      scan("?x", "?y", "?z", {}, NamedTag{},
+                           {Variable{internalVar(0)}}, {3})));
+
+  // Wrapped in subquery (one of the compliance tests)
+  h::expect(
+      "SELECT ?x ?p WHERE { GRAPH ?g { { SELECT * WHERE { ?x ?p ?g } } } }",
+      h::Filter("?g = ?_QLever_internal_variable_qp_0",
+                scan("?x", "?p", "?g", {}, NamedTag{},
+                     {Variable{internalVar(0)}}, {3})));
+  h::expect(
+      "SELECT ?x ?p WHERE { GRAPH ?g { { SELECT ?x ?p ?g { ?x ?p ?g } } } }",
+      h::Filter("?g = ?_QLever_internal_variable_qp_0",
+                scan("?x", "?p", "?g", {}, NamedTag{},
+                     {Variable{internalVar(0)}}, {3})));
+  h::expect(
+      "SELECT ?x ?p WHERE { GRAPH ?g { { SELECT ?x ?p WHERE { ?x ?p ?g } } } }",
+      h::Bind(scan("?x", "?p", "?g", {}, NamedTag{}, {Variable{internalVar(0)}},
+                   {3}),
+              internalVar(0), Variable{"?g"}));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, emptyGraphPattern) {
+  h::expect("SELECT ?g WHERE { GRAPH ?g {} }",
+            h::CartesianProductJoin(h::DistinctGraphs(), h::NeutralElement()));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, graphSubqueryWithoutScan) {
+  h::expect(
+      "SELECT ?x WHERE { GRAPH ?g { { SELECT ?x WHERE { VALUES ?x { 1 } } } } "
+      "}",
+      h::CartesianProductJoin(h::DistinctGraphs(),
+                              h::ValuesClause("VALUES (?x) { (1) }")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, WarningsOnUnboundVariables) {
+  using enum ::OrderBy::AscOrDesc;
+  // Unbound variable in ORDER BY.
+  h::expect(
+      "SELECT * {} ORDER BY ?x",
+      h::QetWithWarnings({"?x was used by ORDER BY"}, h::NeutralElement()));
+  h::expect(
+      "SELECT * { ?x <is-a> <y> } ORDER BY ?x ?y ",
+      h::QetWithWarnings({"?y was used by ORDER BY"},
+                         h::OrderBy({{Variable{"?x"}, Asc}}, ::testing::_)));
+
+  // Unbound variable in GROUP BY.
+  h::expect("SELECT ?x {} GROUP BY ?x",
+            h::QetWithWarnings({"?x was used by GROUP BY"},
+                               h::GroupBy({}, {}, h::NeutralElement())));
+  h::expect("SELECT ?x ?y { ?x <is-a> <y> } GROUP BY ?x ?y ",
+            h::QetWithWarnings(
+                {"?y was used by GROUP BY"},
+                h::GroupBy({Variable{"?x"}}, {},
+                           h::IndexScanFromStrings("?x", "<is-a>", "<y>"))));
+
+  // Unbound variable in BIND.
+  h::expect(
+      "SELECT ?x {BIND (?a as ?x)}",
+      h::QetWithWarnings({"?a was used in the expression of a BIND"},
+                         h::Bind(h::NeutralElement(), "?a", Variable{"?x"})));
+
+  // Unbound variable in Subquery.
+  h::expect("SELECT ?x { {SELECT * {BIND (?a as ?x)}} ?x <p> ?o}",
+            h::QetWithWarnings({"?a was used in the expression of a BIND"},
+                               testing::_));
+}
+
+// ___________________________________________________________________________
+TEST(QueryPlanner, Describe) {
+  // Note: We deliberately don't test the contents of the actual DESCRIBE
+  // clause, because they have been extensively tested already in
+  // `SparqlAntlrParserTest.cpp` where we have access to proper matchers for
+  // them.
+  h::expect("DESCRIBE <x>", h::Describe(::testing::_, h::NeutralElement()));
+  h::expect("DESCRIBE ?x", h::Describe(::testing::_, h::NeutralElement()));
+  h::expect(
+      "Describe ?y { ?y <p> <o>}",
+      h::Describe(::testing::_, h::IndexScanFromStrings("?y", "<p>", "<o>")));
+  h::expect(
+      "Describe ?y FROM <g> { ?y <p> <o>}",
+      h::Describe(::testing::_, h::IndexScanFromStrings(
+                                    "?y", "<p>", "<o>", {},
+                                    ad_utility::HashSet<std::string>{"<g>"})));
+  // A trailing `VALUES` clause restricts the WHERE clause (the input of the
+  // `Describe`), not the result of the `Describe`.
+  h::expect(
+      "DESCRIBE ?y { ?y <p> ?o } VALUES ?y { <a> }",
+      h::Describe(::testing::_,
+                  h::Join(h::IndexScanFromStrings("?y", "<p>", "?o"),
+                          h::Sort(h::ValuesClause("VALUES (?y) { (<a>) }")))));
+  // The same holds for LIMIT and OFFSET.
+  h::expect("DESCRIBE ?y { ?y <p> ?o } LIMIT 2 OFFSET 1",
+            h::Describe(::testing::_,
+                        h::WithLimitOffset({2, 1}, h::IndexScanFromStrings(
+                                                       "?y", "<p>", "?o"))));
+}
+
+// ____________________________________________________________________________
+TEST(QueryPlanner, GroupByRedundantParensAndVariables) {
+  auto matcher = h::GroupBy({Variable{"?x"}}, {},
+                            h::IndexScanFromStrings("?x", "?y", "?z"));
+  h::expect("SELECT ?x { ?x ?y ?z} GROUP BY (?x)", matcher);
+  h::expect("SELECT ?x { ?x ?y ?z} GROUP BY ?x ?x", matcher);
+  h::expect("SELECT ?x { ?x ?y ?z} GROUP BY ?x ?x (?x)", matcher);
+}
+
+// ____________________________________________________________________________
+TEST(QueryPlanner, Exists) {
+  auto xyz = h::IndexScanFromStrings("?x", "?y", "?z");
+  auto abc = h::IndexScanFromStrings("?a", "?b", "?c");
+  auto def = h::IndexScanFromStrings("?d", "?e", "?f");
+  auto ghi = h::IndexScanFromStrings("?g", "?h", "?i");
+  using V = Variable;
+
+  // Simple tests for EXISTS with FILTER, BIND, and GROUP BY.
+  h::expect("SELECT * { ?x ?y ?z FILTER EXISTS {?a ?b ?c} }",
+            h::Filter("EXISTS {?a ?b ?c}", h::ExistsJoin(xyz, abc)));
+  h::expect("SELECT * { ?x ?y ?z BIND(EXISTS {?a ?b ?c} as ?bound) }",
+            h::Bind(h::ExistsJoin(xyz, abc), "EXISTS {?a ?b ?c}",
+                    Variable("?bound")));
+  h::expect(
+      "SELECT ?x (SAMPLE(EXISTS{?a ?b ?c}) as ?s) { ?x ?y ?z } GROUP BY ?x",
+      h::GroupBy({V{"?x"}}, {"(SAMPLE(EXISTS{?a ?b ?c}) as ?s)"},
+                 h::ExistsJoin(xyz, abc)));
+
+  // Inside a `GROUP BY`, an `EXISTS` that is not inside an aggregate may only
+  // be correlated with the grouped variables, so that its result is constant
+  // within each group. Here the body `{?x ?b ?c}` only shares the grouped `?x`
+  // with the outer query.
+  h::expect("SELECT ?x (EXISTS{?x ?b ?c} as ?e) { ?x ?y ?z } GROUP BY ?x",
+            h::GroupBy({V{"?x"}}, {"(EXISTS{?x ?b ?c} as ?e)"},
+                       h::ExistsJoin(::testing::_,
+                                     h::hasVariables({"?x", "?b", "?c"}))));
+  // Correlating such an `EXISTS` with a non-grouped variable (here `?y`) is
+  // rejected, because the SPARQL standard doesn't clearly define the semantics
+  // of this case.
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      h::parseAndPlan(
+          "SELECT ?x (EXISTS{?x ?y ?c} as ?e) { ?x ?y ?z } GROUP BY ?x",
+          ad_utility::testing::getQec()),
+      HasSubstr("The EXISTS in the expression (EXISTS{?x ?y ?c} as ?e) uses "
+                "the variable ?y from the query body, but this variable is "
+                "not part of the GROUP BY."));
+  // In contrast, an `EXISTS` inside an aggregate is evaluated once per row and
+  // may therefore use non-grouped variables (here `?y`), just like in a
+  // `FILTER`.
+  h::expect(
+      "SELECT ?x (SAMPLE(EXISTS{?x ?y ?c}) as ?e) { ?x ?y ?z } GROUP BY ?x",
+      h::GroupBy(
+          {V{"?x"}}, {"(SAMPLE(EXISTS{?x ?y ?c}) as ?e)"},
+          h::ExistsJoin(::testing::_, h::hasVariables({"?x", "?y", "?c"}))));
+
+  // Similar tests, but with multiple EXISTS clauses
+  auto existsAbcDef = h::ExistsJoin(h::ExistsJoin(xyz, abc), def);
+  h::expect(
+      "SELECT * { ?x ?y ?z FILTER (EXISTS {?a ?b ?c} || EXISTS {?d ?e ?f})}",
+      h::Filter("EXISTS {?a ?b ?c} || EXISTS {?d ?e ?f}", existsAbcDef));
+  ;
+  h::expect(
+      "SELECT * { ?x ?y ?z BIND(EXISTS {?a ?b ?c} || EXISTS {?d ?e ?f} as "
+      "?bound)}",
+      h::Bind(existsAbcDef, "EXISTS {?a ?b ?c} || EXISTS {?d ?e ?f}",
+              Variable("?bound")));
+
+  h::expect(
+      "SELECT ?x (SAMPLE(EXISTS {?a ?b ?c} || EXISTS {?d ?e ?f}) as ?s) "
+      "(SAMPLE(EXISTS{?g ?h ?i}) as ?t) { ?x ?y ?z } GROUP BY ?x",
+      h::GroupBy({V{"?x"}},
+                 {"(SAMPLE(EXISTS {?a ?b ?c} || EXISTS {?d ?e ?f}) as ?s)",
+                  "(SAMPLE(EXISTS{?g ?h ?i}) as ?t)"},
+                 h::ExistsJoin(existsAbcDef, ghi)));
+
+  // Test the interaction of FROM with EXISTS.
+  using H = ad_utility::HashSet<std::string>;
+  auto xyzg = h::IndexScanFromStrings("?x", "?y", "?z", {}, H{"<g>"});
+  auto abcg = h::IndexScanFromStrings("?a", "?b", "?c", {}, H{"<g>"});
+
+  // Various uses of FILTER EXISTS.
+  auto existsJoin = h::ExistsJoin(xyzg, abcg);
+  auto filter = h::Filter("EXISTS {?a ?b ?c}", existsJoin);
+  h::expect("SELECT * FROM <g> { ?x ?y ?z FILTER EXISTS {?a ?b ?c}}", filter);
+  h::expect("ASK FROM <g> { ?x ?y ?z FILTER EXISTS {?a ?b ?c}}", filter);
+  h::expect(
+      "CONSTRUCT {<a> <b> <c>} FROM <g> { ?x ?y ?z FILTER EXISTS {?a ?b ?c}}",
+      filter);
+  h::expect("Describe ?x FROM <g> { ?x ?y ?z FILTER EXISTS {?a ?b ?c}}",
+            h::Describe(::testing::_, filter));
+
+  // Test the interaction of FROM NAMES with EXISTS
+  auto varG = std::vector{Variable{"?g"}};
+  std::vector<ColumnIndex> graphCol{ADDITIONAL_COLUMN_GRAPH_ID};
+  auto uvcg =
+      h::IndexScanFromStrings("?u", "?v", "?c", {}, H{"<g2>"}, varG, graphCol);
+  existsJoin = h::ExistsJoin(xyzg, h::UnorderedJoins(abcg, uvcg));
+  filter = h::Filter("EXISTS {?a ?b ?c. GRAPH ?g { ?u ?v ?c}}", existsJoin);
+  h::expect(
+      "SELECT * FROM <g> FROM NAMED <g2> { ?x ?y ?z FILTER EXISTS {?a ?b ?c. "
+      "GRAPH ?g { ?u ?v ?c}}}",
+      filter);
+  // Make sure we get the correct permutation.
+  h::expect("SELECT ?s { ?s <p> <o> FILTER EXISTS { ?s ?p ?o } }",
+            h::Filter("EXISTS { ?s ?p ?o }",
+                      h::ExistsJoin(
+                          h::IndexScanFromStrings("?s", "<p>", "<o>"),
+                          h::IndexScanFromStrings("?s", "?p", "?o",
+                                                  {Permutation::Enum::SPO,
+                                                   Permutation::Enum::SOP}))));
+  h::expect("SELECT ?s { ?s ?p <o> FILTER EXISTS { ?s ?p ?o } }",
+            h::Filter("EXISTS { ?s ?p ?o }",
+                      h::ExistsJoin(
+                          h::IndexScanFromStrings("?s", "?p", "<o>",
+                                                  {Permutation::Enum::OSP}),
+                          h::IndexScanFromStrings("?s", "?p", "?o",
+                                                  {Permutation::Enum::SPO}))));
+
+  // A `FILTER` with an `EXISTS` may be applied to several subtrees, which then
+  // must not share the column of the `ExistsJoin` (see GitHub issue #3555).
+  auto filterExistsEmpty = [](const auto& subtree) {
+    return h::Filter("EXISTS {}", h::ExistsJoin(subtree, h::NeutralElement()));
+  };
+  h::expect(
+      "SELECT * { ?x ?y ?z . ?a ?b ?c FILTER EXISTS {} }",
+      h::CartesianProductJoin(filterExistsEmpty(xyz), filterExistsEmpty(abc)));
+  auto filterExistsSRB = [](const auto& subtree) {
+    return h::Filter(
+        "EXISTS { ?s <r> ?b }",
+        h::ExistsJoin(subtree, h::IndexScanFromStrings("?s", "<r>", "?b")));
+  };
+  h::expectGreedy(
+      "SELECT * { ?s <p> ?o . ?s <q> ?y FILTER EXISTS { ?s <r> ?b } }",
+      h::Join(filterExistsSRB(h::IndexScanFromStrings("?s", "<p>", "?o")),
+              filterExistsSRB(h::IndexScanFromStrings("?s", "<q>", "?y"))));
+
+  // The `ExistsJoin` adds a column for the result of the `EXISTS`, which is
+  // then hidden by the `Filter`.
+  using ::testing::Pair;
+  auto variableColumnsAre = [](auto... columns) {
+    return AD_PROPERTY(QueryExecutionTree, getVariableColumns,
+                       ::testing::UnorderedElementsAre(columns...));
+  };
+  auto column = [](const std::string& variable, ColumnIndex columnIndex) {
+    return Pair(Var{variable}, makeAlwaysDefinedColumn(columnIndex));
+  };
+  auto existsColumn = [](ColumnIndex columnIndex) {
+    return Pair(AD_PROPERTY(Var, name, HasSubstr("?ql_internal_exists_")),
+                makeAlwaysDefinedColumn(columnIndex));
+  };
+  auto filterExistsSRBWithColumns =
+      [&](const auto& subtree,
+          const std::string& otherVariable) -> h::QetMatcher {
+    return ::testing::AllOf(
+        h::Filter(
+            "EXISTS { ?s <r> ?b }",
+            ::testing::AllOf(
+                h::ExistsJoin(subtree,
+                              h::IndexScanFromStrings("?s", "<r>", "?b")),
+                variableColumnsAre(column("?s", 0), column(otherVariable, 1),
+                                   existsColumn(2)))),
+        variableColumnsAre(column("?s", 0), column(otherVariable, 1)));
+  };
+  h::expect("SELECT * { ?s <p> ?o FILTER EXISTS { ?s <r> ?b } }",
+            filterExistsSRBWithColumns(
+                h::IndexScanFromStrings("?s", "<p>", "?o"), "?o"));
+  h::expectGreedy(
+      "SELECT * { ?s <p> ?o . ?s <q> ?y FILTER EXISTS { ?s <r> ?b } }",
+      ::testing::AllOf(
+          h::Join(filterExistsSRBWithColumns(
+                      h::IndexScanFromStrings("?s", "<p>", "?o"), "?o"),
+                  filterExistsSRBWithColumns(
+                      h::IndexScanFromStrings("?s", "<q>", "?y"), "?y")),
+          // The hidden columns of the `ExistsJoin`s are still present in the
+          // result (columns 2 and 4), but not visible.
+          // TODO<StripColumns> Adapt once `Filter` can strip columns.
+          AD_PROPERTY(QueryExecutionTree, getResultWidth, ::testing::Eq(5)),
+          variableColumnsAre(column("?s", 0), column("?o", 1),
+                             column("?y", 3))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, ensureGeneratedInternalVariablesDontClash) {
+  h::expect("SELECT * { SELECT ?s { ?s <a> [] } ORDER BY RAND() }",
+            h::OrderBy({std::pair{Var{"?_QLever_internal_variable_1"},
+                                  OrderBy::AscOrDesc::Asc}},
+                       h::Bind(h::IndexScanFromStrings(
+                                   "?s", "<a>", "?_QLever_internal_variable_0"),
+                               "RAND()", Var{"?_QLever_internal_variable_1"})));
+
+  // Regression test for issue https://github.com/ad-freiburg/qlever/issues/2034
+  h::expect("SELECT * { ?a <a> [] . { SELECT * { ?a <a> [] }}}",
+            h::Join(h::IndexScanFromStrings("?a", "<a>",
+                                            "?_QLever_internal_variable_0"),
+                    h::IndexScanFromStrings("?a", "<a>",
+                                            "?_QLever_internal_variable_1")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, FilterOnNeutralElement) {
+  h::expect("SELECT * { FILTER(false) }",
+            h::Filter("false", h::NeutralElement()));
+  h::expect("SELECT * { FILTER(true) }",
+            h::Filter("true", h::NeutralElement()));
+
+  h::expect("SELECT * { { SELECT * WHERE { FILTER(false) } } VALUES ?x { 1 } }",
+            h::CartesianProductJoin(h::Filter("false", h::NeutralElement()),
+                                    h::ValuesClause("VALUES (?x) { (1) }")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, ContainsWordInGraphClause) {
+  {
+    auto qp = makeQueryPlanner();
+    auto query = parseQuery(
+        "SELECT * { GRAPH ?g { ?s "
+        "<http://qlever.cs.uni-freiburg.de/builtin-functions/contains-word> "
+        "\"Test\" } }");
+    AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+        qp.createExecutionTree(query),
+        ::testing::HasSubstr(
+            "contains-word is not allowed inside GRAPH clauses "
+            "or in queries with FROM/FROM NAMED clauses."),
+        ad_utility::Exception);
+  }
+  {
+    auto qp = makeQueryPlanner();
+    auto query = parseQuery(
+        "SELECT * { GRAPH <my-iri> { ?s "
+        "<http://qlever.cs.uni-freiburg.de/builtin-functions/contains-word> "
+        "\"Test\" } }");
+    AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+        qp.createExecutionTree(query),
+        ::testing::HasSubstr(
+            "contains-word is not allowed inside GRAPH clauses "
+            "or in queries with FROM/FROM NAMED clauses."),
+        ad_utility::Exception);
+  }
+  {
+    auto qp = makeQueryPlanner();
+    auto query = parseQuery(
+        "SELECT * FROM <my-iri> WHERE { ?s "
+        "<http://qlever.cs.uni-freiburg.de/builtin-functions/contains-word> "
+        "\"Test\" }");
+    AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+        qp.createExecutionTree(query),
+        ::testing::HasSubstr(
+            "contains-word is not allowed inside GRAPH clauses "
+            "or in queries with FROM/FROM NAMED clauses."),
+        ad_utility::Exception);
+  }
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, UnconnectedComponentsInGraphClause) {
+  h::expect(
+      "SELECT * WHERE { GRAPH ?g { ?s1 ?p1 ?o1 . ?s2 ?p2 ?o2 } }",
+      h::Join(
+          h::Sort(h::IndexScanFromStrings("?s1", "?p1", "?o1", {}, NamedTag{},
+                                          {Variable{"?g"}}, {3})),
+          h::Sort(h::IndexScanFromStrings("?s2", "?p2", "?o2", {}, NamedTag{},
+                                          {Variable{"?g"}}, {3}))));
+  // Sanity check case without a GRAPH clause
+  h::expect(
+      "SELECT * WHERE { ?s1 ?p1 ?o1 . ?s2 ?p2 ?o2 }",
+      h::CartesianProductJoin(h::IndexScanFromStrings("?s1", "?p1", "?o1"),
+                              h::IndexScanFromStrings("?s2", "?p2", "?o2")));
+}
+
+// Test that inside a `GRAPH ?g` clause the graph variable connects an OPTIONAL
+// to the preceding patterns that bind it, but a MINUS only if `?g` is in scope
+// on both sides.
+TEST(QueryPlanner, UnconnectedMinusAndOptionalInGraphClause) {
+  auto scan = [](std::string s, std::string p, std::string o) {
+    return h::IndexScanFromStrings(std::move(s), std::move(p), std::move(o), {},
+                                   NamedTag{}, {Variable{"?g"}}, {3});
+  };
+  // A MINUS that shares no variable with the preceding triple is ignored.
+  h::expect("SELECT * { GRAPH ?g { ?a <p> ?b MINUS { ?x <q> ?y } } }",
+            scan("?a", "<p>", "?b"));
+  h::expect("SELECT * { GRAPH ?g { ?a <p> ?b MINUS { ?a <q> ?y } } }",
+            h::Minus(h::Sort(scan("?a", "<p>", "?b")),
+                     h::Sort(scan("?a", "<q>", "?y"))));
+  // The implicit graph column of the index scans doesn't connect a MINUS, also
+  // not if the preceding pattern is a nested group (see
+  // https://github.com/ad-freiburg/qlever/issues/3678).
+  h::expect("SELECT * { GRAPH ?g { { ?a <p> ?b } MINUS { ?x <q> ?y } } }",
+            scan("?a", "<p>", "?b"));
+  // The graph variable only connects a MINUS if it is in scope on both sides.
+  auto anyTree = ::testing::A<const QueryExecutionTree&>();
+  auto isMinus = h::Minus(anyTree, anyTree);
+  h::expect("SELECT * { GRAPH ?g { ?g <p> ?b MINUS { ?x <q> ?y } } }",
+            ::testing::Not(isMinus));
+  h::expect("SELECT * { GRAPH ?g { { ?g <p> ?b } MINUS { ?x <q> ?y } } }",
+            ::testing::Not(isMinus));
+  h::expect("SELECT * { GRAPH ?g { ?a <p> ?b MINUS { ?g <q> ?y } } }",
+            scan("?a", "<p>", "?b"));
+  h::expect("SELECT * { GRAPH ?g { ?g <p> ?b MINUS { ?g <q> ?y } } }", isMinus);
+  h::expect(
+      "SELECT * { GRAPH ?g { VALUES ?g { <g1> } ?a <p> ?b "
+      "MINUS { ?x <q> ?y VALUES ?g { <g1> } } } }",
+      isMinus);
+  // The variables of a nested MINUS are not in scope.
+  h::expect(
+      "SELECT * { GRAPH ?g { ?g <p> ?b "
+      "MINUS { ?x <q> ?y MINUS { ?g <r> ?x } } } }",
+      ::testing::Not(isMinus));
+  // The graph variable connects an OPTIONAL, no matter whether the preceding
+  // pattern is a triple or a nested group.
+  auto optionalJoin = h::OptionalJoin(h::Sort(scan("?a", "<p>", "?b")),
+                                      h::Sort(scan("?x", "<q>", "?y")));
+  h::expect("SELECT * { GRAPH ?g { ?a <p> ?b OPTIONAL { ?x <q> ?y } } }",
+            optionalJoin);
+  h::expect("SELECT * { GRAPH ?g { { ?a <p> ?b } OPTIONAL { ?x <q> ?y } } }",
+            optionalJoin);
+  // Also when the graph variable is used explicitly.
+  h::expect("SELECT * { GRAPH ?g { ?g <p> ?b OPTIONAL { ?g <q> ?y } } }",
+            h::OptionalJoin(::testing::A<const QueryExecutionTree&>(),
+                            ::testing::A<const QueryExecutionTree&>()));
+  // But only if the preceding pattern binds the graph variable.
+  h::expect(
+      "SELECT * { GRAPH ?g { VALUES ?v { 1 } OPTIONAL { ?x <q> ?y } } }",
+      h::CartesianProductJoin(h::ValuesClause("VALUES (?v) { (1) }"),
+                              h::NeutralOptional(scan("?x", "<q>", "?y"))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, testDistributiveJoinInUnion) {
+  auto* qec = ad_utility::testing::getQec();
+  TransitivePathSide left1{std::nullopt, 0,
+                           Variable("?_QLever_internal_variable_qp_0"), 0};
+  TransitivePathSide left2{std::nullopt, 0,
+                           Variable("?_QLever_internal_variable_qp_7"), 0};
+  TransitivePathSide right{std::nullopt, 1, Variable("?type"), 1};
+  std::string query =
+      "SELECT * WHERE {\n"
+      "  <Q11629> <P279>/(<P279>*|<P31>*) | <P31>/(<P279>*|<P31>*) ?type .\n"
+      "}";
+
+  h::expectWithGivenBudgets(
+      std::move(query),
+      h::Union(
+          h::Union(
+              h::transitivePath(
+                  left1, right, 0, std::numeric_limits<size_t>::max(),
+                  h::IndexScanFromStrings("<Q11629>", "<P279>",
+                                          "?_QLever_internal_variable_qp_0"),
+                  h::IndexScanFromStrings("?_QLever_internal_variable_qp_2",
+                                          "<P279>",
+                                          "?_QLever_internal_variable_qp_3")),
+              h::transitivePath(
+                  left1, right, 0, std::numeric_limits<size_t>::max(),
+                  h::IndexScanFromStrings("<Q11629>", "<P279>",
+                                          "?_QLever_internal_variable_qp_0"),
+                  h::IndexScanFromStrings("?_QLever_internal_variable_qp_4",
+                                          "<P31>",
+                                          "?_QLever_internal_variable_qp_5"))),
+          h::Union(
+              h::transitivePath(
+                  left2, right, 0, std::numeric_limits<size_t>::max(),
+                  h::IndexScanFromStrings("<Q11629>", "<P31>",
+                                          "?_QLever_internal_variable_qp_7"),
+                  h::IndexScanFromStrings("?_QLever_internal_variable_qp_9",
+                                          "<P279>",
+                                          "?_QLever_internal_variable_qp_10")),
+              h::transitivePath(
+                  left2, right, 0, std::numeric_limits<size_t>::max(),
+                  h::IndexScanFromStrings("<Q11629>", "<P31>",
+                                          "?_QLever_internal_variable_qp_7"),
+                  h::IndexScanFromStrings(
+                      "?_QLever_internal_variable_qp_11", "<P31>",
+                      "?_QLever_internal_variable_qp_12")))),
+      qec, {4, 16, 64'000'000});
+
+  TransitivePathSide left3{std::nullopt, 0, Variable("?s"), 0};
+  TransitivePathSide right2{std::nullopt, 1, Variable("?y"), 1};
+
+  h::expectWithGivenBudgets(
+      "SELECT * WHERE { ?s <P31> ?o . { ?s <P279>+ ?y } UNION { VALUES ?x { 1 "
+      "} }}",
+      h::Union(
+          h::transitivePath(left3, right2, 1,
+                            std::numeric_limits<size_t>::max(),
+                            h::IndexScanFromStrings("?s", "<P31>", "?o"),
+                            h::IndexScanFromStrings(
+                                "?_QLever_internal_variable_qp_0", "<P279>",
+                                "?_QLever_internal_variable_qp_1")),
+          h::CartesianProductJoin(h::IndexScanFromStrings("?s", "<P31>", "?o"),
+                                  h::ValuesClause("VALUES (?x) { (1) }"))),
+      qec, {4, 16, 64'000'000});
+
+  h::expectWithGivenBudgets(
+      "SELECT * WHERE { { VALUES ?x { 1 } } UNION { ?s <P279>+ ?y } . "
+      "?s <P31> ?o }",
+      h::Union(
+          h::CartesianProductJoin(h::ValuesClause("VALUES (?x) { (1) }"),
+                                  h::IndexScanFromStrings("?s", "<P31>", "?o")),
+          h::transitivePath(std::move(left3), std::move(right2), 1,
+                            std::numeric_limits<size_t>::max(),
+                            h::IndexScanFromStrings("?s", "<P31>", "?o"),
+                            h::IndexScanFromStrings(
+                                "?_QLever_internal_variable_qp_0", "<P279>",
+                                "?_QLever_internal_variable_qp_1"))),
+      qec, {4, 16, 64'000'000});
+
+  h::expectWithGivenBudgets(
+      "SELECT * WHERE { ?x <P31> ?o ."
+      "{ VALUES ?x { 1 } } UNION { VALUES ?x { 2 } }}",
+      h::Union(h::Join(h::Sort(h::ValuesClause("VALUES (?x) { (1) }")),
+                       h::IndexScanFromStrings("?x", "<P31>", "?o")),
+               h::Join(h::Sort(h::ValuesClause("VALUES (?x) { (2) }")),
+                       h::IndexScanFromStrings("?x", "<P31>", "?o"))),
+      qec, {4, 16, 64'000'000});
+
+  h::expectWithGivenBudgets(
+      "SELECT * WHERE { ?x <P31> ?o . "
+      "{ { VALUES ?x { 1 } } UNION { VALUES ?x { 2 } } } "
+      "UNION "
+      "{ { VALUES ?x { 3 } } UNION { VALUES ?x { 4 } } } }",
+      h::Union(h::Union(h::Join(h::Sort(h::ValuesClause("VALUES (?x) { (1) }")),
+                                h::IndexScanFromStrings("?x", "<P31>", "?o")),
+                        h::Join(h::Sort(h::ValuesClause("VALUES (?x) { (2) }")),
+                                h::IndexScanFromStrings("?x", "<P31>", "?o"))),
+               h::Union(h::Join(h::Sort(h::ValuesClause("VALUES (?x) { (3) }")),
+                                h::IndexScanFromStrings("?x", "<P31>", "?o")),
+                        h::Join(h::Sort(h::ValuesClause("VALUES (?x) { (4) }")),
+                                h::IndexScanFromStrings("?x", "<P31>", "?o")))),
+      qec, {4, 16, 64'000'000});
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, testDistributiveJoinInUnionWithMultipleJoinColumns) {
+  // Make sure that the optimization is enabled, so that this test actually
+  // tests something.
+  auto cleanup =
+      setRuntimeParameterForTest<&RuntimeParameters::enableDistributiveUnion_>(
+          true);
+  // Both children of the `UNION` have the variables `?s` and `?o` in common
+  // with the `?s <P31> ?o` triple, so the join has two join columns. The
+  // optimization previously only handled a single join column.
+  auto scan = h::IndexScanFromStrings("?s", "<P31>", "?o");
+  h::expectWithGivenBudgets(
+      "SELECT * WHERE { ?s <P31> ?o . "
+      "{ ?s <P279> ?o } UNION { ?s <P280> ?o } }",
+      h::Union(h::MultiColumnJoin(
+                   scan, h::IndexScanFromStrings("?s", "<P279>", "?o")),
+               h::MultiColumnJoin(
+                   scan, h::IndexScanFromStrings("?s", "<P280>", "?o"))),
+      ad_utility::testing::getQec(), {4, 16, 64'000'000});
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, testDistributiveJoinInUnionDoesntExplode) {
+  // Make sure that this is enabled for this test to actually test something.
+  auto cleanup =
+      setRuntimeParameterForTest<&RuntimeParameters::enableDistributiveUnion_>(
+          true);
+  // This is a regression test to ensure the following query, which joins two
+  // unions doesn't result in an OOM because the possible query plan variations
+  // explode.
+  std::string query = R"(
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+SELECT * {
+  ?p wdt:P664 | wdt:P1344 | wdt:P710 | wdt:P98 | wdt:P50 ?o1, ?o2, ?o3, ?o4
+}
+)";
+
+  h::expect(std::move(query), h::_);
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, ensureRegularJoinIsUsedIfTransitivePathIsAlreadyBound) {
+  using namespace ::testing;
+  auto qp = makeQueryPlanner();
+  auto query = parseQuery(
+      "SELECT * { { VALUES ?x { 1 } } UNION { ?s <P279>+ 1 } . ?s <P31> ?o }");
+  auto plans = qp.createExecutionTrees(query);
+
+  EXPECT_THAT(
+      plans,
+      UnorderedElementsAre(
+          Truly([](const auto& plan) {
+            // Case where join is at the top level.
+            return std::dynamic_pointer_cast<Join>(
+                plan._qet->getRootOperation());
+          }),
+          Truly([](const auto& plan) {
+            // Case where join is pushed into the union.
+            auto operation = plan._qet->getRootOperation();
+            return std::dynamic_pointer_cast<Union>(operation) &&
+                   std::dynamic_pointer_cast<Join>(
+                       operation->getChildren().at(1)->getRootOperation());
+          })));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, ensureRuntimeParameterDisablesDistributiveUnion) {
+  using namespace ::testing;
+  auto qp = makeQueryPlanner();
+
+  auto cleanup =
+      setRuntimeParameterForTest<&RuntimeParameters::enableDistributiveUnion_>(
+          false);
+  auto query = parseQuery(
+      "SELECT * { VALUES ?s { 1 } { ?s <P31> ?o } UNION { ?s <P31> ?o }  }");
+  auto plans = qp.createExecutionTrees(query);
+
+  ASSERT_EQ(plans.size(), 1);
+  EXPECT_TRUE(
+      std::dynamic_pointer_cast<Join>(plans.at(0)._qet->getRootOperation()));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, distributiveJoinInUnionIsNotAppliedIfUnionHasLimit) {
+  // Make sure that the optimization is enabled, so that this test actually
+  // tests something.
+  auto cleanup =
+      setRuntimeParameterForTest<&RuntimeParameters::enableDistributiveUnion_>(
+          true);
+  // Regression test for https://github.com/ad-freiburg/qlever/issues/3162. The
+  // `LIMIT` of the subquery applies to the `UNION` as a whole. Pushing the join
+  // into the children of the `UNION` would drop the `LIMIT` and thus change the
+  // semantics of the query, so the `UNION` has to be kept intact.
+  h::expect(
+      "SELECT * { VALUES ?s { <x> } "
+      "{ SELECT * { { ?s <label> ?o } UNION { ?s <is-a> ?o } } LIMIT 1 } }",
+      h::Join(h::Sort(h::ValuesClause("VALUES (?s) { (<x>) }")),
+              h::WithLimitOffset(
+                  LimitOffsetClause{1},
+                  h::Union(h::IndexScanFromStrings("?s", "<label>", "?o"),
+                           h::IndexScanFromStrings("?s", "<is-a>", "?o")))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, testDistributiveJoinInUnionRecursive) {
+  auto* qec = ad_utility::testing::getQec(
+      "<a> <P279> <b> . <c> <P279> <d> . <e> <P279> <f> . <g> <P279> <h> ."
+      " <i> <P279> <j> . <a> <P31> <b> . <c> <P31> <d> . <e> <P31> <f> ."
+      " <g> <P31> <h> . <i> <P31> <j> .");
+  TransitivePathSide left1{std::nullopt, 2,
+                           Variable("?_QLever_internal_variable_qp_0"), 0};
+  TransitivePathSide left2{std::nullopt, 0,
+                           Variable("?_QLever_internal_variable_qp_4"), 0};
+  TransitivePathSide left3{std::nullopt, 0,
+                           Variable("?_QLever_internal_variable_qp_13"), 0};
+  TransitivePathSide right1{std::nullopt, 1, Variable("?type"), 1};
+  TransitivePathSide right2{std::nullopt, 1,
+                            Variable("?_QLever_internal_variable_qp_3"), 1};
+  TransitivePathSide right3{std::nullopt, 1,
+                            Variable("?_QLever_internal_variable_qp_12"), 1};
+  std::string query =
+      "SELECT * WHERE {\n"
+      "  <Q11629> "
+      "  <P279>/((<P279>/(<P279>*|<P31>*))*|(<P31>/(<P279>*|<P31>*))*)"
+      "  ?type .\n"
+      "}";
+
+  h::expectWithGivenBudgets(
+      std::move(query),
+      h::Union(
+          h::transitivePath(
+              left1, right1, 0, std::numeric_limits<size_t>::max(),
+              h::IndexScanFromStrings("<Q11629>", "<P279>",
+                                      "?_QLever_internal_variable_qp_0"),
+              h::Union(h::Sort(h::transitivePath(
+                           left2, right2, 0, std::numeric_limits<size_t>::max(),
+                           h::IndexScanFromStrings(
+                               "?_QLever_internal_variable_qp_2", "<P279>",
+                               "?_QLever_internal_variable_qp_4"),
+                           h::IndexScanFromStrings(
+                               "?_QLever_internal_variable_qp_6", "<P279>",
+                               "?_QLever_internal_variable_qp_7"))),
+                       h::Sort(h::transitivePath(
+                           left2, right2, 0, std::numeric_limits<size_t>::max(),
+                           h::IndexScanFromStrings(
+                               "?_QLever_internal_variable_qp_2", "<P279>",
+                               "?_QLever_internal_variable_qp_4"),
+                           h::IndexScanFromStrings(
+                               "?_QLever_internal_variable_qp_8", "<P31>",
+                               "?_QLever_internal_variable_qp_9"))))),
+          h::transitivePath(
+              left1, right1, 0, std::numeric_limits<size_t>::max(),
+              h::IndexScanFromStrings("<Q11629>", "<P279>",
+                                      "?_QLever_internal_variable_qp_0"),
+              h::Union(h::Sort(h::transitivePath(
+                           left3, right3, 0, std::numeric_limits<size_t>::max(),
+                           h::IndexScanFromStrings(
+                               "?_QLever_internal_variable_qp_11", "<P31>",
+                               "?_QLever_internal_variable_qp_13"),
+                           h::IndexScanFromStrings(
+                               "?_QLever_internal_variable_qp_15", "<P279>",
+                               "?_QLever_internal_variable_qp_16"))),
+                       h::Sort(h::transitivePath(
+                           left3, right3, 0, std::numeric_limits<size_t>::max(),
+                           h::IndexScanFromStrings(
+                               "?_QLever_internal_variable_qp_11", "<P31>",
+                               "?_QLever_internal_variable_qp_13"),
+                           h::IndexScanFromStrings(
+                               "?_QLever_internal_variable_qp_17", "<P31>",
+                               "?_QLever_internal_variable_qp_18")))))),
+      qec, {4, 16, 64'000'000});
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, postQueryValuesClause) {
+  h::expect("SELECT ?s ?p1 ?o1 { ?s ?p1 ?o1 } VALUES ?p1 { <pred> }",
+            h::Join(h::IndexScanFromStrings("?s", "?p1", "?o1"),
+                    h::Sort(h::ValuesClause("VALUES (?p1) { (<pred>) }"))));
+  h::expect("SELECT * { } VALUES () { () }",
+            h::CartesianProductJoin(h::NeutralElement(),
+                                    h::ValuesClause("VALUES () { () }")));
+  // Without variables, the trailing `VALUES` clause must not be ignored: zero
+  // rows make the result empty and multiple rows duplicate its rows.
+  h::expect("SELECT ?s { ?s ?p ?o } VALUES () { }",
+            h::CartesianProductJoin(h::IndexScanFromStrings("?s", "?p", "?o"),
+                                    h::ValuesClause("VALUES () {  }")));
+  h::expect("SELECT ?s { ?s ?p ?o } VALUES () { () () }",
+            h::CartesianProductJoin(h::IndexScanFromStrings("?s", "?p", "?o"),
+                                    h::ValuesClause("VALUES () { () () }")));
+  h::expect(
+      "SELECT * { } VALUES (?x ?y) { (1 2) }",
+      h::CartesianProductJoin(h::NeutralElement(),
+                              h::ValuesClause("VALUES (?x\t?y) { (1 2) }")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, OptionalJoinWithEmptyPattern) {
+  h::expect("SELECT * { OPTIONAL { ?a ?b ?c } }",
+            h::NeutralOptional(h::IndexScanFromStrings("?a", "?b", "?c")));
+  h::expect("SELECT * { ?a ?b ?c . OPTIONAL { ?d ?e ?f } }",
+            h::CartesianProductJoin(
+                h::IndexScanFromStrings("?a", "?b", "?c"),
+                h::NeutralOptional(h::IndexScanFromStrings("?d", "?e", "?f"))));
+  h::expect("SELECT * { OPTIONAL { ?a ?b ?c } . OPTIONAL { ?d ?e ?f } }",
+            h::CartesianProductJoin(
+                h::NeutralOptional(h::IndexScanFromStrings("?a", "?b", "?c")),
+                h::NeutralOptional(h::IndexScanFromStrings("?d", "?e", "?f"))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, InverseGraphPattern) {
+  h::expect("SELECT * { ?a ^<b> ?c }",
+            h::IndexScanFromStrings("?c", "<b>", "?a"));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, LimitIsProperlyAppliedForSubqueries) {
+  auto hasLimit = [](const LimitOffsetClause& limit) {
+    return queryPlannerTestHelpers::RootOperationBase(
+        AD_PROPERTY(Operation, getLimitOffset, ::testing::Eq(limit)));
+  };
+
+  h::expect("SELECT * { SELECT ?a { ?a ?b ?c } LIMIT 1 }",
+            AllOf(h::IndexScanFromStrings("?a", "?b", "?c"), hasLimit({1})));
+  h::expect(
+      "SELECT * { SELECT * { VALUES (?x) { (1) (2) (3) (4) (5) } } LIMIT 1 }",
+      AllOf(h::ValuesClause("VALUES (?x) { (1) (2) (3) (4) (5) } LIMIT 1"),
+            hasLimit({1})));
+
+  h::expect("SELECT * { SELECT * { ?a ?b ?c } OFFSET 2 } OFFSET 1",
+            AllOf(h::IndexScanFromStrings("?a", "?b", "?c"),
+                  hasLimit({std::nullopt, 3})));
+  // Last offset should only be applied by exporter since VALUES does not
+  // handle OFFSET
+  h::expect(
+      "SELECT * { SELECT * { SELECT * { VALUES (?x) { (1) (2) (3) (4) (5) } "
+      "} OFFSET 1 } OFFSET 2 } OFFSET 5",
+      AllOf(h::ValuesClause("VALUES (?x) { (1) (2) (3) (4) (5) } OFFSET 3"),
+            hasLimit({std::nullopt, 3})));
+
+  h::expect("SELECT * { SELECT * { ?a ?b ?c } LIMIT 2 } LIMIT 1",
+            AllOf(h::IndexScanFromStrings("?a", "?b", "?c"), hasLimit({1})));
+  // Last limit should only be applied by exporter since VALUES does not handle
+  // OFFSET
+  h::expect(
+      "SELECT * { SELECT * { SELECT * { VALUES (?x) { (1) (2) (3) (4) (5) } "
+      "} LIMIT 3 } LIMIT 2 } LIMIT 1",
+      AllOf(h::ValuesClause("VALUES (?x) { (1) (2) (3) (4) (5) } LIMIT 2"),
+            hasLimit({2})));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner,
+     PropertyPathWithGraphVariableNoSpecialHandlingWhenJoiningOnGraph) {
+  TransitivePathSide left{std::nullopt, 0, Variable{"?a"}, 0};
+  TransitivePathSide right{std::nullopt, 1, Variable{"?b"}, 1};
+  h::expect(
+      "SELECT * { GRAPH ?g { ?a <a>+ ?b . ?c <a> ?d } }",
+      h::Join(h::Sort(h::transitivePath(
+                  left, right, 1, std::numeric_limits<size_t>::max(),
+                  h::Sort(h::IndexScanFromStrings(
+                      "?_QLever_internal_variable_qp_0", "<a>",
+                      "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                      {Variable{"?g"}}, {3})))),
+              h::Sort(h::IndexScanFromStrings("?c", "<a>", "?d", {}, NamedTag{},
+                                              {Variable{"?g"}}, {3}))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, PropertyPathWithGraphVariable) {
+  {
+    TransitivePathSide left{std::nullopt, 0, 0, 0};
+    TransitivePathSide right{std::nullopt, 1, 1, 1};
+    h::expect(
+        "SELECT * WHERE { GRAPH ?g { 0 a+ 1 } FILTER(?g = <abc>) }",
+        h::Filter("Filter (?g = <abc>)",
+                  h::transitivePath(
+                      left, right, 1, std::numeric_limits<size_t>::max(),
+                      // Sort by ?g
+                      h::Sort(h::IndexScanFromStrings(
+                          "?_QLever_internal_variable_qp_0",
+                          "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>",
+                          "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                          {Variable{"?g"}}, {3})))));
+  }
+  {
+    TransitivePathSide left{std::nullopt, 0, Var{"?a"}, 0};
+    TransitivePathSide right{std::nullopt, 1, Var{"?b"}, 1};
+    h::expect("SELECT * WHERE { GRAPH ?g { ?a <label>+ ?b . ?a <is-a> ?c } }",
+              h::transitivePath(
+                  left, right, 1, std::numeric_limits<size_t>::max(),
+                  h::IndexScanFromStrings("?a", "<is-a>", "?c", {}, NamedTag{},
+                                          {Variable{"?g"}}, {3}),
+                  // Sort by ?g
+                  h::Sort(h::IndexScanFromStrings(
+                      "?_QLever_internal_variable_qp_0", "<label>",
+                      "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                      {Variable{"?g"}}, {3}))));
+    // Verify query planning also works when ?g is the first variable.
+    h::expect(
+        "SELECT * { VALUES (?g ?a) { (1 1) } GRAPH ?g { ?a <label>+ ?b } }",
+        h::transitivePath(left, right, 1, std::numeric_limits<size_t>::max(),
+                          h::ValuesClause("VALUES (?g\t?a) { (1 1) }"),
+                          // Sort by ?g
+                          h::Sort(h::IndexScanFromStrings(
+                              "?_QLever_internal_variable_qp_0", "<label>",
+                              "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                              {Variable{"?g"}}, {3}))));
+
+    // Ensure join with too many columns doesn't result in an exception. (This
+    // could be optimized in the future.)
+    h::expect(
+        "SELECT * "
+        "{ VALUES (?g ?a ?b) { (1 1 1) } GRAPH ?g { ?a <label>+ ?b } }",
+        h::MultiColumnJoin(
+            h::Sort(h::ValuesClause("VALUES (?g\t?a\t?b) { (1 1 1) }")),
+            h::Sort(h::transitivePath(
+                left, right, 1, std::numeric_limits<size_t>::max(),
+                // Sort by ?g
+                h::Sort(h::IndexScanFromStrings(
+                    "?_QLever_internal_variable_qp_0", "<label>",
+                    "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                    {Variable{"?g"}}, {3}))))));
+
+    h::expectWithGivenBudgets(
+        "SELECT * WHERE { GRAPH ?g { ?a <label>+ ?b . VALUES ?a { UNDEF } } }",
+        h::transitivePath(left, right, 1, std::numeric_limits<size_t>::max(),
+                          h::ValuesClause("VALUES (?a) { (UNDEF) }"),
+                          // Sort by ?g
+                          h::Sort(h::IndexScanFromStrings(
+                              "?_QLever_internal_variable_qp_0", "<label>",
+                              "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                              {Variable{"?g"}}, {3}))),
+        std::nullopt, {4, 16, 64'000'000});
+    h::expectWithGivenBudgets(
+        "SELECT * WHERE { GRAPH ?g { ?a <label>+ ?b . VALUES ?a { 1 } } }",
+        h::transitivePath(left, right, 1, std::numeric_limits<size_t>::max(),
+                          h::ValuesClause("VALUES (?a) { (1) }"),
+                          // Sort by ?g
+                          h::Sort(h::IndexScanFromStrings(
+                              "?_QLever_internal_variable_qp_0", "<label>",
+                              "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                              {Variable{"?g"}}, {3}))),
+        std::nullopt, {4, 16, 64'000'000});
+
+    // Verify undef value is joined to graph
+    h::expect(
+        "SELECT * WHERE { GRAPH ?g { ?a <label>* ?b . VALUES ?a { UNDEF } } }",
+        h::transitivePath(
+            left, right, 0, std::numeric_limits<size_t>::max(),
+            h::EmptyPath(Variable{"?a"}, Variable{"?g"},
+                         h::ValuesClause("VALUES (?a) { (UNDEF) }")),
+            // Sort by ?g
+            h::Sort(h::IndexScanFromStrings(
+                "?_QLever_internal_variable_qp_0", "<label>",
+                "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                {Variable{"?g"}}, {3}))));
+    h::expect(
+        "SELECT * WHERE { GRAPH ?g { ?a <label>* ?b . VALUES ?a { 1 } } }",
+        h::transitivePath(left, right, 0, std::numeric_limits<size_t>::max(),
+                          h::EmptyPath(Variable{"?a"}, Variable{"?g"},
+                                       h::ValuesClause("VALUES (?a) { (1) }")),
+                          // Sort by ?g
+                          h::Sort(h::IndexScanFromStrings(
+                              "?_QLever_internal_variable_qp_0", "<label>",
+                              "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                              {Variable{"?g"}}, {3}))));
+
+    h::expectWithGivenBudgets(
+        "SELECT * { VALUES (?g ?a) { (1 1) } GRAPH ?g { ?a <label>* ?b } }",
+        h::transitivePath(
+            left, right, 0, std::numeric_limits<size_t>::max(),
+            // The child already provides the graph variable, so the pairs of
+            // value and graph are checked against the knowledge graph.
+            h::EmptyPath(Variable{"?a"}, Variable{"?g"},
+                         h::ValuesClause("VALUES (?g\t?a) { (1 1) }")),
+            // Sort by ?g
+            h::Sort(h::IndexScanFromStrings(
+                "?_QLever_internal_variable_qp_0", "<label>",
+                "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                {Variable{"?g"}}, {3}))),
+        std::nullopt, {4, 16, 64'000'000});
+
+    TransitivePathSide left2{std::nullopt, 0, Var{"?g"}, 0};
+    h::expect(
+        "SELECT * { ?g ?h ?i GRAPH ?g { ?g <label>* ?b } }",
+        h::transitivePath(
+            left2, right, 0, std::numeric_limits<size_t>::max(),
+            // We join on the graph variable itself, so an internal helper
+            // variable is used for the graph column.
+            h::EmptyPath(Variable{"?g"},
+                         Variable{"?_Qlever_internal_transitive_path_graph"},
+                         h::IndexScanFromStrings("?g", "?h", "?i")),
+            // Sort by ?g
+            h::Sort(h::IndexScanFromStrings(
+                "?_QLever_internal_variable_qp_0", "<label>",
+                "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                {Variable{"?g"}}, {3}))));
+  }
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, PropertyPathWithGraphIri) {
+  using HS = ad_utility::HashSet<std::string>;
+  TransitivePathSide left{std::nullopt, 0, Variable("?x"), 0};
+  TransitivePathSide right{std::nullopt, 1, Variable("?y"), 1};
+  h::expect("SELECT * WHERE { GRAPH <abc> { ?x a* ?y } } ",
+            h::transitivePath(
+                left, right, 0, std::numeric_limits<size_t>::max(),
+                h::EmptyPath(Variable{"?internal_property_path_variable_x"},
+                             std::nullopt),
+                h::IndexScanFromStrings(
+                    "?_QLever_internal_variable_qp_0",
+                    "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>",
+                    "?_QLever_internal_variable_qp_1", {}, HS{"<abc>"})));
+  h::expect("SELECT * FROM <abc> WHERE { ?x a* ?y } ",
+            h::transitivePath(
+                left, right, 0, std::numeric_limits<size_t>::max(),
+                h::EmptyPath(Variable{"?internal_property_path_variable_x"},
+                             std::nullopt),
+                h::IndexScanFromStrings(
+                    "?_QLever_internal_variable_qp_0",
+                    "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>",
+                    "?_QLever_internal_variable_qp_1", {}, HS{"<abc>"})));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, negatedPaths) {
+  h::expect("SELECT * { ?a !<b> ?c }",
+            h::Filter("<b> != ?_QLever_internal_variable_qp_0",
+                      h::IndexScanFromStrings(
+                          "?a", "?_QLever_internal_variable_qp_0", "?c")));
+
+  h::expect("SELECT * { ?a !(<b>) ?c }",
+            h::Filter("<b> != ?_QLever_internal_variable_qp_0",
+                      h::IndexScanFromStrings(
+                          "?a", "?_QLever_internal_variable_qp_0", "?c")));
+
+  h::expect("SELECT * { ?a !^<b> ?c }",
+            h::Filter("<b> != ?_QLever_internal_variable_qp_0",
+                      h::IndexScanFromStrings(
+                          "?c", "?_QLever_internal_variable_qp_0", "?a")));
+
+  h::expect("SELECT * { ?a !(^<b>) ?c }",
+            h::Filter("<b> != ?_QLever_internal_variable_qp_0",
+                      h::IndexScanFromStrings(
+                          "?c", "?_QLever_internal_variable_qp_0", "?a")));
+  h::expect(
+      "SELECT * { ?a !(<b>|^<b>) ?c }",
+      h::Union(h::Filter("<b> != ?_QLever_internal_variable_qp_0",
+                         h::IndexScanFromStrings(
+                             "?a", "?_QLever_internal_variable_qp_0", "?c")),
+               h::Filter("<b> != ?_QLever_internal_variable_qp_1",
+                         h::IndexScanFromStrings(
+                             "?c", "?_QLever_internal_variable_qp_1", "?a"))));
+  h::expect(
+      "SELECT * { ?a !(<b>|^<d>|^<e>|<f>) ?c }",
+      h::Union(h::Filter("<b> != ?_QLever_internal_variable_qp_0 && <f> != "
+                         "?_QLever_internal_variable_qp_0",
+                         h::IndexScanFromStrings(
+                             "?a", "?_QLever_internal_variable_qp_0", "?c")),
+               h::Filter("<d> != ?_QLever_internal_variable_qp_1 && <e> != "
+                         "?_QLever_internal_variable_qp_1",
+                         h::IndexScanFromStrings(
+                             "?c", "?_QLever_internal_variable_qp_1", "?a"))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, transitivePathWithoutVariables) {
+  TransitivePathSide left{std::nullopt, 1, 1, 0};
+  TransitivePathSide right{std::nullopt, 0, 1, 1};
+  h::expect(
+      "SELECT * { 1 <a>+ 1 }",
+      h::transitivePath(
+          left, right, 1, std::numeric_limits<size_t>::max(),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+
+  h::expect(
+      "SELECT * { 1 <a>+ 1 . 1 <a> 1 }",
+      h::CartesianProductJoin(
+          h::IndexScan(1, TripleComponent::Iri::fromIriref("<a>"), 1),
+          h::transitivePath(
+              left, right, 1, std::numeric_limits<size_t>::max(),
+              h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                      "?_QLever_internal_variable_qp_1"))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, emptyPathWithLiterals) {
+  // The empty path matches a fixed value even if it doesn't occur in the
+  // knowledge graph, so the value is simply fed into the transitive path.
+  auto startingPoint = [](std::string_view value) {
+    return h::ValuesClause(absl::StrCat(
+        "VALUES (?internal_property_path_variable_x) { (", value, ") }"));
+  };
+  TransitivePathSide left{std::nullopt, 0, 1, 0};
+  TransitivePathSide right{std::nullopt, 1, Variable{"?var"}, 1};
+  h::expect(
+      "SELECT * { 1 <a>* ?var }",
+      h::transitivePath(
+          left, right, 0, std::numeric_limits<size_t>::max(),
+          startingPoint("1"),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+
+  TransitivePathSide left2{std::nullopt, 1, 1, 0};
+  TransitivePathSide right2{std::nullopt, 0, 1, 1};
+  h::expect(
+      "SELECT * { 1 <a>* 1 }",
+      h::transitivePath(
+          left2, right2, 0, std::numeric_limits<size_t>::max(),
+          startingPoint("1"),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+  h::expect(
+      R"(PREFIX xsd: <http://www.w3.org/2001/XMLSchema#> SELECT * { 1 <a>* "1"^^xsd:integer })",
+      h::transitivePath(
+          left2, right2, 0, std::numeric_limits<size_t>::max(),
+          startingPoint("1"),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, emptyPathWithLiteralsAndGraphVariable) {
+  using HS = ad_utility::HashSet<std::string>;
+  auto values =
+      h::ValuesClause("VALUES (?internal_property_path_variable_x) { (1) }");
+  TransitivePathSide left{std::nullopt, 0, 1, 0};
+  TransitivePathSide right{std::nullopt, 1, Variable{"?var"}, 1};
+  auto scan = h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                      "?_QLever_internal_variable_qp_1", {},
+                                      NamedTag{}, {Variable{"?g"}}, {3});
+  // The value has to be matched in every graph, so it is combined with all the
+  // graphs of the index.
+  h::expect(
+      "SELECT * { GRAPH ?g { 1 <a>* ?var } }",
+      h::transitivePath(left, right, 0, std::numeric_limits<size_t>::max(),
+                        h::CartesianProductJoin(values, h::DistinctGraphs()),
+                        // Sort by ?g
+                        h::Sort(scan)));
+  // If the graphs are restricted by the query, only those have to be matched.
+  h::expect(
+      "SELECT * FROM NAMED <b> FROM NAMED <c> { GRAPH ?g { 1 <a>* ?var } "
+      "}",
+      h::transitivePath(
+          left, right, 0, std::numeric_limits<size_t>::max(),
+          h::CartesianProductJoin(
+              values, h::ValuesClause("VALUES (?g) { (<b>) (<c>) }")),
+          // Sort by ?g
+          h::Sort(h::IndexScanFromStrings(
+              "?_QLever_internal_variable_qp_0", "<a>",
+              "?_QLever_internal_variable_qp_1", {}, HS{"<b>", "<c>"},
+              {Variable{"?g"}}, {3}))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, emptyPathWithMismatchingLiterals) {
+  TransitivePathSide left{std::nullopt, 1, 1, 0};
+  TransitivePathSide right{std::nullopt, 0, 2, 1};
+  // If the literals mismatch, we don't need to evaluate the empty path!
+  h::expect(
+      "SELECT * { 1 <a>* 2 }",
+      h::transitivePath(
+          left, right, 1, std::numeric_limits<size_t>::max(),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, emptyPathWithLiteralsBound) {
+  auto startingPoint =
+      h::ValuesClause("VALUES (?internal_property_path_variable_x) { (1) }");
+  TransitivePathSide left{std::nullopt, 0, 1, 0};
+  TransitivePathSide right{std::nullopt, 1, Variable{"?var"}, 1};
+  h::expect(
+      "SELECT * { 1 <a>* ?var . VALUES ?var { 2 } }",
+      h::Join(
+          h::Sort(h::ValuesClause("VALUES (?var) { (2) }")),
+          h::Sort(h::transitivePath(
+              left, right, 0, std::numeric_limits<size_t>::max(), startingPoint,
+              h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                      "?_QLever_internal_variable_qp_1")))));
+
+  TransitivePathSide left2{std::nullopt, 1, Variable{"?var"}, 0};
+  TransitivePathSide right2{std::nullopt, 0, 1, 1};
+  h::expect(
+      "SELECT * { ?var <a>* 1 . VALUES ?var { 2 } }",
+      h::Join(
+          h::Sort(h::ValuesClause("VALUES (?var) { (2) }")),
+          h::Sort(h::transitivePath(
+              left2, right2, 0, std::numeric_limits<size_t>::max(),
+              startingPoint,
+              h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                      "?_QLever_internal_variable_qp_1")))));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, propertyPathWithSameVariableTwiceBound) {
+  TransitivePathSide left{std::nullopt, 1, Variable{"?x"}, 0};
+  TransitivePathSide right{std::nullopt, 0, Variable{"?x"}, 1};
+  h::expect("SELECT * { ?x <a>+ ?x . ?x <b> <c> }",
+            h::transitivePath(std::move(left), std::move(right), 1,
+                              std::numeric_limits<size_t>::max(),
+                              h::IndexScanFromStrings("?x", "<b>", "<c>"),
+                              h::IndexScanFromStrings(
+                                  "?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, correctFiltersHandling) {
+  auto scan = h::IndexScanFromStrings;
+
+  // Filter is only applied once with OPTIONAL
+  h::expect("SELECT * { ?x <b> ?c . FILTER(?c < 5) OPTIONAL { ?x <c> ?d } }",
+            h::OptionalJoin(h::Filter("?c < 5", scan("?x", "<b>", "?c")),
+                            scan("?x", "<c>", "?d")));
+  h::expect("SELECT * { ?x <c> ?d . OPTIONAL {  ?x <b> ?c . FILTER(?c < 5) } }",
+            h::OptionalJoin(scan("?x", "<c>", "?d"),
+                            h::Filter("?c < 5", scan("?x", "<b>", "?c"))));
+
+  // A similar test with an OPTIONAL that is unconnected to the query before it.
+  // This is related to the issue
+  // https://github.com/ad-freiburg/qlever/issues/2194. Note: We need to run
+  // this test on an index where the used predicates actually exist, otherwise
+  // we will get a garbage plan.
+  auto qec = ad_utility::testing::getQec(
+      "<a> <b> <c>. <a2> <b> 4. <x> <p> <y>. <x> <c> 43");
+  h::expect(
+      "SELECT * { ?x <b> ?c . FILTER(?c < 5) OPTIONAL { ?a <c> ?d } ?x <p> ?a "
+      "}",
+      h::UnorderedJoins(h::Filter("?c < 5", scan("?x", "<b>", "?c")),
+                        h::NeutralOptional(scan("?a", "<c>", "?d")),
+                        scan("?x", "<p>", "?a")),
+      qec);
+
+  // Filter is applied in the correct subtree with MINUS
+  h::expect("SELECT * { ?x <b> ?c . FILTER(?c < 5) MINUS { ?x <c> ?d } }",
+            h::Minus(h::Filter("?c < 5", scan("?x", "<b>", "?c")),
+                     scan("?x", "<c>", "?d")));
+  h::expect("SELECT * { ?x <c> ?d . MINUS {  ?x <b> ?c . FILTER(?c < 5) } }",
+            h::Minus(scan("?x", "<c>", "?d"),
+                     h::Filter("?c < 5", scan("?x", "<b>", "?c"))));
+
+  // Filter inside and outside of a subquery
+  h::expect("SELECT * { ?x <c> ?d { SELECT * { ?x <b> ?c FILTER(?c < 5) } } }",
+            h::Join(scan("?x", "<c>", "?d"),
+                    h::Filter("?c < 5", scan("?x", "<b>", "?c"))));
+  h::expect(
+      "SELECT * { ?x <c> ?d { SELECT * { ?x <b> ?c } } FILTER(?c < 5) }",
+      ::testing::AnyOf(h::Join(scan("?x", "<c>", "?d"),
+                               h::Filter("?c < 5", scan("?x", "<b>", "?c"))),
+                       h::Filter("?c < 5", h::Join(scan("?x", "<c>", "?d"),
+                                                   scan("?x", "<b>", "?c")))));
+  h::expect(
+      "SELECT * { ?x <b> ?c . FILTER(?c < 5) { SELECT * { ?x <c> ?d } } }",
+      ::testing::AnyOf(h::Join(h::Filter("?c < 5", scan("?x", "<b>", "?c")),
+                               scan("?x", "<c>", "?d")),
+                       h::Filter("?c < 5", h::Join(scan("?x", "<b>", "?c"),
+                                                   scan("?x", "<c>", "?d")))));
+
+  // Filter and bind
+  h::expect(
+      "SELECT * { ?x <b> ?c FILTER(?c < 5) BIND(42 AS ?unrelated) FILTER(?c >= "
+      "1) }",
+      h::AnyOf(
+          h::Filter("?c >= 1",
+                    h::Bind(h::Filter("?c < 5", scan("?x", "<b>", "?c")), "42",
+                            Variable{"?unrelated"})),
+          h::Filter("?c >= 1",
+                    h::Filter("?c < 5", h::Bind(scan("?x", "<b>", "?c"), "42",
+                                                Variable{"?unrelated"}))),
+          h::Bind(h::Filter("?c >= 1",
+                            h::Filter("?c < 5", scan("?x", "<b>", "?c"))),
+                  "42", Variable{"?unrelated"})));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, emptyPathWithJoinOptimization) {
+  TransitivePathSide left{std::nullopt, 1, Variable{"?other"}, 0};
+  TransitivePathSide right{std::nullopt, 0, Variable{"?var"}, 1};
+  h::expect(
+      "SELECT * { ?other <a>* ?var . VALUES ?var { 2 } }",
+      h::transitivePath(
+          left, right, 0, std::numeric_limits<size_t>::max(),
+          h::EmptyPath(Variable{"?var"}, std::nullopt,
+                       h::ValuesClause("VALUES (?var) { (2) }")),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+
+  TransitivePathSide left2{std::nullopt, 0, Variable{"?var"}, 0};
+  TransitivePathSide right2{std::nullopt, 1, Variable{"?other"}, 1};
+  h::expect(
+      "SELECT * { ?var <a>* ?other . VALUES ?var { 2 } }",
+      h::transitivePath(
+          left2, right2, 0, std::numeric_limits<size_t>::max(),
+          h::EmptyPath(Variable{"?var"}, std::nullopt,
+                       h::ValuesClause("VALUES (?var) { (2) }")),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+
+  h::expect(
+      "SELECT * { ?other <a>* ?var . ?var <a> <b> }",
+      h::transitivePath(
+          left, right, 0, std::numeric_limits<size_t>::max(),
+          h::IndexScanFromStrings("?var", "<a>", "<b>"),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")));
+
+  auto* qec = ad_utility::testing::getQec(
+      "<d> <c> <d> . <d1> <c> <d> . <d2> <c> <d> . <d> <a> <b> . <d2> <a> <b> "
+      ". <d3> <a> <b> . <d4> <a> <b> . <d5> <a> <b> . <d6> <a> <b>");
+
+  h::expect(
+      "SELECT * { ?var <a> <b> . ?var <c> <d> . ?other <a>* ?var }",
+      h::transitivePath(
+          left, right, 0, std::numeric_limits<size_t>::max(),
+          h::Join(h::IndexScanFromStrings("?var", "<a>", "<b>"),
+                  h::IndexScanFromStrings("?var", "<c>", "<d>")),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")),
+      qec);
+
+  // The dynamic programming planner binds the path to the join of the `VALUES`
+  // clause and the index scan. The `?var` of that join is guaranteed to be part
+  // of the knowledge graph, so no existence check is required.
+  h::expectWithGivenBudgets(
+      "SELECT * { VALUES ?var { 1 } . ?var <c> <d> . ?other <a>* ?var }",
+      h::transitivePath(
+          left, right, 0, std::numeric_limits<size_t>::max(),
+          h::Join(h::Sort(h::ValuesClause("VALUES (?var) { (1) }")),
+                  h::IndexScanFromStrings("?var", "<c>", "<d>")),
+          h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                  "?_QLever_internal_variable_qp_1")),
+      qec, {16, 64'000'000});
+  // The greedy planner binds the path to the `VALUES` clause directly (which
+  // requires an existence check) and joins the index scan afterwards.
+  h::expectWithGivenBudgets(
+      "SELECT * { VALUES ?var { 1 } . ?var <c> <d> . ?other <a>* ?var }",
+      h::Join(
+          h::Sort(h::transitivePath(
+              left, right, 0, std::numeric_limits<size_t>::max(),
+              h::EmptyPath(Variable{"?var"}, std::nullopt,
+                           h::ValuesClause("VALUES (?var) { (1) }")),
+              h::IndexScanFromStrings("?_QLever_internal_variable_qp_0", "<a>",
+                                      "?_QLever_internal_variable_qp_1"))),
+          h::IndexScanFromStrings("?var", "<c>", "<d>")),
+      qec, {0, 1, 4});
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, bindTransitivePathWithGraphTwice) {
+  auto* qec = ad_utility::testing::getQec(
+      "<1> <a> <1> .  <1> <a> <2> . <1> <a> <3> .  <1> <a> <4> .  <1> <b> <2>");
+  TransitivePathSide left{std::nullopt, 0, Variable{"?s"}, 0};
+  TransitivePathSide right1{std::nullopt, 1, Variable{"?o"}, 1};
+  h::expectWithGivenBudgets(
+      "SELECT * { GRAPH ?g { ?s <a>+ ?o } ?s <b> ?s2 . ?g <b> ?g2 }",
+      h::Join(h::Sort(h::transitivePath(
+                  left, right1, 1, std::numeric_limits<size_t>::max(),
+                  h::IndexScanFromStrings("?s", "<b>", "?s2"),
+                  // The sort is because of missing graph permutations.
+                  h::Sort(h::IndexScanFromStrings(
+                      "?_QLever_internal_variable_qp_0", "<a>",
+                      "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                      {Variable{"?g"}}, {3})))),
+              h::IndexScanFromStrings("?g", "<b>", "?g2")),
+      qec, {16, 64'000'000});
+  h::expectWithGivenBudgets(
+      "SELECT * { GRAPH ?g { ?s <a>* ?o } ?s <b> ?s2 . ?g <b> ?g2 }",
+      h::Join(h::Sort(h::transitivePath(
+                  left, right1, 0, std::numeric_limits<size_t>::max(),
+                  // The graph variable is not bound by the child, so the
+                  // `EmptyPath` has to add it.
+                  h::EmptyPath(Variable{"?s"}, Variable{"?g"},
+                               h::IndexScanFromStrings("?s", "<b>", "?s2")),
+                  // The sort is because of missing graph permutations.
+                  h::Sort(h::IndexScanFromStrings(
+                      "?_QLever_internal_variable_qp_0", "<a>",
+                      "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                      {Variable{"?g"}}, {3})))),
+              h::IndexScanFromStrings("?g", "<b>", "?g2")),
+      qec, {16, 64'000'000});
+  // Double bind is currently not supported
+  h::expect("SELECT * { GRAPH ?g { ?s <a>+ ?o } ?s <b> ?o }",
+            h::MultiColumnJoin(
+                h::Sort(h::transitivePath(
+                    left, right1, 1, std::numeric_limits<size_t>::max(),
+                    // The sort is because of missing graph permutations.
+                    h::Sort(h::IndexScanFromStrings(
+                        "?_QLever_internal_variable_qp_0", "<a>",
+                        "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                        {Variable{"?g"}}, {3})))),
+                h::IndexScanFromStrings("?s", "<b>", "?o")),
+            qec);
+
+  TransitivePathSide right2{std::nullopt, 1, Variable{"?g"}, 1};
+  h::expect("SELECT * { { GRAPH ?g { ?s <a>+ ?g } ?s <b> ?s2 } . ?g <b> ?g2 }",
+            h::Join(h::Sort(h::transitivePath(
+                        left, right2, 1, std::numeric_limits<size_t>::max(),
+                        h::IndexScanFromStrings("?s", "<b>", "?s2"),
+                        // The sort is because of missing graph permutations.
+                        h::Sort(h::IndexScanFromStrings(
+                            "?_QLever_internal_variable_qp_0", "<a>",
+                            "?_QLever_internal_variable_qp_1", {}, NamedTag{},
+                            {Variable{"?g"}}, {3})))),
+                    h::IndexScanFromStrings("?g", "<b>", "?g2")),
+            qec);
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, filtersWithUnboundVariables) {
+  auto scan = h::IndexScanFromStrings;
+  h::expect("SELECT * { ?a ?b ?c FILTER(?c = ?d) }",
+            h::Filter("?c = ?d", scan("?a", "?b", "?c")));
+  h::expect("SELECT * { FILTER(?c = 1) }",
+            h::Filter("?c = 1", h::NeutralElement()));
+}
+
+// _____________________________________________________________________________
+TEST(QueryPlanner, FilterSubstitutesMockQPTest) {
+  // Test the query planner's ability to substitute filters with alternative
+  // subtree plans using the `QueryPlannerWithMockFilterSubstitute` class. It
+  // replaces filters of the form `FILTER(?a = ?b)` with `?a <equal-to> ?b` to
+  // connect otherwise unconnected components.
+  auto scan = h::IndexScanFromStrings;
+
+  /*
+   *        FILTER (?a = ?b)
+   *                |
+   *      CARTESIAN PRODUCT JOIN
+   *          /           \
+   *   SCAN ?a <b> ?c    SCAN ?b <c> ?d
+   *
+   * becomes (for example):
+   *
+   *              JOIN ?a
+   *              /     \
+   *           SORT    SCAN ?a <b> ?c
+   *             |
+   *          JOIN ?b
+   *       /          \
+   * SCAN ?b <c> ?d   SORT
+   *                    |
+   *         SCAN ?a <equal-to> ?b      <-- Substituted FILTER to PSO scan
+   */
+
+  h::expect(
+      "SELECT * { ?a <b> ?c . ?b <c> ?d . FILTER(?a = ?b) }",
+      h::Filter("?a = ?b", h::CartesianProductJoin(scan("?a", "<b>", "?c"),
+                                                   scan("?b", "<c>", "?d"))));
+  h::expect<h::QueryPlannerWithMockFilterSubstitute>(
+      "SELECT * { ?a <b> ?c . ?b <c> ?d . FILTER(?a = ?b) }",
+      h::UnorderedJoins(scan("?a", "<b>", "?c"), scan("?b", "<c>", "?d"),
+                        scan("?a", "<equal-to>", "?b")));
+}
+
+// Regression test for GitHub issue #2194
+TEST(QueryPlanner, RegressionTest2194) {
+  // Test that the three queries reported in
+  // `https://github.com/ad-freiburg/qlever/issues/2194` don't throw an error.
+
+  h::expect("SELECT * { OPTIONAL {<x> <y> ?z FILTER (?z != <z>)}}",
+            h::NeutralOptional(h::Filter(
+                "?z != <z>", h::IndexScanFromStrings("<x>", "<y>", "?z"))));
+
+  auto q1 = R"(
+PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+SELECT DISTINCT ?s_wikidata ?place WHERE {
+  VALUES(?s_wikidata) {
+    (<http://www.wikidata.org/entity/Q213322>)
+  }
+  OPTIONAL {
+    OPTIONAL {
+      ?s_wikidata wdt:P131+ ?city .
+      FILTER(EXISTS {
+          ?city wdt:P31/wdt:P279* wd:Q515 .
+        } || (?city = wd:Q23939248))
+    }
+    OPTIONAL {
+      ?s_wikidata wdt:P131 ?region .
+    }
+    BIND(COALESCE(?city, ?region) AS ?place)
+  }
+}
+)";
+  auto q2 = R"(
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+SELECT ?assetGraphIri ?namespace ?hasAdditionalTypes (GROUP_CONCAT(?class; SEPARATOR=", ") AS ?additionalTypes) WHERE {
+  BIND (<http://data.example.org/terms-ext/vocabulary> AS ?vocabulary)
+  GRAPH ?assetGraphIri {
+    ?vocabulary rdf:type skos:ConceptScheme .
+  }
+  OPTIONAL {
+    ?vocabulary <http://www.linkedmodel.org/1.2/schema/vaem#namespace> ?ns .
+  }
+  OPTIONAL {
+    ?vocabulary <http://purl.org/vocab/vann/preferredNamespaceUri> ?ns2 .
+  }
+  BIND (COALESCE(STR(?ns), STR(?ns2), STR(?vocabulary)) AS ?namespaceCandidate)
+  BIND (IF((STRENDS(?namespaceCandidate,"#")) || (STRENDS(?namespaceCandidate,"/")),?namespaceCandidate,CONCAT(?namespaceCandidate, "/")) AS ?namespace)
+  OPTIONAL {
+    <http://data.example.org/terms-ext/vocabulary/3273f45c-9b3e-4ba0-9637-ca04e1c92a20> rdf:type ?class .
+    FILTER (?class != skos:Concept)
+  }
+  BIND (BOUND(?class) AS ?hasAdditionalTypes)
+}
+GROUP BY ?assetGraphIri ?namespace ?hasAdditionalTypes
+LIMIT 1
+)";
+  h::expect(q1, ::testing::_);
+  h::expect(q2, ::testing::_);
+}
+
+// Test that subqueries strip columns correctly and that stripped variables
+// are not even stored as `stripped`.
+TEST(QueryPlanner, SubqueryColumnStripping) {
+  // Save current strip-columns setting and ensure it's enabled for this test
+  auto cleanup =
+      setRuntimeParameterForTest<&RuntimeParameters::stripColumns_>(true);
+
+  // Test a subquery that selects only some variables, causing others to be
+  // stripped
+  std::string query = R"(
+    SELECT ?x ?y WHERE {
+      { SELECT ?x ?y WHERE { ?x <p1> ?y . ?x <p2> ?z . ?y <p3> ?w } }
+    }
+  )";
+
+  auto qec = ad_utility::testing::getQec();
+  for (bool doStrip : {true, false}) {
+    qec->clearCacheUnpinnedOnly();
+
+    // The outer cleanup will reset the original status, so we can safely
+    // modify the global parameter here.
+    setRuntimeParameter<&RuntimeParameters::stripColumns_>(doStrip);
+
+    // The inner subquery should have ?z and ?w stripped (as they're not
+    // selected) but since it's a subquery, the stripped variables should not be
+    // stored in the `QueryExecutionTree`. (hideStrippedColumns=true)
+    auto qet = h::parseAndPlan(query, qec);
+
+    // The root should have no stripped variables (it's not created via
+    // makeTreeWithStrippedColumns)
+    EXPECT_THAT(*qet, h::HasNoStrippedVariables());
+    EXPECT_THAT(*qet, h::hasVariables({"?x", "?y"}));
+    EXPECT_EQ(qet->getResultWidth(), doStrip ? 2 : 4);
+  }
+}
+
+// Test the handling of the named cached queries.
+TEST(QueryPlanner, NamedCachedResult) {
+  // First test all the error cases that might appear during the parsing and
+  // query planning.
+  std::string query = "SELECT * { SERVICE ql:cached-result-with-name-3 {}}";
+  auto qec = ad_utility::testing::getQec();
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      h::parseAndPlan(query, qec),
+      ::testing::HasSubstr("is not contained in the named result cache"));
+
+  query =
+      "SELECT * { SERVICE ql:cached-result-with-name-3 { <not> <allowed> "
+      "<here> }}";
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      h::parseAndPlan(query, qec),
+      ::testing::HasSubstr(
+          "body of a named cache query request must be empty"));
+
+  // This query looks the same (non-empty body of the SERVICE request), but
+  // nested GROUP GRAPH patterns use a different code path in the
+  // `MagicServiceQuery` base class, so we need to test a very similar query
+  // again.
+  query =
+      "SELECT * { SERVICE ql:cached-result-with-name-3 { {<not> <allowed> "
+      "<here>} "
+      "}}";
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      h::parseAndPlan(query, qec),
+      ::testing::HasSubstr(
+          "body of a named cache query request must be empty"));
+
+  query =
+      "SELECT * { SERVICE ql:cached-result-with-name-3 { VALUES ?x {3 4 5} }}";
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      h::parseAndPlan(query, qec),
+      ::testing::HasSubstr("Unsupported element in a magic service query of "
+                           "type `named cached result`"));
+
+  // Now pin a query to the named result cache, and check that the query
+  // planning works as expected.
+  std::string queryToPin = "SELECT ?s { ?s <p> ?o} INTERNAL SORT BY ?s";
+  qec = ad_utility::testing::getQec(
+      "<s> <p> <o>. <s> <p> <o2> . <s2> <p> <o2>. <s3> <p2> <o2>.");
+  qec->pinResultWithName() = {"dummyQuery"};
+  auto plan = h::parseAndPlan(queryToPin, qec);
+  [[maybe_unused]] auto pinResult = plan->getResult();
+
+  query = "SELECT * { SERVICE ql:cached-result-with-name-dummyQuery {}}";
+  // We only check the size estimate (which in this case is exact), because
+  // more detailed tests in `NamedResultCacheTest.cpp` check the correct
+  // contents etc. of cached queries.
+  h::expect(query, h::ExplicitIdTableOperation(3), qec);
+}
+
+// Regression tests for https://github.com/ad-freiburg/qlever/issues/2483
+TEST(QueryPlanner, PatternTrickWithMagicServiceQueries) {
+  h::expect(R"(
+PREFIX textSearch: <https://qlever.cs.uni-freiburg.de/textSearch/>
+SELECT ?p (COUNT(DISTINCT ?s) AS ?cnt) WHERE {
+  ?s ?p ?e
+  SERVICE textSearch: {
+    ?t textSearch:contains [ textSearch:word "olympic" ] .
+    ?t textSearch:contains [ textSearch:entity ?e ] .
+  }
+}
+GROUP BY ?p
+)",
+            h::_);
+
+  h::expect(R"(
+PREFIX qlss: <https://qlever.cs.uni-freiburg.de/spatialSearch/>
+SELECT ?p (COUNT(DISTINCT ?s) AS ?cnt) WHERE {
+  ?s ?p ?e .
+  ?x ?y ?z
+  SERVICE qlss: {
+    _:config qlss:left ?e ;
+             qlss:right ?z ;
+             qlss:maxDistance 500 ;
+             qlss:algorithm qlss:s2 .
+  }
+}
+GROUP BY ?p
+)",
+            h::_);
+}
+
+// _____________________________________________________________________________
+// Regression test for the issue mentioned in
+// https://github.com/ad-freiburg/qlever/pull/2782. Joining a `BIND(BNODE(...))`
+// subquery against a UNION must not distribute the non-deterministic BIND over
+// the UNION branches (which would require cloning the BIND and produce
+// different blank-node IDs for each branch).
+TEST(QueryPlanner, nonDeterministicOperandNotDistributedOverUnion) {
+  auto cleanup =
+      setRuntimeParameterForTest<&RuntimeParameters::enableDistributiveUnion_>(
+          true);
+  // This previously triggered an assertion violation because the query planner
+  // tried to clone the BIND(BNODE(...)) subquery to push it into both branches
+  // of the UNION.
+  h::expect(
+      "SELECT * WHERE {"
+      "  { SELECT ?s WHERE { BIND(BNODE(\"1\") AS ?s) VALUES ?x { 1 } } }"
+      "  { ?s ?p ?o } UNION { ?s ?p ?o }"
+      "}",
+      // The non-deterministic BIND must not be distributed into the UNION, so
+      // the join has to be on top!
+      h::Join(::testing::A<const QueryExecutionTree&>(),
+              ::testing::A<const QueryExecutionTree&>()));
+}
+
+// Test the information about how each connected component of a query was
+// planned.
+TEST(QueryPlanner, planningInfo) {
+  // The information for the given query.
+  auto planningInfo = [](std::string query) {
+    QueryPlanner qp = makeQueryPlanner();
+    ParsedQuery pq = parseQuery(std::move(query));
+    qp.createExecutionTree(pq);
+    return qp.planningInfo();
+  };
+
+  // A path of three triples is one connected component, with six connected
+  // subgraphs (three single triples, two pairs, and all three).
+  auto info = planningInfo("SELECT * { ?x <p> ?y . ?y <q> ?z . ?z <r> ?w }");
+  ASSERT_EQ(info.size(), 1u);
+  EXPECT_EQ(info[0].algorithm_, PlanningAlgorithm::DYNAMIC_PROGRAMMING);
+  EXPECT_EQ(info[0].numNodes_, 3u);
+  EXPECT_EQ(info[0].numConnectedSubgraphs_, 6u);
+  EXPECT_EQ(info[0].budget_,
+            getRuntimeParameter<&RuntimeParameters::queryPlanningBudget_>());
+  EXPECT_GT(info[0].numCandidatePlans_, 0u);
+
+  // Two connected components, with a budget of one.
+  auto cleanup =
+      setRuntimeParameterForTest<&RuntimeParameters::queryPlanningBudget_>(1);
+  info = planningInfo("SELECT * { ?x <p> ?y . ?y <q> ?z . ?a <r> ?b }");
+  ASSERT_EQ(info.size(), 2u);
+  ql::ranges::sort(info, {}, &ConnectedComponentPlanningInfo::numNodes_);
+
+  // The component with a single triple has one connected subgraph and needs no
+  // joins.
+  EXPECT_EQ(info[0].algorithm_, PlanningAlgorithm::DYNAMIC_PROGRAMMING);
+  EXPECT_EQ(info[0].numNodes_, 1u);
+  EXPECT_EQ(info[0].numConnectedSubgraphs_, 1u);
+  EXPECT_EQ(info[0].numCandidatePlans_, 0u);
+
+  // The component with two triples has three connected subgraphs, of which
+  // only two are counted (the counting stops at the budget plus one), so it is
+  // planned greedily.
+  EXPECT_EQ(info[1].algorithm_, PlanningAlgorithm::GREEDY);
+  EXPECT_EQ(info[1].numNodes_, 2u);
+  EXPECT_EQ(info[1].numConnectedSubgraphs_, 2u);
+  EXPECT_EQ(info[1].budget_, 1u);
+  EXPECT_GT(info[1].numCandidatePlans_, 0u);
+}
+
+// Test that the operations and execution trees that the query planner creates
+// are allocated via the memory-limited allocator of the query.
+TEST(QueryPlanner, plannerAllocationsCountTowardsMemoryLimit) {
+  auto* qec = ad_utility::testing::getQec();
+  const auto& allocator = qec->getAllocator();
+  const auto memoryLeftBefore = allocator.amountMemoryLeft();
+
+  // While the execution tree of a single index scan lives, the memory limit of
+  // the query accounts for the tree and the scan (and not only for the runtime
+  // information of the scan, which the `Operation` constructor allocates).
+  {
+    auto tree = h::parseAndPlan("SELECT * { ?x <p> ?y }", qec);
+    auto used = memoryLeftBefore - allocator.amountMemoryLeft();
+    EXPECT_GE(used.getBytes(), sizeof(IndexScan) + sizeof(QueryExecutionTree));
+  }
+
+  // When the tree is destroyed, the memory is released again.
+  EXPECT_EQ(allocator.amountMemoryLeft(), memoryLeftBefore);
+}

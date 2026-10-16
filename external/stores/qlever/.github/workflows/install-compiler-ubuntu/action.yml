@@ -1,0 +1,69 @@
+name: "Install various versions of gcc and clang"
+description: "dummy description"
+inputs:
+  compiler:
+    description: "Must be `gcc` or `clang`"
+    required: true
+  compiler-version:
+    description: "the version of the compiler (must be major version)"
+    required: true
+  install-mold:
+    description: "Whether to install the `mold` linker. Must be set to false for jobs that run in a `container` of an older distribution (e.g. Ubuntu 20.04), which has no `mold` package"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Add PPA for GCC
+      if :  inputs.compiler == 'gcc' && inputs.compiler-version > 8
+      run : sudo add-apt-repository ppa:ubuntu-toolchain-r/test && sudo apt update
+      shell: bash
+
+    - name: Install gcc
+      if :  inputs.compiler == 'gcc' && inputs.compiler-version > 8
+      run : sudo apt install -y gcc-${{inputs.compiler-version}} g++-${{inputs.compiler-version}}
+      shell: bash
+
+    - name: Install clang
+      if :  inputs.compiler == 'clang'
+      # The sed command fixes a bug in `llvm.sh` in combination with the latest version of
+      # `apt-key`. Without it the GPG key for the llvm repository is downloaded but deleted
+      # immediately after.
+      run:  |
+        wget https://apt.llvm.org/llvm.sh
+        sudo chmod +x llvm.sh
+        sed   's/apt-key del/echo/' llvm.sh -iy
+        sudo ./llvm.sh ${{inputs.compiler-version}}
+        sudo apt install -y clang-${{inputs.compiler-version}}
+      shell: bash
+    
+    - name: Install gcc8
+      if :  inputs.compiler == 'gcc' && inputs.compiler-version == 8
+      run:  |
+        # Ubuntu 20.04 (which jobs with a matching `container` run in) has gcc 8
+        # in its standard repositories. On newer releases (like the runner image
+        # itself) the packages have to be downloaded from the Ubuntu 20.04
+        # archive by hand.
+        if sudo apt-get install -y gcc-8 g++-8; then
+          exit 0
+        fi
+        wget http://mirrors.kernel.org/ubuntu/pool/universe/g/gcc-8/gcc-8_8.4.0-3ubuntu2_amd64.deb
+        wget http://mirrors.edge.kernel.org/ubuntu/pool/universe/g/gcc-8/gcc-8-base_8.4.0-3ubuntu2_amd64.deb
+        wget http://mirrors.kernel.org/ubuntu/pool/universe/g/gcc-8/libgcc-8-dev_8.4.0-3ubuntu2_amd64.deb
+        wget http://mirrors.kernel.org/ubuntu/pool/universe/g/gcc-8/cpp-8_8.4.0-3ubuntu2_amd64.deb
+        wget http://mirrors.kernel.org/ubuntu/pool/universe/g/gcc-8/libmpx2_8.4.0-3ubuntu2_amd64.deb
+        wget http://mirrors.kernel.org/ubuntu/pool/main/i/isl/libisl22_0.22.1-1_amd64.deb
+        sudo apt install -y ./libisl22_0.22.1-1_amd64.deb ./libmpx2_8.4.0-3ubuntu2_amd64.deb ./cpp-8_8.4.0-3ubuntu2_amd64.deb ./libgcc-8-dev_8.4.0-3ubuntu2_amd64.deb ./gcc-8-base_8.4.0-3ubuntu2_amd64.deb ./gcc-8_8.4.0-3ubuntu2_amd64.deb
+        wget http://mirrors.kernel.org/ubuntu/pool/universe/g/gcc-8/libstdc++-8-dev_8.4.0-3ubuntu2_amd64.deb
+        wget http://mirrors.kernel.org/ubuntu/pool/universe/g/gcc-8/g++-8_8.4.0-3ubuntu2_amd64.deb
+        sudo apt install -y ./libstdc++-8-dev_8.4.0-3ubuntu2_amd64.deb ./g++-8_8.4.0-3ubuntu2_amd64.deb
+      shell: bash
+    - name: Install mold linker
+      if: inputs.install-mold == 'true'
+      shell: bash
+      run: |
+        sudo apt update
+        sudo apt install -y mold
+
+# TODO<joka921> Add assertion for unsupported compilers and versions.

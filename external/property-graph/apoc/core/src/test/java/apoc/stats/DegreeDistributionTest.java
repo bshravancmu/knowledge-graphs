@@ -1,0 +1,94 @@
+/*
+ * Copyright (c) "Neo4j"
+ * Neo4j Sweden AB [http://neo4j.com]
+ *
+ * This file is part of Neo4j.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package apoc.stats;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
+import apoc.util.TestUtil;
+import com.neo4j.test.extension.EnterpriseDbmsExtension;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.neo4j.graphdb.GraphDatabaseService;
+import org.neo4j.test.extension.Inject;
+
+@EnterpriseDbmsExtension(createDatabasePerTest = false)
+class DegreeDistributionTest {
+
+    @Inject
+    GraphDatabaseService db;
+
+    @BeforeAll
+    void setUp() {
+        TestUtil.registerProcedure(db, DegreeDistribution.class);
+        db.executeTransactionally(
+                "UNWIND range(1,10) as rels CREATE (f:Foo) WITH * UNWIND range(1,rels) as r CREATE (f)-[:BAR]->(f)");
+    }
+
+    @Test
+    void degrees() {
+        TestUtil.testCall(db, "CALL apoc.stats.degrees()", row -> {
+            assertNull(row.get("type"));
+            assertEquals("BOTH", row.get("direction"));
+            assertEquals(55L, row.get("total"));
+            assertEquals(10L, row.get("max"));
+            assertEquals(1L, row.get("min"));
+            assertEquals(5.5d, row.get("mean"));
+            assertEquals(10L, row.get("p99"));
+            assertEquals(5L, row.get("p50"));
+        });
+        TestUtil.testCall(db, "CALL apoc.stats.degrees('BAR>')", row -> {
+            assertEquals("BAR", row.get("type"));
+            assertEquals("OUTGOING", row.get("direction"));
+            assertEquals(55L, row.get("total"));
+            assertEquals(10L, row.get("max"));
+            assertEquals(1L, row.get("min"));
+            assertEquals(5.5d, row.get("mean"));
+            assertEquals(10L, row.get("p99"));
+            assertEquals(5L, row.get("p50"));
+        });
+    }
+
+    @Test
+    void allDegrees() {
+        TestUtil.testResult(db, "CALL apoc.stats.degrees('*')", result -> {
+            Map<String, Object> row = result.next();
+            assertEquals("BAR", row.get("type"));
+            assertEquals("OUTGOING", row.get("direction"));
+            assertEquals(55L, row.get("total"));
+            assertEquals(10L, row.get("max"));
+            assertEquals(1L, row.get("min"));
+            assertEquals(5.5d, row.get("mean"));
+            assertEquals(10L, row.get("p99"));
+            assertEquals(5L, row.get("p50"));
+            row = result.next();
+            assertEquals("BAR", row.get("type"));
+            assertEquals("INCOMING", row.get("direction"));
+            assertEquals(55L, row.get("total"));
+            assertEquals(10L, row.get("max"));
+            assertEquals(1L, row.get("min"));
+            assertEquals(5.5d, row.get("mean"));
+            assertEquals(10L, row.get("p99"));
+            assertEquals(5L, row.get("p50"));
+            assertFalse(result.hasNext());
+        });
+    }
+}

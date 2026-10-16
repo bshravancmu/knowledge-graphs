@@ -1,0 +1,87 @@
+[build-system]
+requires = ['hatchling>=1.11.0']
+build-backend = 'hatchling.build'
+
+[project.urls]
+Documentation = 'https://morph-kgc.readthedocs.io'
+Source = 'https://github.com/morph-kgc/morph-kgc'
+Tracker = 'https://github.com/morph-kgc/morph-kgc/issues'
+CI = 'https://github.com/morph-kgc/morph-kgc/actions'
+Homepage = 'https://morph-kgc.readthedocs.io'
+History = 'https://github.com/morph-kgc/morph-kgc/releases'
+
+[project]
+name = 'morph_kgc'
+description = 'Powerful [R2]RML engine to create RDF knowledge graphs from heterogeneous data sources.'
+readme = 'README.md'
+keywords = ['Morph-KGC', 'RDF', 'R2RML', 'RML', 'Knowledge Graph', 'Data Integration']
+authors = [
+  {name = 'Julián Arenas-Guerrero', email = 'julian.arenas.guerrero@upm.es'}
+]
+license = 'Apache-2.0'
+classifiers = [
+  'Programming Language :: Python :: 3',
+  'Programming Language :: Python :: 3.10',
+  'Programming Language :: Python :: 3.11',
+  'Programming Language :: Python :: 3.12',
+  'Programming Language :: Python :: 3.13',
+  'License :: OSI Approved :: Apache Software License',
+  'Operating System :: OS Independent',
+  'Development Status :: 5 - Production/Stable',
+  'Environment :: Console',
+  'Intended Audience :: Information Technology',
+  'Intended Audience :: Science/Research',
+  'Topic :: Software Development :: Pre-processors',
+  'Topic :: Database',
+  'Topic :: Utilities',
+  'Topic :: Scientific/Engineering :: Interface Engine/Protocol Translator',
+]
+requires-python = '>=3.10'
+dynamic = ['version']
+dependencies = [
+  'pandas>=2.1.0',
+  'rdflib>=7.3.0',
+  'pyoxigraph>=0.5.11',
+  'ruamel.yaml>=0.18.0',
+  'jsonpath-python>=1.1.1',
+  'elementpath>=4.0.0',
+  'duckdb>=1.0.0',
+  'falcon>=3.0.0'
+]
+
+[project.scripts]
+morph-kgc = 'morph_kgc.__main__:main'
+
+[tool.hatch.version]
+path = 'src/morph_kgc/_version.py'
+
+[project.optional-dependencies]
+test = ['pytest>=8.0.0', 'SQLAlchemy>=2.0.0', 'openpyxl>=3.0.0', 'odfpy>=1.4.1', 'pyarrow>=14.0.0', 'geopandas>=1.0.0']
+sqlite = ['SQLAlchemy>=2.0.0']
+mysql = ['pymysql>=1.1.0', 'cryptography>=42.0.0', 'SQLAlchemy>=2.0.0']
+postgresql = ['psycopg[binary]>=3.0.0', 'SQLAlchemy>=2.0.0']
+oracle = ['oracledb>=2.5.0', 'SQLAlchemy>=2.0.0']
+mssql = ['pymssql>=2.2.7', 'SQLAlchemy>=2.0.0']
+excel = ['openpyxl>=3.0.0', 'odfpy>=1.4.1']
+tabular = ['pyarrow>=14.0.0']
+geoparquet = ['geopandas>=1.0.0']
+spss = ['pyreadstat>=1.2.0']
+neo4j = ['neo4j>=5.20.0']
+snowflake =['snowflake-sqlalchemy>=1.7.3']
+databricks =['databricks-sqlalchemy>=2.0.4']
+jelly = ["pyjelly>=0.6.2"]
+all = [
+  'morph_kgc[mysql]',
+  'morph_kgc[postgresql]',
+  'morph_kgc[oracle]',
+  'morph_kgc[mssql]',
+  'morph_kgc[sqlite]',
+  'morph_kgc[excel]',
+  'morph_kgc[tabular]',
+  'morph_kgc[spss]',
+  'morph_kgc[neo4j]',
+  'morph_kgc[snowflake]',
+  'morph_kgc[databricks]',
+  'morph_kgc[geoparquet]',
+  'morph_kgc[jelly]',
+]

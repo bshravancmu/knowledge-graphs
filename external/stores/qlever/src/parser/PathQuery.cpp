@@ -1,0 +1,127 @@
+// Copyright 2024, University of Freiburg
+// Chair of Algorithms and Data Structures
+// Authors: Johannes Herrmann <johannes.r.herrmann(at)gmail.com>
+//          Christoph Ullinger <ullingec@informatik.uni-freiburg.de>
+
+#include "parser/PathQuery.h"
+
+#include <string_view>
+
+#include "index/TripleComponentConversions.h"
+#include "parser/MagicServiceIriConstants.h"
+#include "parser/SparqlTriple.h"
+
+namespace parsedQuery {
+
+// ____________________________________________________________________________
+void PathQuery::addParameter(const SparqlTriple& triple) {
+  auto simpleTriple = triple.getSimple();
+  TripleComponent predicate = simpleTriple.p_;
+  TripleComponent object = simpleTriple.o_;
+
+  auto predString = extractParameterName(predicate, PATH_SEARCH_IRI);
+
+  if (predString == "source") {
+    sources_.push_back(std::move(object));
+  } else if (predString == "target") {
+    targets_.push_back(std::move(object));
+  } else if (predString == "start") {
+    setVariable("start", object, start_);
+  } else if (predString == "end") {
+    setVariable("end", object, end_);
+  } else if (predString == "pathColumn") {
+    setVariable("pathColumn", object, pathColumn_);
+  } else if (predString == "edgeColumn") {
+    setVariable("edgeColumn", object, edgeColumn_);
+  } else if (predString == "edgeProperty") {
+    edgeProperties_.push_back(getVariable("edgeProperty", object));
+  } else if (predString == "cartesian") {
+    if (!object.isBool()) {
+      throw PathSearchException("The parameter <cartesian> expects a boolean");
+    }
+    cartesian_ = object.getBool();
+  } else if (predString == "numPathsPerTarget") {
+    if (!object.isInt()) {
+      throw PathSearchException(
+          "The parameter <numPathsPerTarget> expects an integer");
+    }
+    numPathsPerTarget_ = object.getInt();
+  } else if (predString == "maxDepth") {
+    if (!object.isInt()) {
+      throw PathSearchException("The parameter <maxDepth> expects an integer");
+    }
+    if (object.getInt() < 0) {
+      throw PathSearchException(
+          "The parameter <maxDepth> must not be negative");
+    }
+    maxDepth_ = static_cast<uint64_t>(object.getInt());
+  } else if (predString == "algorithm") {
+    if (!object.isIri()) {
+      throw PathSearchException("The <algorithm> value has to be an IRI");
+    }
+    auto objString = extractParameterName(object, PATH_SEARCH_IRI);
+
+    if (objString == "allPaths") {
+      algorithm_ = PathSearchAlgorithm::ALL_PATHS;
+    } else {
+      throw PathSearchException(
+          absl::StrCat("Unsupported algorithm in pathSearch: ", objString,
+                       ". Supported Algorithms: <allPaths>."));
+    }
+  } else {
+    throw PathSearchException(absl::StrCat(
+        "Unsupported argument <", predString,
+        "> in PathSearch. Supported Arguments: <source>, <target>, <start>, "
+        "<end>, <pathColumn>, <edgeColumn>, <edgeProperty>, <algorithm>, "
+        "<cartesian>, <numPathsPerTarget>, <maxDepth>."));
+  }
+}
+
+// ____________________________________________________________________________
+std::variant<Variable, IdColumn> PathQuery::toSearchSide(
+    std::vector<TripleComponent> side, const IndexImpl& index) const {
+  if (side.size() == 1 && side[0].isVariable()) {
+    return side[0].getVariable();
+  } else {
+    IdColumn sideIds;
+    for (const auto& comp : side) {
+      if (comp.isVariable()) {
+        throw PathSearchException(
+            "Only one variable is allowed per search side");
+      }
+      LocalVocab lv;
+      auto id = toValueId(TripleComponent{comp}, index, lv);
+      if (id.getDatatype() == Datatype::LocalVocabIndex) {
+        throw PathSearchException("No vocabulary entry for " + comp.toString());
+      } else {
+        sideIds.push_back(id);
+      }
+    }
+    return sideIds;
+  }
+}
+
+// ____________________________________________________________________________
+PathSearchConfiguration PathQuery::toPathSearchConfiguration(
+    const IndexImpl& index) const {
+  auto sources = toSearchSide(sources_, index);
+  auto targets = toSearchSide(targets_, index);
+
+  if (!start_.has_value()) {
+    throw PathSearchException("Missing parameter <start> in path search.");
+  } else if (!end_.has_value()) {
+    throw PathSearchException("Missing parameter <end> in path search.");
+  } else if (!pathColumn_.has_value()) {
+    throw PathSearchException("Missing parameter <pathColumn> in path search.");
+  } else if (!edgeColumn_.has_value()) {
+    throw PathSearchException("Missing parameter <edgeColumn> in path search.");
+  }
+
+  return PathSearchConfiguration{
+      algorithm_,          sources,         targets,
+      start_.value(),      end_.value(),    pathColumn_.value(),
+      edgeColumn_.value(), edgeProperties_, cartesian_,
+      numPathsPerTarget_,  maxDepth_};
+}
+
+}  // namespace parsedQuery

@@ -1,0 +1,159 @@
+//   Copyright 2025, University of Freiburg,
+//   Chair of Algorithms and Data Structures.
+//   Author: Robin Textor-Falconi <textorr@informatik.uni-freiburg.de>
+
+#include <gmock/gmock.h>
+
+#include "../util/GTestHelpers.h"
+#include "../util/IdTableHelpers.h"
+#include "../util/IndexTestHelpers.h"
+#include "engine/sparqlExpressions/GroupConcatExpression.h"
+#include "engine/sparqlExpressions/LiteralExpression.h"
+
+namespace {
+using namespace sparqlExpression;
+namespace tc = ad_utility::triple_component;
+
+// _____________________________________________________________________________
+void expectIdsAreConcatenatedTo(
+    QueryExecutionContext* qec, bool distinct, const IdTable& idTable,
+    const ExpressionResult& expected,
+    ad_utility::source_location location = AD_CURRENT_SOURCE_LOC()) {
+  AD_CONTRACT_CHECK(idTable.numColumns() == 1);
+  auto g = generateLocationTrace(location);
+
+  Variable var{"?x"};
+  LocalVocab localVocab;
+  ad_utility::SharedCancellationHandle cancellationHandle =
+      std::make_shared<ad_utility::CancellationHandle<>>();
+  VariableToColumnMap map{
+      {var, {0, ColumnIndexAndTypeInfo::PossiblyUndefined}}};
+
+  EvaluationContext context{
+      *qec,
+      map,
+      idTable.asStaticView<0>(),
+      idTable.getAllocator(),
+      localVocab,
+      std::move(cancellationHandle),
+      std::chrono::time_point<std::chrono::steady_clock>::max()};
+
+  GroupConcatExpression expression{
+      distinct, std::make_unique<VariableExpression>(var), ";"};
+
+  auto result = expression.evaluate(&context);
+  EXPECT_EQ(result, expected);
+}
+
+// _____________________________________________________________________________
+void expectLiteralsAreConcatenatedTo(
+    QueryExecutionContext* qec, bool distinct,
+    const std::vector<tc::Literal>& literals,
+    const ad_utility::triple_component::Literal& literal,
+    ad_utility::source_location location = AD_CURRENT_SOURCE_LOC()) {
+  LocalVocab localVocab;
+  IdTable input{1, ad_utility::makeUnlimitedAllocator<Id>()};
+
+  for (const auto& inputLiteral : literals) {
+    auto idx = localVocab.getIndexAndAddIfNotContained(
+        LocalVocabEntry{inputLiteral, qec->getLocalVocabContext()});
+    input.push_back({Id::makeFromLocalVocabIndex(idx)});
+  }
+  expectIdsAreConcatenatedTo(qec, distinct, input,
+                             IdOrLocalVocabEntry{LocalVocabEntry{
+                                 literal, qec->getLocalVocabContext()}},
+                             location);
+}
+
+auto lit = [](std::string s) {
+  return tc::Literal::fromStringRepresentation(std::move(s));
+};
+}  // namespace
+
+// _____________________________________________________________________________
+TEST(GroupConcatExpression, basicConcatenation) {
+  auto* qec = ad_utility::testing::getQec();
+  expectLiteralsAreConcatenatedTo(qec, false, {}, lit("\"\""));
+  expectLiteralsAreConcatenatedTo(qec, true, {}, lit("\"\""));
+  expectLiteralsAreConcatenatedTo(qec, false, {lit("\"\"")}, lit("\"\""));
+  expectLiteralsAreConcatenatedTo(qec, false, {lit("\"a\"")}, lit("\"a\""));
+  expectLiteralsAreConcatenatedTo(qec, true, {lit("\"a\"")}, lit("\"a\""));
+  expectLiteralsAreConcatenatedTo(qec, true, {lit("\"a\""), lit("\"a\"")},
+                                  lit("\"a\""));
+  expectLiteralsAreConcatenatedTo(qec, false, {lit("\"a\""), lit("\"b\"")},
+                                  lit("\"a;b\""));
+  expectLiteralsAreConcatenatedTo(
+      qec, true, {lit("\"a\""), lit("\"a\""), lit("\"b\"")}, lit("\"a;b\""));
+
+  expectLiteralsAreConcatenatedTo(
+      qec, false, {lit("\"a\""), lit("\"b\""), lit("\"\"")}, lit("\"a;b;\""));
+  expectLiteralsAreConcatenatedTo(
+      qec, false, {lit("\"a\""), lit("\"b\""), lit("\"\""), lit("\"\"")},
+      lit("\"a;b;;\""));
+  expectLiteralsAreConcatenatedTo(
+      qec, false,
+      {lit("\"a\""), lit("\"b\""), lit("\"\""), lit("\"\""), lit("\"c\"")},
+      lit("\"a;b;;;c\""));
+}
+
+// _____________________________________________________________________________
+TEST(GroupConcatExpression, concatenationWithUndefined) {
+  auto* qec = ad_utility::testing::getQec();
+  LocalVocab localVocab;
+  expectIdsAreConcatenatedTo(qec, false,
+                             makeIdTableFromVector({{Id::makeUndefined()}}),
+                             ExpressionResult{Id::makeUndefined()});
+
+  auto idx = localVocab.getIndexAndAddIfNotContained(
+      LocalVocabEntry::fromStringRepresentation("\"a\"",
+                                                qec->getLocalVocabContext()));
+  auto a = Id::makeFromLocalVocabIndex(idx);
+  expectIdsAreConcatenatedTo(
+      qec, false, makeIdTableFromVector({{Id::makeUndefined()}, {a}}),
+      ExpressionResult{Id::makeUndefined()});
+  expectIdsAreConcatenatedTo(
+      qec, false, makeIdTableFromVector({{a}, {Id::makeUndefined()}}),
+      ExpressionResult{Id::makeUndefined()});
+}
+
+// _____________________________________________________________________________
+TEST(GroupConcatExpression, concatenationWithLanguageTags) {
+  auto* qec = ad_utility::testing::getQec();
+  expectLiteralsAreConcatenatedTo(qec, false, {lit("\"a\"@en")}, lit("\"a\""));
+  expectLiteralsAreConcatenatedTo(qec, true, {lit("\"a\"@en")}, lit("\"a\""));
+  expectLiteralsAreConcatenatedTo(qec, true, {lit("\"a\"@en"), lit("\"a\"@en")},
+                                  lit("\"a\""));
+  expectLiteralsAreConcatenatedTo(
+      qec, false, {lit("\"a\"@en"), lit("\"b\"@en")}, lit("\"a;b\""));
+  expectLiteralsAreConcatenatedTo(qec, false, {lit("\"a\""), lit("\"b\"@en")},
+                                  lit("\"a;b\""));
+  expectLiteralsAreConcatenatedTo(qec, true, {lit("\"a\""), lit("\"a\"@en")},
+                                  lit("\"a;a\""));
+  expectLiteralsAreConcatenatedTo(qec, false, {lit("\"a\"@en"), lit("\"b\"")},
+                                  lit("\"a;b\""));
+  expectLiteralsAreConcatenatedTo(
+      qec, false, {lit("\"a\"@en"), lit("\"b\"@de")}, lit("\"a;b\""));
+  expectLiteralsAreConcatenatedTo(qec, true, {lit("\"a\"@en"), lit("\"a\"@de")},
+                                  lit("\"a;a\""));
+}
+
+// _____________________________________________________________________________
+TEST(GroupConcatExpression, getCacheKey) {
+  Variable var{"?x"};
+  VariableToColumnMap map{
+      {var, {0, ColumnIndexAndTypeInfo::PossiblyUndefined}}};
+
+  std::string sep = "👻";
+
+  GroupConcatExpression expressionNonDistinct{
+      false, std::make_unique<VariableExpression>(var), sep};
+  EXPECT_THAT(expressionNonDistinct.getCacheKey(map),
+              ::testing::HasSubstr(sep));
+
+  GroupConcatExpression expressionDistinct{
+      true, std::make_unique<VariableExpression>(var), sep};
+  EXPECT_THAT(expressionDistinct.getCacheKey(map), ::testing::HasSubstr(sep));
+
+  EXPECT_NE(expressionNonDistinct.getCacheKey(map),
+            expressionDistinct.getCacheKey(map));
+}

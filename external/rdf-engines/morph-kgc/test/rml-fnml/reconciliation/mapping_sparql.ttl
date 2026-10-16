@@ -1,0 +1,48 @@
+@prefix rml: <http://w3id.org/rml/> .
+@prefix grel: <http://users.ugent.be/~bjdmeest/function/grel.ttl#> .
+@prefix morph-fn: <urn:morph:function:> .
+@prefix bi: <https://example.org/ontology/> .
+
+@base <http://example.com/base/> .
+
+<#PatientsMapping>
+    a rml:TriplesMap ;
+    rml:logicalSource [
+        rml:source "test/rml-fnml/reconciliation/clinical_trials.csv" ;
+        rml:referenceFormulation rml:CSV
+    ] ;
+    rml:subjectMap [
+        rml:template "urn:id:{patient_id}"
+    ] ;
+    rml:predicateObjectMap [
+        rml:predicate bi:participatesIn ;
+        rml:objectMap [
+            rml:functionExecution <#ClinicalTrialReconciliation> ;
+            rml:termType rml:IRI
+        ]
+    ] .
+
+# The endpoint and the query are given in the mapping. The query reads the named
+# graphs, which is where the knowledge graph keeps its entities.
+<#ClinicalTrialReconciliation>
+    rml:function morph-fn:reconcileEntityOverSPARQL ;
+    rml:input [
+        rml:parameter morph-fn:sparqlEndpointUrl ;
+        rml:inputValue "https://data.com/database/query"
+    ] ;
+    rml:input [
+        rml:parameter morph-fn:sparqlQuery ;
+        rml:inputValue """
+            PREFIX schema: <https://schema.org/>
+            SELECT ?entity_iri ?matching_value_1 WHERE {
+                GRAPH ?g {
+                    ?entity_iri a schema:MedicalStudy ;
+                                schema:identifier ?matching_value_1 .
+                }
+            }
+        """
+    ] ;
+    rml:input [
+        rml:parameter grel:valueParam ;
+        rml:inputValueMap [ rml:reference "clinical_trial_id" ]
+    ] .

@@ -1,0 +1,7 @@
+| CSV Column             | Ontology Property        | Entity Class      | Related Entity Class | Subject Generation                                   | Join              | Datatype               | 
+|------------------------|--------------------------|-------------------|-----------------------|------------------------------------------------------|-----------------------------|-------------------------|
+| `shape_id`             | `gtfs:id`                | `gtfs:Shape`      | N/A                   | `URI(<http://vocab.gtfs.org/Shape/{SHAPE_ID}>)`      | `SHAPE_ID = SUBJECT.shape_id` | `xsd:string`            | 
+| `shape_pt_lat`         | `gtfs:latitude`          | `gtfs:ShapePoint` | N/A                   | `float(SHAPE_PT_LAT)`                                | `None`                      | `geo:lat`               | 
+| `shape_pt_lon`         | `gtfs:longitude`         | `gtfs:ShapePoint` | N/A                   | `float(SHAPE_PT_LON)`                                | `None`                      | `geo:long`              |
+| `shape_pt_sequence`    | `gtfs:pointSequence`     | `gtfs:ShapePoint` | N/A                   | `int(SHAPE_PT_SEQUENCE)`                             | `None`                      | `xsd:nonNegativeInteger`|
+| `shape_dist_traveled`  | `gtfs:distanceTraveled`  | `gtfs:ShapePoint` | N/A                   | `float(SHAPE_DIST_TRAVELED)`                         | `None`                      | `gtfs:nonNegativeFloat` |

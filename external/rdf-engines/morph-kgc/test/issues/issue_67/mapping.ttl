@@ -1,0 +1,34 @@
+@prefix rml: <http://w3id.org/rml/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://www.example.com/> .
+
+<#TriplesMap1>
+    a rml:TriplesMap;
+    rml:logicalSource [
+        rml:source "test/issues/issue_67/data.csv";
+        rml:referenceFormulation rml:CSV
+    ];
+    rml:subjectMap [
+        rml:template "http://example.com/{id}";
+    ];
+    rml:predicateObjectMap [
+        rml:predicate ex:boolean;
+        rml:objectMap [
+            rml:reference "column1";
+            rml:datatype xsd:boolean
+        ];
+    ];
+    rml:predicateObjectMap [
+        rml:predicate ex:dateTime;
+        rml:objectMap [
+            rml:reference "column2";
+            rml:datatype xsd:dateTime
+        ];
+    ];
+    rml:predicateObjectMap [
+        rml:predicate ex:integer;
+        rml:objectMap [
+            rml:reference "column3";
+            rml:datatype xsd:integer
+        ];
+    ].

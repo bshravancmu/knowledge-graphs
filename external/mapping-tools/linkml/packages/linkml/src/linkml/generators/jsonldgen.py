@@ -1,0 +1,279 @@
+"""Generate JSONld from a LinkML schema."""
+
+import os
+from collections.abc import Sequence
+from copy import deepcopy
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import click
+from jsonasobj2 import as_json, items, loads
+
+from linkml import METAMODEL_CONTEXT_URI
+from linkml._version import __version__
+from linkml.generators.jsonldcontextgen import ContextGenerator
+from linkml.utils.deprecation import deprecated_fields
+from linkml.utils.generator import Generator, shared_arguments
+from linkml_runtime.linkml_model.meta import (
+    ClassDefinition,
+    ClassDefinitionName,
+    ElementName,
+    SchemaDefinition,
+    SlotDefinition,
+    SlotDefinitionName,
+    SubsetDefinition,
+    SubsetDefinitionName,
+    TypeDefinition,
+    TypeDefinitionName,
+)
+from linkml_runtime.utils.formatutils import camelcase, underscore
+from linkml_runtime.utils.yamlutils import YAMLRoot
+
+
+@deprecated_fields({"emit_metadata": "metadata"})
+@dataclass
+class JSONLDGenerator(Generator):
+    """
+    Generates JSON-LD from a Schema
+
+    Status: incompletely implemented
+
+    Note: this is distinct from
+    :class:`~linkml.generators.jsonldcontextgen.ContextGenerator`, which generates a JSON-LD context
+    """
+
+    # ClassVars
+    generatorname = os.path.basename(__file__)
+    generatorversion = "0.0.2"
+    valid_formats = [
+        "jsonld",
+        "json",
+    ]  # jsonld includes @type and @context.  json is pure JSON
+    uses_schemaloader = True
+    requires_metamodel = True
+    file_extension = "jsonld"
+
+    # ObjectVars
+    original_schema: SchemaDefinition = None
+    """See https://github.com/linkml/linkml/issues/871"""
+
+    original_base_dir: str | None = None
+    """The caller's base_dir, before SchemaLoader replaces it with one derived from the schema path"""
+
+    context: Sequence[str] | None = field(default_factory=list)
+    """Path to a JSONLD context file"""
+
+    metamodel_context: str = None
+    """Override for metamodel context URI/path. When None, uses METAMODEL_CONTEXT_URI."""
+
+    def __post_init__(self) -> None:
+        self.original_schema = deepcopy(self.schema)
+        self.original_base_dir = self.base_dir
+        super().__post_init__()
+
+    def _add_type(self, node: YAMLRoot) -> dict:
+        if self.format == "jsonld":
+            typ = node.__class__.__name__
+            node = node.__dict__
+            node["@type"] = typ
+        return node
+
+    def _visit(self, node: Any) -> Any | None:
+        if isinstance(node, YAMLRoot | dict):
+            if isinstance(node, YAMLRoot):
+                node = self._add_type(node)
+            for k, v in list(items(node)):
+                if v:
+                    new_v = self._visit(v)
+                    if new_v is not None:
+                        node[k] = new_v
+        elif isinstance(node, list):
+            for i in range(0, len(node)):
+                new_v = self._visit(node[i])
+                if new_v is not None:
+                    node[i] = new_v
+        elif isinstance(node, set):
+            for v in list(node):
+                new_v = self._visit(v)
+                if new_v is not None:
+                    node.remove(v)
+                    node.add(new_v)
+        elif isinstance(node, ClassDefinitionName):
+            return ClassDefinitionName(camelcase(node))
+        elif isinstance(node, SlotDefinitionName):
+            return SlotDefinitionName(underscore(node))
+        elif isinstance(node, TypeDefinitionName):
+            return TypeDefinitionName(underscore(node))
+        elif isinstance(node, SubsetDefinitionName):
+            return SubsetDefinitionName(underscore(node))
+        elif isinstance(node, ElementName):
+            return (
+                ClassDefinitionName(camelcase(node))
+                if node in self.schema.classes
+                else (
+                    SlotDefinitionName(underscore(node))
+                    if node in self.schema.slots
+                    else (
+                        SubsetDefinitionName(camelcase(node))
+                        if node in self.schema.subsets
+                        else TypeDefinitionName(underscore(node))
+                        if node in self.schema.types
+                        else None
+                    )
+                )
+            )
+        return None
+
+    def adjust_slot(self, slot: SlotDefinition) -> None:
+        if slot.range in self.schema.classes:
+            slot.range = ClassDefinitionName(camelcase(slot.range))
+        elif slot.range in self.schema.slots:
+            slot.range = SlotDefinitionName(underscore(slot.range))
+        elif slot.range in self.schema.types:
+            slot.range = TypeDefinitionName(underscore(slot.range))
+        slot.slot_uri = self.namespaces.uri_for(slot.slot_uri)
+        for f in [
+            "mappings",
+            "exact_mappings",
+            "broad_mappings",
+            "close_mappings",
+            "narrow_mappings",
+            "related_mappings",
+        ]:
+            setattr(slot, f, [self.namespaces.uri_for(v) for v in getattr(slot, f)])
+
+    def visit_class(self, cls: ClassDefinition) -> bool:
+        self._visit(cls)
+        cls.class_uri = self.namespaces.uri_for(cls.class_uri)
+        # Slot usage is a construction artifact
+        # TODO: Figure out why this is here.  It isn't good form to alter a schema that may be used by other things
+        cls.slot_usage = {}
+        return False
+
+    def visit_slot(self, aliased_slot_name: str, slot: SlotDefinition) -> None:
+        self._visit(slot)
+        self.adjust_slot(slot)
+
+    def visit_type(self, typ: TypeDefinition) -> None:
+        self._visit(typ)
+        typ.uri = self.namespaces.uri_for(typ.uri)
+
+    def visit_subset(self, ss: SubsetDefinition) -> None:
+        self._visit(ss)
+
+    def end_schema(
+        self, context: str | list[str] | tuple[str, ...] = [], context_kwargs: dict | None = None, **_
+    ) -> str:
+        default_context_kwargs = {"model": False}
+        if context_kwargs is None:
+            context_kwargs = default_context_kwargs
+        else:
+            context_kwargs = {**default_context_kwargs, **context_kwargs}
+
+        self._add_type(self.schema)
+        base_prefix = self.default_prefix()
+
+        # `context` can be a `str`, a `list[str]` or a `tuple[str]`
+        # since the context might need to get extended, `context_list` must be `list[str]`
+        context_list: list[str] = []
+        # TODO: fix this, see https://github.com/linkml/linkml/issues/871
+        # JSON LD adjusts context reference using '@base'.  If context is supplied and not a URI, generate an
+        # absolute URI for it
+        if not context and self.format == "jsonld":
+            # TODO: Once we get pyld running w/ relative contexts, we need to figure out how to generate and add
+            #       the relative (?) context reference below
+            # model_context = self.schema.source_file.replace('.yaml', '.prefixes.context.jsonld')
+            # context = [METAMODEL_CONTEXT_URI, f'file://./{model_context}']
+            # TODO: The _visit function above alters the schema in situ
+            # force some context_kwargs
+            context_kwargs["metadata"] = False
+            # Forward importmap/base_dir so the spawned ContextGenerator can
+            # re-resolve any URI-style imports in ``self.original_schema``
+            # through the same ``--importmap`` the caller supplied. Forward the
+            # caller's base_dir, not the one SchemaLoader derived from the schema
+            # path: the latter would resolve a relative path against its own
+            # directory twice.
+            context_kwargs.setdefault("importmap", self.importmap)
+            context_kwargs.setdefault("base_dir", self.original_base_dir)
+            add_prefixes = ContextGenerator(self.original_schema, **context_kwargs).serialize()
+            add_prefixes_json = loads(add_prefixes)
+            metamodel_ctx = self.metamodel_context or METAMODEL_CONTEXT_URI
+            context_list = [metamodel_ctx, add_prefixes_json["@context"]]
+        elif isinstance(context, str):  # Some of the older code doesn't do multiple contexts
+            context_list = [context]
+        elif isinstance(context, tuple):
+            context_list = list(context)
+        else:
+            context_list = context
+
+        for imp in list(self.loaded.values())[1:]:
+            context_list.append(imp[0] + ".context.jsonld")
+
+        # Absolute local filesystem paths must be pre-expressed as file:// URIs.
+        # ``Path.as_uri`` handles both POSIX (``/x`` -> ``file:///x``) and bare
+        # Windows drive paths (``D:\x`` -> ``file:///D:/x``); URLs (anything
+        # with a ``://``) and relative refs are left untouched.
+        for ci in range(0, len(context_list)):
+            entry = context_list[ci]
+            if isinstance(entry, str) and "://" not in entry and os.path.isabs(entry):
+                context_list[ci] = Path(entry).as_uri()
+
+        if self.format == "jsonld":
+            self.schema["@context"] = context_list[0] if len(context_list) == 1 and not base_prefix else context_list
+            if base_prefix:
+                self.schema["@context"].append({"@base": base_prefix})
+        # json_obj["@id"] = self.schema.id
+        out = str(as_json(self.schema, indent="  ")) + "\n"
+        self.schema = self.original_schema
+        return out
+
+    def serialize(self, context: Sequence[str] | None = None, context_kwargs: dict | None = None, **kwargs) -> str:
+        """
+        Serialize the model to JSON-LD
+
+        Args:
+            context (str, list[str], None): If ``None``, use context from schema,
+                otherwise replace context with this.
+            context_kwargs (dict, None): Keyword arguments forwarded to the JSON-LD Context generator
+        """
+        return super().serialize(context=context, context_kwargs=context_kwargs, **kwargs)
+
+
+# Option "context" can be specified multiple times.
+@shared_arguments(JSONLDGenerator)
+@click.command(name="jsonld")
+@click.option(
+    "--context",
+    multiple=True,
+    type=click.STRING,
+    help=f"JSONLD context file (default: {METAMODEL_CONTEXT_URI} and <model>.prefixes.context.jsonld)",
+)
+@click.option(
+    "--context-kwargs",
+    "-k",
+    type=(str, bool),
+    multiple=True,
+    help="kwargs passed to the JSONLD Context generator when instantiated. "
+    "Since the context is embedded within the JSON-LD document, "
+    "only the boolean instance attributes are formally supported, "
+    'e.g. "output" and "base" are not applicable. '
+    "The `emit_metadata` value is forced to be False.\n\n"
+    "multiple kwargs like `-k {key} {value}` can be passed",
+)
+@click.version_option(__version__, "-V", "--version")
+def cli(yamlfile, context_kwargs: list[tuple[str, bool]], context: tuple[str], **kwargs):
+    """Generate JSONLD file from LinkML schema.
+
+    Status: incomplete
+    """
+    if context_kwargs:
+        context_kwargs = dict(context_kwargs)
+    else:
+        context_kwargs = {}
+
+    print(JSONLDGenerator(yamlfile, **kwargs).serialize(context=context, context_kwargs=context_kwargs, **kwargs))
+
+
+if __name__ == "__main__":
+    cli()

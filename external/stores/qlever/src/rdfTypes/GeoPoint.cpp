@@ -1,0 +1,96 @@
+//  Copyright 2024, University of Freiburg,
+//  Chair of Algorithms and Data Structures.
+//  Author: Christoph Ullinger <ullingec@informatik.uni-freiburg.de>
+
+#include "rdfTypes/GeoPoint.h"
+
+#include <cmath>
+#include <optional>
+#include <type_traits>
+
+#include "global/Constants.h"
+#include "parser/NormalizedString.h"
+#include "rdfTypes/GeoSparqlHelpers.h"
+#include "rdfTypes/Literal.h"
+#include "util/Exception.h"
+
+// _____________________________________________________________________________
+GeoPoint::GeoPoint(double lat, double lng) : lat_{lat}, lng_{lng} {
+  // Ensure valid lat and lng values
+  if (lat < -COORDINATE_LAT_MAX || lat > COORDINATE_LAT_MAX || std::isnan(lat))
+    throw CoordinateOutOfRangeException(lat, true);
+  if (lng < -COORDINATE_LNG_MAX || lng > COORDINATE_LNG_MAX || std::isnan(lng))
+    throw CoordinateOutOfRangeException(lng, false);
+}
+
+// _____________________________________________________________________________
+GeoPoint::T GeoPoint::quantizeCoordinate(double value, double maxValue) {
+  // Only positive values between 0 and 1
+  double downscaled = (value + maxValue) / (2 * maxValue);
+  AD_CORRECTNESS_CHECK(0.0 <= downscaled && downscaled <= 1.0,
+                       "downscaled coordinate value ", downscaled,
+                       " does not satisfy [0,1] constraint");
+  // Stretch to allowed range of values between 0 and maxCoordinateEncoded,
+  // rounded to integer
+  auto newscaled = static_cast<T>(round(downscaled * maxCoordinateEncoded));
+  AD_CORRECTNESS_CHECK(
+      newscaled <= maxCoordinateEncoded, "scaled coordinate value ", newscaled,
+      " does not satisfy [0,", maxCoordinateEncoded, "] constraint");
+  return newscaled;
+}
+
+// _____________________________________________________________________________
+double GeoPoint::dequantizeCoordinate(T quantized, double maxValue) {
+  // Together with the check below, this ensures `0 <= quantized`.
+  static_assert(std::is_unsigned_v<T>);
+  AD_CORRECTNESS_CHECK(quantized <= maxCoordinateEncoded);
+  double value =
+      ((static_cast<double>(quantized) / maxCoordinateEncoded) * 2 * maxValue) -
+      maxValue;
+  AD_CORRECTNESS_CHECK(-maxValue <= value && value <= maxValue);
+  return value;
+}
+
+// _____________________________________________________________________________
+GeoPoint::T GeoPoint::toBitRepresentation() const {
+  T lat = quantizeCoordinate(getLat(), COORDINATE_LAT_MAX);
+  T lng = quantizeCoordinate(getLng(), COORDINATE_LNG_MAX);
+  auto bits = combineCoordinates(lat, lng, encoding());
+  // Ensure the highest 4 bits are 0
+  AD_CORRECTNESS_CHECK((bits & coordinateMaskFreeBits) == 0);
+  return bits;
+}
+
+// _____________________________________________________________________________
+std::optional<GeoPoint> GeoPoint::parseFromLiteral(
+    const ad_utility::triple_component::Literal& value, bool checkDatatype) {
+  if (!checkDatatype ||
+      (value.hasDatatype() &&
+       value.getDatatype() == asNormalizedStringViewUnsafe(GEO_WKT_LITERAL))) {
+    auto [lng, lat] = ad_utility::detail::parseWktPoint(
+        asStringViewUnsafe(value.getContent()));
+    if (!std::isnan(lng) && !std::isnan(lat)) {
+      return GeoPoint{lat, lng};
+    }
+  }
+  return std::nullopt;
+}
+
+// _____________________________________________________________________________
+GeoPoint GeoPoint::fromBitRepresentation(T bits) {
+  auto [lat, lng] = splitCoordinates(bits, encoding());
+  return {dequantizeCoordinate(lat, COORDINATE_LAT_MAX),
+          dequantizeCoordinate(lng, COORDINATE_LNG_MAX)};
+}
+
+// _____________________________________________________________________________
+std::string GeoPoint::toStringRepresentation() const {
+  // Extra conversion using std::to_string to get more decimals
+  return absl::StrCat("POINT(", std::to_string(getLng()), " ",
+                      std::to_string(getLat()), ")");
+}
+
+// _____________________________________________________________________________
+std::pair<std::string, const char*> GeoPoint::toStringAndType() const {
+  return std::pair(toStringRepresentation(), GEO_WKT_LITERAL.data());
+}

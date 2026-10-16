@@ -1,0 +1,45 @@
+{
+  "name": "@rmlio/yarrrml-parser",
+  "version": "1.12.2",
+  "description": "Parse YARRRML descriptions into RML RDF statements",
+  "main": "lib/yarrrml2rml.js",
+  "scripts": {
+    "test": "mocha \"./lib/*.test.js\""
+  },
+  "keywords": [
+    "RML",
+    "YAML",
+    "parser",
+    "generator"
+  ],
+  "author": "Ben De Meester",
+  "contributors": [
+    "Pieter Heyvaert (https://pieterheyvaert.com/)"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^14.0.0",
+    "extend": "^3.0.2",
+    "glob": "^11.0.3",
+    "graphy": "^4.3.7",
+    "js-logger": "^1.6.1",
+    "n3": "^1.26.0",
+    "parse-author": "^2.0.0",
+    "pkginfo": "^0.4.1",
+    "prefix-ns": "^1.1.0",
+    "rdf-isomorphic": "^2.0.1",
+    "yamljs": "^0.3.0"
+  },
+  "devDependencies": {
+    "changefrog": "^1.1.0",
+    "mocha": "^11.7.1"
+  },
+  "bin": {
+    "yarrrml-parser": "./bin/parser.js",
+    "yarrrml-generator": "./bin/generator.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RMLio/yarrrml-parser.git"
+  }
+}

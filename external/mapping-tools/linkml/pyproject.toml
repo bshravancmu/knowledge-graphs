@@ -1,0 +1,215 @@
+[tool.uv]
+required-version = ">=0.9.17"
+exclude-newer = "7 days"
+constraint-dependencies = ["click>=8.3.3,<8.4", "pillow>=12.3.0,<12.4"]
+
+[tool.uv.workspace]
+members = [
+  "packages/linkml",
+  "packages/linkml_runtime",
+]
+[tool.uv.sources]
+linkml = { workspace = true }
+linkml-runtime = { workspace = true }
+
+
+[tool.codespell]
+skip = [
+  ".git", "*.pdf", "*.svg", "*.dill",
+  "./tests",  # TODO: bring in tests in too
+  "pyproject.toml",
+  "uv.lock",
+  "./notebooks/DistributedModels.ipynb",
+  "./docs/LinkML-logo/LinkML-Revised-Round-Logo-MASTER-FILE.ai",
+  "./tests/data/hp.ttl",
+  "./tests/data/hp_f.ttl",
+  "tests/test_generators/input/jsonschema_value_constraints.yaml",
+]
+# Ignore table where words could be split across rows
+ignore-regex = '(\|.*\|.*\|.*\||\[[A-Z][a-z]\][a-z][a-z])'
+ignore-words-list = [
+  "acsess",
+  "AGS",
+  "amination",
+  "anc",
+  "brite",
+  "ClassE",
+  "CrossReference",
+  "crossReference",
+  "connexion",
+  "EHR",
+  "infarction",
+  "linke",
+  "mater",
+  "mor",
+  "ser",
+  "Stye",
+  "TE",
+  "thirdparty",
+  "Vas",
+  # These are temp exemptions because they are coming from
+  # upstream repos linkml-runtime and linkml-model
+  # we should remove these once the upstream repos are fixed
+  # and changes are propagated to linkml
+  "GENERARE",
+  "re-used",
+  "doesnt",
+  "crate"
+]
+quiet-level = 3
+
+[tool.black]
+line-length = 120
+target-version = ["py310", "py311", "py312", "py313"]
+force-exclude = '''
+/(
+  # default exclude
+  \.direnv|\.eggs|\.git|\.hg|\.ipynb_checkpoints|\.mypy_cache|\.nox|\.pytest_cache|\.ruff_cache|\.tox|\.svn|\.venv|\.vscode|__pypackages__|_build|buck-out|build|dist|venv
+  # additional exclude
+  | tests.*/output
+  | __snapshots__
+  | docs
+  | examples
+  | notebooks
+  | linkml/linter/config/datamodel
+)/
+'''
+
+[tool.pytest.ini_options]
+filterwarnings = [
+  # https://github.com/RDFLib/rdflib/issues/1830
+  "ignore:.*_pytestfixturefunction is not defined in namespace:UserWarning"
+]
+markers = [
+  "network: test code paths that perform outbound requests; served from local stubs by default, live under --with-network",
+  "upstream: tests whose assertions are about the real outside world; live-only, run weekly under --with-upstream",
+  "slow: mark test as slow to run",
+  "no_asserts: tests that don't have meaningful asserts, but are only snapshot comparisons, or historically had print statements, or other non-erroring behavior",
+  "strcmp: tests that compare stringified values rather than the values themselves",
+  "biolink: tests that validate that the biolink model is unchanged",
+  "docker: tests that require a running docker server",
+  "kroki: tests that use Kroki diagram creation (skipped in CI)",
+  "plantumlgen: Tests for the plantuml generator",
+  "pydanticgen_split: Split module generation in pydanticgen",
+  "pydanticgen_npd: tests for the numpydantic array generator",
+  "panderagen: tests for the pandera generator",
+  "integration: tests that require external services (e.g. a running TypeDB server)",
+  "dataframe_polars_schema: tests for the polars schema dataframe generator",
+  "tutorial: tests that execute tutorial markdown files",
+  "pythongen: Tests for python generator",
+  "pydanticgen: Tests for pydantic generator",
+  "javagen: Tests for java generator",
+  "jsonschemagen: Tests for Json Schema generator",
+  "shaclgen: Tests for shacl generator",
+  "shexgen: Tests for shex generator",
+  "jsonldgen: Test for JSON-LD generator",
+  "jsonldcontextgen: Test for JSON-LD context generator",
+  "rdfgen: Tests for the RDFGenerator",
+  "rustgen: Tests for the RustGenerator",
+  "sqlalchemygen: Tests for SQL Alchemy generator",
+  "sqlddlgen: Tests for SQL DDL generator",
+  "sqlddlpostgresgen: Tests for SQL DDL postgres generator",
+  "sqlddlbigquerygen: Tests for BigQuery DDL generator",
+  "owlgen: Tests for OWL generator",
+  "yamlgen: Tests for the YAML generator",
+  "yarrrml: End-to-end tests for the YARRRML generator",
+  "typedbgen: Tests for the TypeDB generator",
+  "arrays: Array specifications!",
+  "diffable_rdf: tests that exercise the diffable-rdf integration (--diff-stable); run as a canary against linkml in diffable-rdf's own CI",
+]
+
+# https://docs.astral.sh/ruff/settings/
+[tool.ruff]
+extend-exclude = [
+    "tests/output",
+    "tests/**/output",
+    "tests/**/__snapshots__",
+    "examples/",
+    "docs/",
+    "notebooks/",
+    # Auto-generated files that may not conform to current linting rules
+    "linkml/linter/config/datamodel/config.py"
+]
+force-exclude = true
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+extend-ignore = ["E203"]
+select = [
+  "E",  # pycodestyle errors
+  "F",  # Pyflakes
+  "I",  # isort
+  "UP", # pyupgrade
+]
+
+[tool.ruff.format]
+# Golden files are generated output whose formatting is determined by the code generator
+exclude = ["tests/**/golden/*.py"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["linkml", "linkml_runtime"]
+
+[tool.ruff.lint.per-file-ignores]
+# These templates can have long lines
+"packages/linkml/src/linkml/generators/sqlalchemy/sqlalchemy_declarative_template.py" = ["E501"]
+"packages/linkml/src/linkml/generators/sqlalchemy/sqlalchemy_declarative_2x_template.py" = ["E501"]
+"packages/linkml/src/linkml/generators/sqlalchemy/sqlalchemy_imperative_template.py" = ["E501"]
+
+# Golden files are generated output — may have unused imports, long lines, unsorted imports
+"tests/**/golden/*.py" = ["E501", "F401", "I001"]
+"packages/linkml/src/linkml/linter/config/datamodel/config.py" = ["E501", "F401", "I001", "UP007", "UP035", "UP045"]
+
+# Auto-generated model files use Optional/Union with string forward references
+"packages/linkml_runtime/src/linkml_runtime/linkml_model/*.py" = ["UP007", "UP045"]
+"packages/linkml_runtime/src/linkml_runtime/processing/validation_datamodel.py" = ["UP007", "UP045"]
+"packages/linkml/src/linkml/workspaces/datamodel/workspaces.py" = ["UP007", "UP045"]
+"packages/linkml/src/linkml/reporting/model.py" = ["UP007", "UP045"]
+
+# Notebooks can have unsorted imports
+"tests/linkml/test_notebooks/input/*" = ["E402"]
+
+# tests/linkml_runtime follows the original linkml_runtime linting conventions
+"tests/linkml_runtime/**/*.py" = ["E402", "E501", "E712", "E731", "E741", "F401", "F811", "F841", "I001", "UP006", "UP007", "UP035", "UP045"]
+
+[tool.tox]
+requires = ["tox>=4", "tox-uv"]
+env_list = ["lint", "py{310,311,312,313}"]
+
+[tool.tox.env_run_base]
+runner = "uv-venv-lock-runner"
+deps = ["pytest"]
+commands = [
+  ["pytest", "{posargs}"],
+]
+
+[tool.tox.env.codespell]
+description = "Run spell checkers."
+runner = "uv-venv-runner"
+skip_install = true
+deps = [
+  "codespell",
+  "tomli", # required for getting config from pyproject.toml
+]
+commands = [
+  ["codespell", "{posargs}"]
+]
+
+[tool.tox.env.format]
+description = "Run code formatter and code-fixing linter."
+runner = "uv-venv-runner"
+skip_install = true
+deps = ["pre-commit"]
+commands = [
+  ["pre-commit", "run", "--all-files", "--show-diff-on-failure", { replace = "posargs", extend = true }]
+]
+
+[tool.tox.env.lint]
+description = "Run code linter and formatter (no fixes)."
+runner = "uv-venv-runner"
+skip_install = true
+deps = ["ruff==0.11.13"]
+commands = [
+  ["ruff", "check", "{posargs:.}"],
+  ["ruff", "format", "{posargs:.}"],
+]

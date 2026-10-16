@@ -1,0 +1,1 @@
+Syntax error at line 1 between columns 54 and 56: Unexpected escape character '\a'

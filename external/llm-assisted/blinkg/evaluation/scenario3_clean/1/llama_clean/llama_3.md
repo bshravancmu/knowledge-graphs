@@ -1,0 +1,13 @@
+| XML Path | Ontology Property | Entity Class | Related Entity Class | Subject Generation | Join | Datatype | Function Name | Function Output |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| entry/id | :hasID | :ProcurementObject |  | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id} |  | xsd:string | | |
+| entry/summary | :describesLot | :LotAwardOutcome | :Lot | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#summary | :describesLot | | | |
+| entry/title | :hasIdentifierValue | :Identifier | :ProcurementObject | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#title | :hasID | | | |
+| cac:Party/cbc:ID | :hasIdentifierValue | :Identifier | :Buyer | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#buyerId | :playedByOrganisation | | | |
+| cac:Party/cbc:Name | :hasIdentifierValue | :Identifier | :Buyer | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#buyerName | :playedByOrganisation | | | |
+| cac:ProcurementProject/cbc:Name | :hasIdentifierValue | :Identifier | :Lot | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#lotName | :hasProcurementScopeDividedIntoLot | | | |
+| cac:ProcurementProject/cbc:TypeCode | :hasProcedureType | :Procedure | :Lot | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#procedureType | :hasProcurementScopeDividedIntoLot | | generateProcedureType | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#procedureType |
+| cac:TenderResult/cbc:ResultCode | :hasAwardDecisionDate | :LotAwardOutcome | :Lot | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#awardDecisionDate | :describesLot | xsd:date | | |
+| cac:TenderResult/cac:Contract/cbc:ID | :hasID | :Contract | :Lot | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#contractId | :describesLot | xsd:string | | |
+| cac:TenderResult/cac:WinningParty/cac:PartyIdentification/cbc:ID | :hasIdentifierValue | :Identifier | :Buyer | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#winningBuyerId | :playedByOrganisation | xsd:string | | |
+| cac:RealizedLocation/cbc:CountrySubentity | :hasCountryCode | :Country | :Lot | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#countryCode | :hasProcurementScopeDividedIntoLot | | generateCountryCode | https://contrataciondelestado.es/sindicacion/licitacionesPerfilContratante/{id}#countryCode |

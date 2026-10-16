@@ -1,0 +1,340 @@
+#  Copyright (c) "Neo4j"
+#  Neo4j Sweden AB [https://neo4j.com]
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#      https://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+from __future__ import annotations
+
+import warnings
+from typing import Any, Optional
+
+from neo4j_graphrag.exceptions import (
+    PromptMissingInputError,
+    PromptMissingPlaceholderError,
+)
+
+
+class PromptTemplate:
+    """This class is used to generate a parameterized prompt. It is defined
+    from a string (the template) using the Python format syntax (parameters
+    between curly braces `{}`) and a list of required inputs.
+    Before sending the instructions to an LLM, call the `format` method that will
+    replace parameters with the provided values. If any of the expected inputs is
+    missing, a `PromptMissingInputError` is raised.
+    """
+
+    DEFAULT_SYSTEM_INSTRUCTIONS: str = ""
+    DEFAULT_TEMPLATE: str = ""
+    EXPECTED_INPUTS: list[str] = list()
+
+    def __init__(
+        self,
+        template: Optional[str] = None,
+        expected_inputs: Optional[list[str]] = None,
+        system_instructions: Optional[str] = None,
+    ) -> None:
+        self.template = template or self.DEFAULT_TEMPLATE
+        self.expected_inputs = expected_inputs or self.EXPECTED_INPUTS
+        self.system_instructions = (
+            system_instructions or self.DEFAULT_SYSTEM_INSTRUCTIONS
+        )
+
+        for e in self.expected_inputs:
+            if f"{{{e}}}" not in self.template:
+                raise PromptMissingPlaceholderError(
+                    f"`template` is missing placeholder {e}"
+                )
+
+    def _format(self, **kwargs: Any) -> str:
+        for e in self.EXPECTED_INPUTS:
+            if e not in kwargs:
+                raise PromptMissingInputError(f"Missing input '{e}'")
+        return self.template.format(**kwargs)
+
+    def format(self, *args: Any, **kwargs: Any) -> str:
+        """This method is used to replace parameters with the provided values.
+        Parameters must be provided:
+        - as kwargs
+        - as args if using the same order as in the expected inputs
+
+        Example:
+
+        .. code-block:: python
+
+            prompt_template = PromptTemplate(
+                template='''Explain the following concept to {target_audience}:
+                Concept: {concept}
+                Answer:
+                ''',
+                expected_inputs=['target_audience', 'concept']
+            )
+            prompt = prompt_template.format('12 yo children', concept='graph database')
+            print(prompt)
+
+            # Result:
+            # '''Explain the following concept to 12 yo children:
+            # Concept: graph database
+            # Answer:
+            # '''
+
+        """
+        data = kwargs
+        data.update({k: v for k, v in zip(self.expected_inputs, args)})
+        return self._format(**data)
+
+
+class RagTemplate(PromptTemplate):
+    DEFAULT_SYSTEM_INSTRUCTIONS = "Answer the user question using the provided context."
+    DEFAULT_TEMPLATE = """Context:
+{context}
+
+Examples:
+{examples}
+
+Question:
+{query_text}
+
+Answer:
+"""
+    EXPECTED_INPUTS = ["context", "query_text", "examples"]
+
+    def format(self, query_text: str, context: str, examples: str) -> str:
+        return super().format(query_text=query_text, context=context, examples=examples)
+
+
+class Text2CypherTemplate(PromptTemplate):
+    DEFAULT_TEMPLATE = """
+Task: Generate a Cypher statement for querying a Neo4j graph database from a user input.
+
+Schema:
+{schema}
+
+Examples (optional):
+{examples}
+
+Input:
+{query_text}
+
+Do not use any properties or relationships not included in the schema.
+Do not include triple backticks ``` or any additional text except the generated Cypher statement in your response.
+
+Cypher query:
+"""
+    EXPECTED_INPUTS = ["query_text"]
+
+    def format(
+        self,
+        schema: Optional[str] = None,
+        examples: Optional[str] = None,
+        query_text: str = "",
+        query: Optional[str] = None,
+        **kwargs: Any,
+    ) -> str:
+        if query is not None:
+            if query_text:
+                warnings.warn(
+                    "Both 'query' and 'query_text' are provided, 'query_text' will be used.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            elif isinstance(query, str):
+                warnings.warn(
+                    "'query' is deprecated and will be removed in a version 2.0, please use 'query_text' instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                query_text = query
+
+        return super().format(
+            query_text=query_text, schema=schema, examples=examples, **kwargs
+        )
+
+
+class ERExtractionTemplate(PromptTemplate):
+    DEFAULT_TEMPLATE = """
+You are a top-tier algorithm designed for extracting
+information in structured formats to build a knowledge graph.
+
+Extract the entities (nodes) and specify their type from the following text.
+Also extract the relationships between these nodes.
+
+Return result as JSON using the following format:
+{{"nodes": [ {{"id": "0", "label": "Person", "properties": {{"name": "John"}} }}],
+"relationships": [{{"type": "KNOWS", "start_node_id": "0", "end_node_id": "1", "properties": {{"since": "2024-08-01"}} }}] }}
+
+Use only the following node and relationship types (if provided):
+{schema}
+
+Assign a unique ID (string) to each node, and reuse it to define relationships.
+Do respect the source and target node types for relationship and
+the relationship direction.
+
+Make sure you adhere to the following rules to produce valid JSON objects:
+- Do not return any additional information other than the JSON in it.
+- Omit any backticks around the JSON - simply output the JSON on its own.
+- The JSON object must not wrapped into a list - it is its own JSON object.
+- Property names must be enclosed in double quotes
+
+Examples:
+{examples}
+
+Input text:
+
+{text}
+"""
+    EXPECTED_INPUTS = ["text"]
+
+    def format(
+        self,
+        schema: dict[str, Any],
+        examples: str,
+        text: str = "",
+    ) -> str:
+        return super().format(text=text, schema=schema, examples=examples)
+
+
+class SchemaExtractionTemplate(PromptTemplate):
+    DEFAULT_TEMPLATE = """
+You are a top-tier algorithm designed for extracting a labeled property graph schema in
+structured formats.
+
+Generate a generalized graph schema based on the input text. Identify key node types,
+their relationship types, and property types. The schema will be used to extract a
+knowledge graph from documents like the input text, so it must describe how the
+entities relate to each other, not just list them.
+
+IMPORTANT RULES:
+1. Return only abstract schema information, not concrete instances.
+2. Use singular PascalCase labels for node types (e.g., Person, Company, Product).
+2.1 Define each node type once in "node_types". A node type name is global: the same label carries a single set of properties and constraints. Use distinct labels only when the entities genuinely need different properties or constraints.
+3. Use UPPER_SNAKE_CASE labels for relationship types (e.g., WORKS_FOR, MANAGES).
+3.1 Define each relationship type once in "relationship_types". A relationship type name is global: the same type may be reused across multiple patterns (different source/target node pairs), sharing a single set of properties and constraints. Use distinct type names only when patterns genuinely need different properties or constraints.
+4. Include property definitions only when the type can be confidently inferred, otherwise omit them.
+5. When defining patterns, ensure that every node label and relationship label mentioned exists in your lists of node types and relationship types.
+6. Do not create node types that aren't clearly mentioned in the text.
+7. Keep your schema minimal and focused on clearly identifiable patterns in the text.
+8. CONNECTIVITY (the patterns should link the node types into a connected graph):
+8.1 Every node type should appear as the source or target of at least one pattern. A node type that appears in no pattern can only ever produce isolated nodes, which makes the extracted graph disconnected and hard to query.
+8.2 Prefer patterns that link the node types into a single connected structure: starting from any node type, it should be possible to reach every other node type by following patterns (ignoring direction). Pay attention to how the text relates its main subjects to the other entities it mentions, and capture those relationships as patterns, even when they are stated implicitly (e.g. an entity described within the context of another).
+8.3 If a candidate node type is only ever mentioned as an attribute of another entity (e.g. an email address, a date, an amount, a status), model it as a property of that node type instead of as a separate node type.
+8.4 Do not invent relationship types or patterns that the text does not support just to connect node types. If the text genuinely describes unrelated subjects, it is acceptable for the schema to have separate connected groups; accuracy takes precedence over connectivity.
+9. UNIQUENESS CONSTRAINTS (optional, node or relationship properties):
+9.1 Each node or relationship type may have at most one UNIQUENESS constraint in typical designs.
+9.2 Only use properties that seem to not have too many missing values in the sample.
+9.3 Constraints reference node_types or relationship_types by label and specify which properties are unique via "property_names" (a list of one or more property names).
+9.4 Every property in a uniqueness constraint MUST also appear in the corresponding node_type or relationship_type as a property.
+9.5 Uniqueness does NOT imply that the property must exist on every node (existence is separate; see rule 10).
+9.6 For composite uniqueness (multiple properties), list all properties in "property_names". The combination of values must be unique.
+9.7 For a node property, use {{"type": "UNIQUENESS", "node_type": "<Label>", "property_names": ["<name>"], "relationship_type": ""}}. For a relationship property, use {{"type": "UNIQUENESS", "node_type": "", "property_names": ["<name>"], "relationship_type": "<REL_TYPE>"}}.
+10. EXISTENCE CONSTRAINTS (optional, single property only):
+10.1 Use EXISTENCE constraints to mark properties that MUST be present (non-null) on every instance.
+10.2 For a node property, add {{"type": "EXISTENCE", "node_type": "<Label>", "property_names": ["<name>"], "relationship_type": ""}} (use an empty string, not null, when the constraint is not on a relationship).
+10.3 For a relationship property, add {{"type": "EXISTENCE", "node_type": "", "property_names": ["<name>"], "relationship_type": "<REL_TYPE>"}}.
+10.4 Each EXISTENCE constraint must reference exactly one of node_type or relationship_type (non-empty), never both.
+10.5 Do not infer EXISTENCE from UNIQUENESS; they are independent (as in Neo4j Cypher constraints).
+10.6 EXISTENCE constraints must have exactly one property in "property_names" (composite existence is not supported).
+11. KEY CONSTRAINTS (optional, Neo4j NODE KEY / RELATIONSHIP KEY):
+11.1 Use KEY when properties must exist on every instance and together form the natural identifier (uniqueness + mandatory presence).
+11.2 Same wire shape as EXISTENCE: exactly one of node_type or relationship_type (non-empty), with the other as "".
+11.3 Do not combine UNIQUENESS and KEY on the same node or relationship type with the same properties.
+11.4 Do not infer KEY from UNIQUENESS alone; KEY implies required presence, unlike UNIQUENESS alone.
+11.5 For composite key (multiple properties), list all properties in "property_names". All must exist and the combination must be unique.
+11.6 Do not add EXISTENCE on a property already covered by a KEY constraint (KEY already implies mandatory presence).
+12. Never use double underscores (__) as a prefix or suffix in node labels or relationship types (e.g. __Person__ or __KNOWS__ are forbidden).
+
+Accepted property types are: BOOLEAN, DATE, DURATION, FLOAT, INTEGER, LIST,
+LOCAL_DATETIME, LOCAL_TIME, POINT, STRING, ZONED_DATETIME, ZONED_TIME.
+
+Return a valid JSON object that follows this precise structure:
+{{
+  "node_types": [
+    {{
+      "label": "Person",
+      "properties": [
+        {{
+          "name": "name",
+          "type": "STRING"
+        }},
+        {{
+          "name": "email",
+          "type": "STRING"
+        }},
+        {{
+          "name": "employee_id",
+          "type": "STRING"
+        }}
+      ]
+    }},
+    {{
+      "label": "Company",
+      "properties": [
+        {{
+          "name": "name",
+          "type": "STRING"
+        }}
+      ]
+    }}
+    ...
+  ],
+  "relationship_types": [
+    {{
+      "label": "WORKS_FOR"
+    }}
+    ...
+  ],
+  "patterns": [
+    {{"source": "Person", "relationship": "WORKS_FOR", "target": "Company"}},
+    ...
+  ],
+  "constraints": [
+    {{
+      "type": "UNIQUENESS",
+      "node_type": "Person",
+      "property_names": ["email"],
+      "relationship_type": ""
+    }},
+    {{
+      "type": "EXISTENCE",
+      "node_type": "Person",
+      "property_names": ["name"],
+      "relationship_type": ""
+    }},
+    {{
+      "type": "KEY",
+      "node_type": "Person",
+      "property_names": ["employee_id"],
+      "relationship_type": ""
+    }},
+    {{
+      "type": "UNIQUENESS",
+      "node_type": "",
+      "property_names": ["since"],
+      "relationship_type": "WORKS_FOR"
+    }},
+    ...
+  ]
+}}
+
+Examples:
+{examples}
+
+Input text:
+{text}
+"""
+    EXPECTED_INPUTS = ["text"]
+
+    def format(
+        self,
+        text: str = "",
+        examples: str = "",
+    ) -> str:
+        return super().format(text=text, examples=examples)

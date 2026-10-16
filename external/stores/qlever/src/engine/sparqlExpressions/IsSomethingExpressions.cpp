@@ -1,0 +1,126 @@
+// Copyright 2023 - 2026 The QLever Authors, in particular:
+//
+// 2023 Hannah Bast <bast@cs.uni-freiburg.de>, UFR
+// 2026 Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>, UFR
+//
+// UFR = University of Freiburg, Chair of Algorithms and Data Structures
+
+// You may not use this file except in compliance with the Apache 2.0 License,
+// which can be found in the `LICENSE` file at the root of the QLever project.
+
+#include "engine/sparqlExpressions/LiteralExpression.h"
+#include "engine/sparqlExpressions/NaryExpressionImpl.h"
+#include "engine/sparqlExpressions/SparqlExpressionValueGetters.h"
+
+namespace sparqlExpression {
+namespace detail {
+
+// Quick recap of how defining n-ary functions works in QLever.
+//
+// 1. Define a subclass of `SparqlExpression` (see `SparqlExpression.h`),
+//    called `...Expression`. For n-ary functions, make your life easier by
+//    using the generic `NARY` (defined in `NaryExpressionImpl.h`).
+//
+// 2. NARY takes two arguments: the number of arguments (n) and a template
+//    with the value getters for the arguments (one if all arguments are of
+//    the same type, otherwise exactly one for each argument) and a function
+//    to be applied to the results of the value getters.
+//
+// 3. Implement a function `make...Expression` that takes n arguments of type
+//    `SparqlExpression::Ptr` and returns a `unique_ptr` to a new instance of
+//    `...Expression` (`std::move` the arguments into the constructor). The
+//    function should be declared in `NaryExpression.h`.
+CPP_class_template(typename NaryOperation,
+                   prefilterExpressions::IsDatatype Datatype)(
+    requires(isOperation<NaryOperation>)) class IsDatatypeExpressionImpl
+    : public NaryExpression<NaryOperation> {
+ public:
+  using NaryExpression<NaryOperation>::NaryExpression;
+  std::vector<PrefilterExprVariablePair> getPrefilterExpressionForMetadata(
+      [[maybe_unused]] const LocalVocabContext& context,
+      [[maybe_unused]] bool isNegated) const override {
+    using namespace prefilterExpressions;
+    std::vector<PrefilterExprVariablePair> prefilterVec;
+    const auto& children = this->children();
+    AD_CORRECTNESS_CHECK(children.size() == 1);
+    const SparqlExpression* childExpr = children[0].get();
+    // `VariableExpression` (e.g. `isLiteral(?x)`).
+    std::optional<Variable> optVar = childExpr->getVariableOrNullopt();
+    if (optVar.has_value()) {
+      prefilterVec.emplace_back(
+          std::make_unique<IsDatatypeExpression<Datatype>>(), optVar.value());
+    }
+    return prefilterVec;
+  }
+};
+
+//______________________________________________________________________________
+// Expressions for the builtin functions `isIRI`, `isBlank`, `isLiteral`,
+// `isNumeric`, and the custom functions `ql:isEncodedIri` and `ql:isGeoPoint`.
+// Note that the value getters already return the correct `Id`, hence
+// `ql::identity`.
+template <typename Getter, prefilterExpressions::IsDatatype Datatype>
+using IsDtypeExpression =
+    IsDatatypeExpressionImpl<Operation<1, FV<ql::identity, Getter>>, Datatype>;
+
+using isLiteralExpression =
+    IsDtypeExpression<IsLiteralValueGetter,
+                      prefilterExpressions::IsDatatype::LITERAL>;
+using isNumericExpression =
+    IsDtypeExpression<IsNumericValueGetter,
+                      prefilterExpressions::IsDatatype::NUMERIC>;
+using isBlankExpression =
+    IsDtypeExpression<IsValueIdValueGetter<Datatype::BlankNodeIndex>,
+                      prefilterExpressions::IsDatatype::BLANK>;
+using isIriExpression =
+    IsDtypeExpression<IsIriValueGetter, prefilterExpressions::IsDatatype::IRI>;
+using isEncodedIriExpression =
+    IsDtypeExpression<IsValueIdValueGetter<Datatype::EncodedVal>,
+                      prefilterExpressions::IsDatatype::ENCODED_IRI>;
+
+using isGeoPointExpression =
+    IsDtypeExpression<IsValueIdValueGetter<Datatype::GeoPoint>,
+                      prefilterExpressions::IsDatatype::GEO_POINT>;
+
+//______________________________________________________________________________
+// The expression for `bound` is slightly different as `IsValidValueGetter`
+// returns a `bool` and not an `Id`.
+struct BoolToId {
+  Id operator()(bool b) const { return Id::makeFromBool(b); }
+};
+
+class BoundExpression : public NARY<1, FV<BoolToId, IsValidValueGetter>> {
+ public:
+  using NARY<1, FV<BoolToId, IsValidValueGetter>>::NARY;
+
+  // The result of `BOUND` is always a valid bool.
+  bool isResultAlwaysDefined(const VariableToColumnMap&) const override {
+    return true;
+  }
+};
+
+}  // namespace detail
+
+SparqlExpression::Ptr makeIsIriExpression(SparqlExpression::Ptr arg) {
+  return std::make_unique<detail::isIriExpression>(std::move(arg));
+}
+SparqlExpression::Ptr makeIsEncodedIriExpression(SparqlExpression::Ptr arg) {
+  return std::make_unique<detail::isEncodedIriExpression>(std::move(arg));
+}
+SparqlExpression::Ptr makeIsBlankExpression(SparqlExpression::Ptr arg) {
+  return std::make_unique<detail::isBlankExpression>(std::move(arg));
+}
+SparqlExpression::Ptr makeIsLiteralExpression(SparqlExpression::Ptr arg) {
+  return std::make_unique<detail::isLiteralExpression>(std::move(arg));
+}
+SparqlExpression::Ptr makeIsNumericExpression(SparqlExpression::Ptr arg) {
+  return std::make_unique<detail::isNumericExpression>(std::move(arg));
+}
+SparqlExpression::Ptr makeIsGeoPointExpression(SparqlExpression::Ptr arg) {
+  return std::make_unique<detail::isGeoPointExpression>(std::move(arg));
+}
+SparqlExpression::Ptr makeBoundExpression(SparqlExpression::Ptr arg) {
+  return std::make_unique<detail::BoundExpression>(std::move(arg));
+}
+
+}  // namespace sparqlExpression

@@ -1,0 +1,46 @@
+@prefix rr: <http://www.w3.org/ns/r2rml#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix fnml: <http://semweb.mmlab.be/ns/fnml#> .
+@prefix fno: <https://w3id.org/function/ontology#> .
+@prefix d2rq: <http://www.wiwiss.fu-berlin.de/suhl/bizer/D2RQ/0.1#> .
+@prefix rml: <http://semweb.mmlab.be/ns/rml#> .
+@prefix ql: <http://semweb.mmlab.be/ns/ql#> .
+@prefix : <http://mapping.example.com/> .
+@prefix rc: <http://example.com/> .
+@prefix rd: <https://example.org/> .
+@prefix idlab-fn: <https://w3id.org/imec/idlab/function#> .
+@prefix grel: <http://users.ugent.be/~bjdmeest/function/grel.ttl#> .
+
+:map_human_resources_000 rml:logicalSource :source_000 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "human_resources" ;
+	rr:subjectMap :s_000 ;
+	rr:predicateObjectMap :pom_000 .
+
+:source_000 rdf:type rml:LogicalSource ;
+	rml:source :database_000 ;
+	rml:query "SELECT * from OUR_TABLE" ;
+	rr:sqlVersion rr:SQL2008 ;
+	rml:referenceFormulation ql:CSV .
+
+:database_000 rdf:type d2rq:Database ;
+	d2rq:jdbcDSN "//1.2.3.4:6789" ;
+	d2rq:jdbcDriver "oracle.jdbc.driver.OracleDriver" ;
+	d2rq:username "TEST" ;
+	d2rq:password "test" .
+
+:s_000 rdf:type rr:SubjectMap ;
+	rr:template "https://example.org/person_{ID}" .
+
+:pom_000 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_000 ;
+	rr:objectMap :om_000 .
+
+:pm_000 rdf:type rr:PredicateMap ;
+	rr:constant rdf:type .
+
+:om_000 rdf:type rr:ObjectMap ;
+	rr:constant "http://example.com/Person" ;
+	rr:termType rr:IRI .
+

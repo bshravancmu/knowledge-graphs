@@ -1,0 +1,37 @@
+{#-
+  Jinja2 macros for rendering slots in a Pandera class-based model
+
+-#}
+{%- import 'enums.jinja2' as enum_macros -%}
+
+{%- macro id_slot_name_class_variable(cls) %}
+    _id_name : str = {% if cls.identifier_key_slot() %} '{{ cls.identifier_key_slot() }}' {% else %}None{% endif %}
+{%- endmacro -%}
+
+{%- macro slot_optional_start(field) -%}
+    {%- if (field.required() is none or field.required() is false) and (field.identifier() is not true) -%}
+        Optional[
+    {%- endif -%}
+{% endmacro %}
+
+{%- macro slot_optional_end(field) -%}
+    {%- if (field.required() is none or field.required() is false) and (field.identifier() is not true) -%}
+        ]
+    {%- endif -%}
+{%- endmacro -%}
+
+{%- macro render_slot(field, generator) -%}
+    "{{ field.name }}":{{ ' ' }}
+    {{- slot_optional_start(field) -}}
+    {{- field.range -}}
+    {{- slot_optional_end(field) -}},
+{%- endmacro -%}
+
+{#- Like render_slot, but converts *Struct references to pl.Struct(*Dict) so that
+    dict population (pass 2) does not require *Struct names to be in scope yet. -#}
+{%- macro render_slot_dict_range(field, generator) -%}
+    "{{ field.name }}":{{ ' ' }}
+    {{- slot_optional_start(field) -}}
+    {{- generator.dict_range(field.range) -}}
+    {{- slot_optional_end(field) -}},
+{%- endmacro -%}

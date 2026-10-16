@@ -1,0 +1,147 @@
+// Copyright 2022 - 2026 The QLever Authors, in particular:
+//
+// 2022 - 2025 Johannes Kalmbach <kalmbach@informatik.uni-freiburg.de>, UFR
+// 2025 - 2026 Christoph Ullinger <ullingec@informatik.uni-freiburg.de>, UFR
+//
+// UFR = University of Freiburg, Chair of Algorithms and Data Structures
+
+// You may not use this file except in compliance with the Apache 2.0 License,
+// which can be found in the `LICENSE` file at the root of the QLever project.
+
+#include <absl/strings/str_cat.h>
+#include <gmock/gmock.h>
+
+#include "util/BitUtils.h"
+#include "util/GTestHelpers.h"
+
+namespace {
+using namespace ad_utility;
+
+// _____________________________________________________________________________
+TEST(BitUtils, bitMaskForLowerBits) {
+  static_assert(bitMaskForLowerBits(0) == 0);
+  static_assert(bitMaskForLowerBits(1) == 1);
+  static_assert(bitMaskForLowerBits(2) == 3);
+
+  for (size_t i = 0; i < 64; ++i) {
+    auto expected = static_cast<uint64_t>(std::pow(2, i)) - 1;
+    ASSERT_EQ(bitMaskForLowerBits(i), expected);
+  }
+  ASSERT_EQ(bitMaskForLowerBits(64), std::numeric_limits<uint64_t>::max());
+
+  for (size_t i = 65; i < 2048; ++i) {
+    AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+        bitMaskForLowerBits(i),
+        ::testing::HasSubstr(
+            absl::StrCat("mask for more than 64 bits required, but was ", i)),
+        ad_utility::Exception);
+  }
+}
+
+// _____________________________________________________________________________
+TEST(BitUtils, bitMaskForHigherBits) {
+  constexpr static auto max = std::numeric_limits<uint64_t>::max();
+  static_assert(bitMaskForHigherBits(0) == 0);
+  static_assert(bitMaskForHigherBits(64) == max);
+  static_assert(bitMaskForHigherBits(63) == max - 1);
+  static_assert(bitMaskForHigherBits(62) == max - 3);
+
+  for (size_t i = 0; i <= 64; ++i) {
+    auto expected = max - bitMaskForLowerBits(64 - i);
+    ASSERT_EQ(bitMaskForHigherBits(i), expected);
+  }
+
+  // NOTE: `bitMaskForHigherBits` forwards `64 - i` to `bitMaskForLowerBits`,
+  // so the error message reports that (underflowed) value.
+  for (size_t i = 65; i < 2048; ++i) {
+    AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(
+        bitMaskForHigherBits(i),
+        ::testing::HasSubstr(absl::StrCat(
+            "mask for more than 64 bits required, but was ", uint64_t{64} - i)),
+        ad_utility::Exception);
+  }
+}
+
+// _____________________________________________________________________________
+TEST(BitUtils, unsignedTypeForNumberOfBits) {
+  static_assert(std::is_same_v<uint8_t, unsignedTypeForNumberOfBits<0>>);
+  static_assert(std::is_same_v<uint8_t, unsignedTypeForNumberOfBits<1>>);
+  static_assert(std::is_same_v<uint8_t, unsignedTypeForNumberOfBits<7>>);
+  static_assert(std::is_same_v<uint8_t, unsignedTypeForNumberOfBits<8>>);
+  static_assert(std::is_same_v<uint16_t, unsignedTypeForNumberOfBits<9>>);
+  static_assert(std::is_same_v<uint16_t, unsignedTypeForNumberOfBits<16>>);
+  static_assert(std::is_same_v<uint32_t, unsignedTypeForNumberOfBits<17>>);
+  static_assert(std::is_same_v<uint32_t, unsignedTypeForNumberOfBits<32>>);
+  static_assert(std::is_same_v<uint64_t, unsignedTypeForNumberOfBits<33>>);
+  static_assert(std::is_same_v<uint64_t, unsignedTypeForNumberOfBits<64>>);
+}
+
+// _____________________________________________________________________________
+TEST(BitUtils, bitMaskSize) {
+  // Test that (a) bitMaskSizeForValue returns the right result and (b) can be
+  // evaluated at compile time.
+  static_assert(bitMaskSizeForValue(0) == 0);
+  static_assert(bitMaskSizeForValue(1) == 1);
+  static_assert(bitMaskSizeForValue(2) == 2);
+  static_assert(bitMaskSizeForValue(3) == 2);
+  static_assert(bitMaskSizeForValue(4) == 3);
+  static_assert(bitMaskSizeForValue(-1ull) == 64);
+  static_assert(bitMaskSizeForValue(std::numeric_limits<uint64_t>::max()) ==
+                64);
+  // Also some runtime tests to make codecov happy, who doesn't see the
+  // static_assert because they happen at compile time.
+  ASSERT_EQ(bitMaskSizeForValue(0), 0);
+  ASSERT_EQ(bitMaskSizeForValue(1), 1);
+  ASSERT_EQ(bitMaskSizeForValue(4), 3);
+}
+
+// _____________________________________________________________________________
+TEST(BitUtils, forEachSetBit) {
+  auto collect = [](uint64_t bits) {
+    std::vector<size_t> result;
+    forEachSetBit(bits, [&result](size_t idx) {
+      result.push_back(idx);
+      return true;
+    });
+    return result;
+  };
+
+  EXPECT_THAT(collect(0), ::testing::IsEmpty());
+  EXPECT_THAT(collect(0b1011), ::testing::ElementsAre(0, 1, 3));
+  EXPECT_THAT(collect(uint64_t{1} << 63), ::testing::ElementsAre(63));
+
+  // Stops early when `fn` returns `false`.
+  std::vector<size_t> stoppedEarly;
+  forEachSetBit(0b1111, [&stoppedEarly](size_t idx) {
+    stoppedEarly.push_back(idx);
+    return idx < 1;
+  });
+  EXPECT_THAT(stoppedEarly, ::testing::ElementsAre(0, 1));
+}
+
+// _____________________________________________________________________________
+TEST(BitUtils, alignUp) {
+  // An offset that already has the alignment is unchanged, everything in
+  // between is rounded up to the next multiple.
+  static_assert(alignUp(0, 8) == 0);
+  static_assert(alignUp(1, 8) == 8);
+  static_assert(alignUp(8, 8) == 8);
+  static_assert(alignUp(9, 8) == 16);
+  // An alignment of one never pads.
+  for (uint64_t offset : {uint64_t{0}, uint64_t{1}, uint64_t{12345}}) {
+    EXPECT_EQ(alignUp(offset, 1), offset);
+  }
+  // The alignment may also be large.
+  EXPECT_EQ(alignUp(1, uint64_t{1} << 40), uint64_t{1} << 40);
+
+  // An alignment that is not a power of two is a precondition violation, which
+  // is only checked if the expensive checks are enabled.
+  if constexpr (ad_utility::areExpensiveChecksEnabled) {
+    for (size_t alignment : {size_t{0}, size_t{3}, size_t{12}}) {
+      AD_EXPECT_THROW_WITH_MESSAGE(alignUp(16, alignment),
+                                   ::testing::HasSubstr("has_single_bit"));
+    }
+  }
+}
+
+}  // namespace

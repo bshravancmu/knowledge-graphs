@@ -1,0 +1,71 @@
+@prefix rr: <http://www.w3.org/ns/r2rml#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix fnml: <http://semweb.mmlab.be/ns/fnml#> .
+@prefix fno: <https://w3id.org/function/ontology#> .
+@prefix d2rq: <http://www.wiwiss.fu-berlin.de/suhl/bizer/D2RQ/0.1#> .
+@prefix void: <http://rdfs.org/ns/void#> .
+@prefix dc: <http://purl.org/dc/terms/> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix : <http://mapping.example.com/> .
+
+:map_student_000 rr:logicalTable :source_000 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "student" ;
+	rr:subjectMap :s_000 ;
+	rr:predicateObjectMap :pom_000, :pom_001 .
+
+:source_000 rdf:type rr:LogicalTable ;
+	rr:tableName "Student" .
+
+:s_000 rdf:type rr:SubjectMap ;
+	rr:template "http://example.com/resource/student_{ID}" .
+
+:pom_000 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_000 ;
+	rr:objectMap :om_000 .
+
+:pm_000 rdf:type rr:PredicateMap ;
+	rr:constant foaf:name .
+
+:om_000 rdf:type rr:ObjectMap ;
+	rr:column "Name" ;
+	rr:termType rr:Literal .
+
+:pom_001 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_001 ;
+	rr:objectMap :om_002 .
+
+:pm_001 rdf:type rr:PredicateMap ;
+	rr:constant <http://example.com/ontology/practises> .
+
+:map_sport_000 rr:logicalTable :source_001 ;
+	rdf:type rr:TriplesMap ;
+	rdfs:label "sport" ;
+	rr:subjectMap :s_001 ;
+	rr:predicateObjectMap :pom_002 .
+
+:source_001 rdf:type rr:LogicalTable ;
+	rr:tableName "Sport" .
+
+:s_001 rdf:type rr:SubjectMap ;
+	rr:template "http://example.com/resource/sport_{ID}" .
+
+:pom_002 rdf:type rr:PredicateObjectMap ;
+	rr:predicateMap :pm_002 ;
+	rr:objectMap :om_001 .
+
+:pm_002 rdf:type rr:PredicateMap ;
+	rr:constant rdfs:label .
+
+:om_001 rdf:type rr:ObjectMap ;
+	rr:column "Name" ;
+	rr:termType rr:Literal .
+
+:om_002 rdf:type rr:ObjectMap ;
+	rr:parentTriplesMap :map_sport_000 ;
+	rr:joinCondition :jc_000 .
+
+:jc_000 rr:child "Sport" ;
+	rr:parent "Name" .
+

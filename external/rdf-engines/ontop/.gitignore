@@ -1,0 +1,52 @@
+# OS X generated files
+.DS_Store
+
+# Maven generated file
+target
+*.versionsBackup
+*.releaseBackup
+release.properties
+
+# gradle generated files
+.gradle
+
+# Eclipse generated files
+.classpath
+.projecttmp.*
+.project
+.pydevproject
+bin
+.settings
+
+# Intellij generated files
+*.iml
+.idea
+
+# Visual Studio Code
+.vscode
+
+# Protege generated files
+catalog-v*.xml
+
+# Temp files
+*~
+\#*
+tmp.*
+**.swp
+**.swo
+
+# Antlr generated files
+*.tokens
+
+# Ontop specific
+plugin-runtime
+
+ontop-optique-test
+tmp
+*.log
+
+.run
+
+# vi
+*.sw[klmnop]
+localtest

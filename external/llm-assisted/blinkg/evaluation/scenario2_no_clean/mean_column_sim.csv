@@ -1,0 +1,61 @@
+column,LLM,mean_similarity
+Data Reference,deepseek,0.8853938954843567
+Data Reference,gemini,0.8230845163624793
+Data Reference,gpt4o,0.9168736548946058
+Data Reference,llama,0.8488564066974771
+Data Reference,mixtral,0.8890354670984824
+Data Reference,o3,0.7817393400300952
+Datatype,deepseek,0.6446873169277981
+Datatype,gemini,0.660455613761889
+Datatype,gpt4o,0.6806873578646994
+Datatype,llama,0.5738898525787465
+Datatype,mixtral,0.5482281579997569
+Datatype,o3,0.5084371246582949
+Entity Class,deepseek,0.7501166449391449
+Entity Class,gemini,0.8540372275300023
+Entity Class,gpt4o,0.9499360221670329
+Entity Class,llama,0.8532686587069535
+Entity Class,mixtral,0.8606110032270422
+Entity Class,o3,0.8082350537549008
+Function Name,deepseek,0.1887226098872445
+Function Name,gemini,0.11189014085961052
+Function Name,gpt4o,0.18740588508923126
+Function Name,llama,0.09932758798533259
+Function Name,mixtral,0.08466523920609914
+Function Name,o3,0.1397132471996812
+Function Output,deepseek,0.40866369471427993
+Function Output,gemini,0.3378226963833888
+Function Output,gpt4o,0.32047663175030866
+Function Output,llama,0.19396857050281135
+Function Output,mixtral,0.21297050901354084
+Function Output,o3,0.1902980497374611
+Join,deepseek,0.4685477460544832
+Join,gemini,0.5495942854305246
+Join,gpt4o,0.582118675655839
+Join,llama,0.1590686318708031
+Join,mixtral,0.21610275355383632
+Join,o3,0.4810456140885142
+Ontology Property,deepseek,0.929702086019033
+Ontology Property,gemini,0.8473269544363452
+Ontology Property,gpt4o,0.9581092684376299
+Ontology Property,llama,0.9141211713989567
+Ontology Property,mixtral,0.915722543033853
+Ontology Property,o3,0.8417059764249647
+Rel. Entity Class,deepseek,0.3774301822149961
+Rel. Entity Class,gemini,0.71533733529263
+Rel. Entity Class,gpt4o,0.7450468438951794
+Rel. Entity Class,llama,0.22300451031481613
+Rel. Entity Class,mixtral,0.31628161425654217
+Rel. Entity Class,o3,0.6278605899248869
+Related Entity Class,deepseek,0.1231144741177558
+Related Entity Class,gemini,0.1231144741177558
+Related Entity Class,gpt4o,0.1231144741177558
+Related Entity Class,llama,0.1231144741177558
+Related Entity Class,mixtral,0.1231144741177558
+Related Entity Class,o3,0.1231144741177558
+Subject Generation,deepseek,0.273423871813436
+Subject Generation,gemini,0.5568187344860628
+Subject Generation,gpt4o,0.6750834744323245
+Subject Generation,llama,0.6190670218388626
+Subject Generation,mixtral,0.4227025461834249
+Subject Generation,o3,0.3828725116283236

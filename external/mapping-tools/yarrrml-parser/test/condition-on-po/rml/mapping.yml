@@ -1,0 +1,17 @@
+prefixes:
+  grel: http://users.ugent.be/~bjdmeest/function/grel.ttl#
+  idlab-fn: https://w3id.org/imec/idlab/function#
+
+mappings:
+  person:
+    sources:
+     - [test.csv~csv]
+    subject: http://example.org/$(firstname)
+    predicateobjects:
+     - predicates: foaf:firstName
+       objects: $(firstname)
+       condition:
+        function: idlab-fn:equal
+        parameters:
+         - [grel:valueParameter, $(firstname)]
+         - [grel:valueParameter2, "test"]

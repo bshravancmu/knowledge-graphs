@@ -1,0 +1,456 @@
+#  Copyright (c) "Neo4j"
+#  Neo4j Sweden AB [https://neo4j.com]
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#      https://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from neo4j_graphrag.exceptions import InvalidHybridSearchRankerError
+from neo4j_graphrag.filters import FilterClassification
+from neo4j_graphrag.neo4j_queries import (
+    _build_search_clause_vector_query,
+    _build_hybrid_search_clause_query,
+    _build_hybrid_search_clause_query_linear,
+    get_query_tail,
+    get_search_query,
+    _get_hybrid_query_linear,
+)
+from neo4j_graphrag.types import EntityType, SearchType
+
+
+def test_vector_search_basic() -> None:
+    expected = (
+        "CALL db.index.vector.queryNodes($vector_index_name, $top_k * $effective_search_ratio, $query_vector) "
+        "YIELD node, score "
+        "WITH node, score LIMIT $top_k "
+        "RETURN node { .*, `None`: null } AS node, labels(node) AS nodeLabels, elementId(node) AS elementId, elementId(node) AS id, score"
+    )
+    result, params = get_search_query(SearchType.VECTOR)
+    assert result.strip() == expected.strip()
+    assert params == {}
+
+
+def test_rel_vector_search_basic() -> None:
+    expected = (
+        "CALL db.index.vector.queryRelationships($vector_index_name, $top_k * $effective_search_ratio, $query_vector) "
+        "YIELD relationship, score "
+        "WITH relationship, score LIMIT $top_k "
+        "RETURN relationship { .*, `None`: null } AS relationship, type(relationship) as relationshipType, "
+        "elementId(relationship) AS elementId, elementId(relationship) AS id, score"
+    )
+    result, params = get_search_query(SearchType.VECTOR, EntityType.RELATIONSHIP)
+    assert result.strip() == expected.strip()
+    assert params == {}
+
+
+def test_rel_vector_search_filters_err() -> None:
+    with pytest.raises(Exception) as exc_info:
+        get_search_query(
+            SearchType.VECTOR, EntityType.RELATIONSHIP, filters={"filter": None}
+        )
+    assert str(exc_info.value) == "Filters are not supported for relationship indexes"
+
+
+def test_rel_vector_search_hybrid_err() -> None:
+    with pytest.raises(Exception) as exc_info:
+        get_search_query(SearchType.HYBRID, EntityType.RELATIONSHIP)
+    assert (
+        str(exc_info.value) == "Hybrid search is not supported for relationship indexes"
+    )
+
+
+def test_hybrid_search_basic() -> None:
+    expected = (
+        "CALL { "
+        "CALL db.index.vector.queryNodes($vector_index_name, $top_k * $effective_search_ratio, $query_vector) "
+        "YIELD node, score "
+        "WITH node, score LIMIT $top_k "
+        "WITH collect({node:node, score:score}) AS nodes, max(score) AS vector_index_max_score "
+        "UNWIND nodes AS n "
+        "RETURN n.node AS node, (n.score / vector_index_max_score) AS score UNION "
+        "CALL db.index.fulltext.queryNodes($fulltext_index_name, $query_text, {limit: $top_k}) "
+        "YIELD node, score "
+        "WITH collect({node:node, score:score}) AS nodes, max(score) AS ft_index_max_score "
+        "UNWIND nodes AS n "
+        "RETURN n.node AS node, (n.score / ft_index_max_score) AS score "
+        "} "
+        "WITH node, max(score) AS score ORDER BY score DESC, elementId(node) LIMIT $top_k "
+        "RETURN node { .*, `None`: null } AS node, labels(node) AS nodeLabels, elementId(node) AS elementId, elementId(node) AS id, score"
+    )
+    result, _ = get_search_query(SearchType.HYBRID)
+    assert result.strip() == expected.strip()
+
+
+def test_vector_search_with_properties() -> None:
+    properties = ["name", "age"]
+    expected = (
+        "CALL db.index.vector.queryNodes($vector_index_name, $top_k * $effective_search_ratio, $query_vector) "
+        "YIELD node, score "
+        "WITH node, score LIMIT $top_k "
+        "RETURN node {.name, .age} AS node, labels(node) AS nodeLabels, elementId(node) AS elementId, elementId(node) AS id, score"
+    )
+    result, _ = get_search_query(SearchType.VECTOR, return_properties=properties)
+    assert result.strip() == expected.strip()
+
+
+def test_vector_search_with_retrieval_query() -> None:
+    retrieval_query = "MATCH (n) RETURN n LIMIT 10"
+    expected = (
+        "CALL db.index.vector.queryNodes($vector_index_name, $top_k * $effective_search_ratio, $query_vector) "
+        "YIELD node, score "
+        "WITH node, score LIMIT $top_k " + retrieval_query
+    )
+    result, _ = get_search_query(SearchType.VECTOR, retrieval_query=retrieval_query)
+    assert result.strip() == expected.strip()
+
+
+@patch("neo4j_graphrag.neo4j_queries.get_metadata_filter", return_value=["True", {}])
+def test_vector_search_with_filters(_mock: Any) -> None:
+    expected = (
+        "MATCH (node:`Label`) "
+        "WHERE node.`vector` IS NOT NULL "
+        "AND size(node.`vector`) = toInteger($embedding_dimension)"
+        " AND (True) "
+        "WITH node, "
+        "vector.similarity.cosine(node.`vector`, $query_vector) AS score "
+        "ORDER BY score DESC, elementId(node) LIMIT $top_k "
+        "RETURN node { .*, `vector`: null } AS node, labels(node) AS nodeLabels, elementId(node) AS elementId, elementId(node) AS id, score"
+    )
+    result, params = get_search_query(
+        SearchType.VECTOR,
+        node_label="Label",
+        embedding_node_property="vector",
+        embedding_dimension=1,
+        filters={"field": "value"},
+    )
+    assert result.strip() == expected.strip()
+    assert params == {"embedding_dimension": 1}
+
+
+@patch(
+    "neo4j_graphrag.neo4j_queries.get_metadata_filter",
+    return_value=["True", {"param": "value"}],
+)
+def test_vector_search_with_params_from_filters(_mock: Any) -> None:
+    expected = (
+        "MATCH (node:`Label`) "
+        "WHERE node.`vector` IS NOT NULL "
+        "AND size(node.`vector`) = toInteger($embedding_dimension)"
+        " AND (True) "
+        "WITH node, "
+        "vector.similarity.cosine(node.`vector`, $query_vector) AS score "
+        "ORDER BY score DESC, elementId(node) LIMIT $top_k "
+        "RETURN node { .*, `vector`: null } AS node, labels(node) AS nodeLabels, elementId(node) AS elementId, elementId(node) AS id, score"
+    )
+    result, params = get_search_query(
+        SearchType.VECTOR,
+        node_label="Label",
+        embedding_node_property="vector",
+        embedding_dimension=1,
+        filters={"field": "value"},
+    )
+    assert result.strip() == expected.strip()
+    assert params == {"embedding_dimension": 1, "param": "value"}
+
+
+def test_hybrid_search_with_retrieval_query() -> None:
+    retrieval_query = "MATCH (n) RETURN n LIMIT 10"
+    expected = (
+        "CALL { "
+        "CALL db.index.vector.queryNodes($vector_index_name, $top_k * $effective_search_ratio, $query_vector) "
+        "YIELD node, score "
+        "WITH node, score LIMIT $top_k "
+        "WITH collect({node:node, score:score}) AS nodes, max(score) AS vector_index_max_score "
+        "UNWIND nodes AS n "
+        "RETURN n.node AS node, (n.score / vector_index_max_score) AS score UNION "
+        "CALL db.index.fulltext.queryNodes($fulltext_index_name, $query_text, {limit: $top_k}) "
+        "YIELD node, score "
+        "WITH collect({node:node, score:score}) AS nodes, max(score) AS ft_index_max_score "
+        "UNWIND nodes AS n "
+        "RETURN n.node AS node, (n.score / ft_index_max_score) AS score "
+        "} "
+        "WITH node, max(score) AS score ORDER BY score DESC, elementId(node) LIMIT $top_k "
+        + retrieval_query
+    )
+    result, _ = get_search_query(SearchType.HYBRID, retrieval_query=retrieval_query)
+    assert result.strip() == expected.strip()
+
+
+def test_hybrid_search_with_properties() -> None:
+    properties = ["name", "age"]
+    expected = (
+        "CALL { "
+        "CALL db.index.vector.queryNodes($vector_index_name, $top_k * $effective_search_ratio, $query_vector) "
+        "YIELD node, score "
+        "WITH node, score LIMIT $top_k "
+        "WITH collect({node:node, score:score}) AS nodes, max(score) AS vector_index_max_score "
+        "UNWIND nodes AS n "
+        "RETURN n.node AS node, (n.score / vector_index_max_score) AS score UNION "
+        "CALL db.index.fulltext.queryNodes($fulltext_index_name, $query_text, {limit: $top_k}) "
+        "YIELD node, score "
+        "WITH collect({node:node, score:score}) AS nodes, max(score) AS ft_index_max_score "
+        "UNWIND nodes AS n "
+        "RETURN n.node AS node, (n.score / ft_index_max_score) AS score "
+        "} "
+        "WITH node, max(score) AS score ORDER BY score DESC, elementId(node) LIMIT $top_k "
+        "RETURN node {.name, .age} AS node, labels(node) AS nodeLabels, elementId(node) AS elementId, elementId(node) AS id, score"
+    )
+    result, _ = get_search_query(SearchType.HYBRID, return_properties=properties)
+    assert result.strip() == expected.strip()
+
+
+def test_get_query_tail_with_retrieval_query() -> None:
+    retrieval_query = "MATCH (n) RETURN n LIMIT 10"
+    expected = retrieval_query
+    result = get_query_tail(retrieval_query=retrieval_query)
+    assert result.strip() == expected.strip()
+
+
+def test_get_query_tail_with_properties() -> None:
+    properties = ["name", "age"]
+    expected = "RETURN node {.name, .age} AS node, labels(node) AS nodeLabels, elementId(node) AS elementId, elementId(node) AS id, score"
+    result = get_query_tail(return_properties=properties)
+    assert result.strip() == expected.strip()
+
+
+def test_get_query_tail_with_fallback() -> None:
+    fallback = "HELLO"
+    expected = fallback
+    result = get_query_tail(fallback_return=fallback)
+    assert result.strip() == expected.strip()
+
+
+def test_get_query_tail_ordering_all() -> None:
+    retrieval_query = "MATCH (n) RETURN n LIMIT 10"
+    properties = ["name", "age"]
+    fallback = "HELLO"
+
+    expected = retrieval_query
+    result = get_query_tail(
+        retrieval_query=retrieval_query,
+        return_properties=properties,
+        fallback_return=fallback,
+    )
+    assert result.strip() == expected.strip()
+
+
+def test_get_query_tail_ordering_no_retrieval_query() -> None:
+    properties = ["name", "age"]
+    fallback = "HELLO"
+
+    expected = "RETURN node {.name, .age} AS node, labels(node) AS nodeLabels, elementId(node) AS elementId, elementId(node) AS id, score"
+    result = get_query_tail(
+        return_properties=properties,
+        fallback_return=fallback,
+    )
+    assert result.strip() == expected.strip()
+
+
+def test_get_hybrid_query_linear_with_alpha() -> None:
+    query = _get_hybrid_query_linear(neo4j_version_is_5_23_or_above=True, alpha=0.7)
+    vector_substr = "rawScore * $alpha"
+    ft_substr = "rawScore * (1 - $alpha)"
+    assert vector_substr in query
+    assert ft_substr in query
+
+
+def test_invalid_hybrid_search_ranker_error() -> None:
+    with pytest.raises(InvalidHybridSearchRankerError):
+        get_search_query(SearchType.HYBRID, ranker="invalid")
+
+
+class TestBuildSearchClauseVectorQuery:
+    def test_no_filters(self) -> None:
+        query, params = _build_search_clause_vector_query(
+            index_name="my_index",
+            node_label="Document",
+        )
+        expected = (
+            "CYPHER 25 MATCH (node:`Document`) "
+            "SEARCH node IN (VECTOR INDEX `my_index` "
+            "FOR $query_vector "
+            "LIMIT $top_k * $effective_search_ratio) "
+            "SCORE AS score "
+            "WITH node, score ORDER BY score DESC LIMIT $top_k"
+        )
+        assert query == expected
+        assert params == {}
+
+    def test_no_filters_with_none_classification(self) -> None:
+        query, params = _build_search_clause_vector_query(
+            index_name="my_index",
+            node_label="Document",
+            filter_classification=None,
+        )
+        assert query.startswith("CYPHER 25 ")
+        assert "WHERE" not in query
+        assert params == {}
+
+    def test_empty_filter_classification(self) -> None:
+        classification = FilterClassification(is_compatible=True)
+        query, params = _build_search_clause_vector_query(
+            index_name="my_index",
+            node_label="Document",
+            filter_classification=classification,
+        )
+        assert query.startswith("CYPHER 25 ")
+        assert "WHERE" not in query
+        assert params == {}
+
+    def test_with_where_predicates(self) -> None:
+        classification = FilterClassification(
+            is_compatible=True,
+            cypher_where_clause="node.`year` = $_e_year",
+            params={"_e_year": 2024},
+        )
+        query, params = _build_search_clause_vector_query(
+            index_name="my_index",
+            node_label="Document",
+            filter_classification=classification,
+        )
+        expected = (
+            "CYPHER 25 MATCH (node:`Document`) "
+            "SEARCH node IN (VECTOR INDEX `my_index` "
+            "FOR $query_vector "
+            "WHERE node.`year` = $_e_year "
+            "LIMIT $top_k * $effective_search_ratio) "
+            "SCORE AS score "
+            "WITH node, score ORDER BY score DESC LIMIT $top_k"
+        )
+        assert query == expected
+        assert params == {"_e_year": 2024}
+
+    def test_with_multiple_predicates(self) -> None:
+        classification = FilterClassification(
+            is_compatible=True,
+            cypher_where_clause="node.`year` >= $_e_year AND node.`status` = $_e_status",
+            params={"_e_year": 2020, "_e_status": "active"},
+        )
+        query, params = _build_search_clause_vector_query(
+            index_name="vector_idx",
+            node_label="Article",
+            filter_classification=classification,
+        )
+        assert "WHERE node.`year` >= $_e_year AND node.`status` = $_e_status" in query
+        assert params == {"_e_year": 2020, "_e_status": "active"}
+
+    def test_backtick_escaping_in_label_and_index(self) -> None:
+        query, _ = _build_search_clause_vector_query(
+            index_name="my-special-index",
+            node_label="My Label",
+        )
+        assert "`my-special-index`" in query
+        assert "`My Label`" in query
+
+    def test_query_structure_with_filters(self) -> None:
+        """Verify MATCH ... SEARCH ... FOR ... WHERE ... LIMIT ... SCORE order."""
+        classification = FilterClassification(
+            is_compatible=True,
+            cypher_where_clause="node.`x` > $_e_x",
+            params={"_e_x": 5},
+        )
+        query, _ = _build_search_clause_vector_query(
+            index_name="idx",
+            node_label="N",
+            filter_classification=classification,
+        )
+        # Verify ordering of clauses
+        match_pos = query.index("MATCH")
+        search_pos = query.index("SEARCH")
+        for_pos = query.index("FOR")
+        where_pos = query.index("WHERE")
+        limit_pos = query.index("LIMIT")
+        score_pos = query.index("SCORE")
+        assert match_pos < search_pos < for_pos < where_pos < limit_pos < score_pos
+
+    def test_filter_params_empty_dict(self) -> None:
+        classification = FilterClassification(
+            is_compatible=True,
+            cypher_where_clause="node.`a` = $_e_a",
+            params={},
+        )
+        _, params = _build_search_clause_vector_query(
+            index_name="idx",
+            node_label="N",
+            filter_classification=classification,
+        )
+        assert params == {}
+
+
+class TestBuildHybridSearchClauseQuery:
+    def test_basic_structure(self) -> None:
+        query = _build_hybrid_search_clause_query(
+            vector_index_name="vec_idx",
+            fulltext_index_name="ft_idx",
+            node_label="Document",
+        )
+        assert query.startswith("CYPHER 25 ")
+        assert "CALL () {" in query
+        assert "UNION" in query
+        assert "VECTOR INDEX `vec_idx`" in query
+        assert "db.index.fulltext.queryNodes" in query
+        assert "`Document`" in query
+        assert "max(score) AS score" in query
+        assert "ORDER BY score DESC" in query
+
+    def test_vector_uses_search_fulltext_uses_procedure(self) -> None:
+        query = _build_hybrid_search_clause_query(
+            vector_index_name="v",
+            fulltext_index_name="f",
+            node_label="N",
+        )
+        assert "SEARCH node IN (VECTOR INDEX" in query
+        assert "FULLTEXT INDEX" not in query
+        assert "db.index.fulltext.queryNodes" in query
+        assert "$query_vector" in query
+        assert "$query_text" in query
+        assert "vector_index_max_score" in query
+        assert "ft_index_max_score" in query
+
+    def test_backtick_escaping(self) -> None:
+        query = _build_hybrid_search_clause_query(
+            vector_index_name="my-vec",
+            fulltext_index_name="my-ft",
+            node_label="My Label",
+        )
+        assert "`my-vec`" in query
+        assert "`My Label`" in query
+
+
+class TestBuildHybridSearchClauseQueryLinear:
+    def test_basic_structure(self) -> None:
+        query = _build_hybrid_search_clause_query_linear(
+            vector_index_name="vec_idx",
+            fulltext_index_name="ft_idx",
+            node_label="Document",
+        )
+        assert "CALL () {" in query
+        assert "UNION" in query
+        assert "$alpha" in query
+        assert "(1 - $alpha)" in query
+        assert "sum(score)" in query
+        assert "ORDER BY score DESC" in query
+
+    def test_vector_uses_search_fulltext_uses_procedure(self) -> None:
+        query = _build_hybrid_search_clause_query_linear(
+            vector_index_name="v",
+            fulltext_index_name="f",
+            node_label="N",
+        )
+        assert "SEARCH node IN (VECTOR INDEX" in query
+        assert "FULLTEXT INDEX" not in query
+        assert "db.index.fulltext.queryNodes" in query
+        assert "$query_vector" in query
+        assert "$query_text" in query

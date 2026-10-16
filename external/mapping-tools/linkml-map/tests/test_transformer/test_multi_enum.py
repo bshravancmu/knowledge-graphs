@@ -1,0 +1,448 @@
+"""Tests for enum mapping on slots with multiple enum ranges via any_of.
+
+Verifies that when a source slot uses ``any_of`` to specify multiple enum
+ranges, the transformer correctly iterates enum derivations in order and
+maps permissible values across all enums.
+
+See: https://github.com/linkml/linkml-map/issues/146
+     https://github.com/linkml/linkml/issues/2128
+"""
+
+import copy
+
+import pytest
+from linkml_runtime import SchemaView
+
+from linkml_map.transformer.errors import TransformationError
+from linkml_map.transformer.object_transformer import ObjectTransformer
+
+SOURCE_SCHEMA = """\
+id: https://example.org/lights-source
+name: lights-source
+prefixes:
+  linkml: https://w3id.org/linkml/
+imports:
+  - linkml:types
+enums:
+  PrimaryColors:
+    permissible_values:
+      light_red:
+      dark_red:
+      light_green:
+      dark_green:
+      light_blue:
+      dark_blue:
+  SecondaryColors:
+    permissible_values:
+      light_cyan:
+      dark_cyan:
+      light_magenta:
+      dark_magenta:
+  Missingness:
+    permissible_values:
+      not_available:
+      other:
+classes:
+  Light:
+    attributes:
+      id:
+        identifier: true
+        range: string
+      color:
+        any_of:
+          - range: PrimaryColors
+          - range: SecondaryColors
+          - range: Missingness
+      colors:
+        multivalued: true
+        any_of:
+          - range: PrimaryColors
+          - range: SecondaryColors
+          - range: Missingness
+  Container:
+    tree_root: true
+    attributes:
+      lights:
+        range: Light
+        multivalued: true
+        inlined_as_list: true
+"""
+
+TARGET_SCHEMA = """\
+id: https://example.org/lights-target
+name: lights-target
+prefixes:
+  linkml: https://w3id.org/linkml/
+imports:
+  - linkml:types
+enums:
+  SimplePrimary:
+    permissible_values:
+      red:
+      green:
+      blue:
+  SimpleSecondary:
+    permissible_values:
+      cyan:
+      magenta:
+  MissingnessTarget:
+    permissible_values:
+      na:
+      oth:
+classes:
+  Light:
+    attributes:
+      id:
+        identifier: true
+        range: string
+      color:
+        any_of:
+          - range: SimplePrimary
+          - range: SimpleSecondary
+          - range: MissingnessTarget
+      colors:
+        multivalued: true
+        any_of:
+          - range: SimplePrimary
+          - range: SimpleSecondary
+          - range: MissingnessTarget
+  Container:
+    tree_root: true
+    attributes:
+      lights:
+        range: Light
+        multivalued: true
+        inlined_as_list: true
+"""
+
+TRANSFORM_SPEC = {
+    "class_derivations": {
+        "Light": {
+            "populated_from": "Light",
+            "slot_derivations": {
+                "id": {},
+                "color": {"populated_from": "color"},
+                "colors": {"populated_from": "colors"},
+            },
+        },
+        "Container": {
+            "populated_from": "Container",
+            "slot_derivations": {
+                "lights": {"populated_from": "lights"},
+            },
+        },
+    },
+    "enum_derivations": {
+        "SimplePrimary": {
+            "name": "SimplePrimary",
+            "populated_from": "PrimaryColors",
+            "permissible_value_derivations": {
+                "red": {
+                    "name": "red",
+                    "sources": ["light_red", "dark_red"],
+                },
+                "green": {
+                    "name": "green",
+                    "sources": ["light_green", "dark_green"],
+                },
+                "blue": {
+                    "name": "blue",
+                    "sources": ["light_blue", "dark_blue"],
+                },
+            },
+        },
+        "SimpleSecondary": {
+            "name": "SimpleSecondary",
+            "populated_from": "SecondaryColors",
+            "permissible_value_derivations": {
+                "cyan": {
+                    "name": "cyan",
+                    "sources": ["light_cyan", "dark_cyan"],
+                },
+                "magenta": {
+                    "name": "magenta",
+                    "sources": ["light_magenta", "dark_magenta"],
+                },
+            },
+        },
+        "MissingnessTarget": {
+            "name": "MissingnessTarget",
+            "populated_from": "Missingness",
+            "permissible_value_derivations": {
+                "na": {
+                    "name": "na",
+                    "populated_from": "not_available",
+                },
+                "oth": {
+                    "name": "oth",
+                    "populated_from": "other",
+                },
+            },
+        },
+    },
+}
+
+
+def _make_transformer() -> ObjectTransformer:
+    """Build an ObjectTransformer wired to the source/target schemas and spec."""
+    tr = ObjectTransformer()
+    tr.source_schemaview = SchemaView(SOURCE_SCHEMA)
+    tr.target_schemaview = SchemaView(TARGET_SCHEMA)
+    tr.create_transformer_specification(copy.deepcopy(TRANSFORM_SPEC))
+    return tr
+
+
+@pytest.mark.parametrize(
+    "source_color,expected",
+    [
+        ("light_red", "red"),
+        ("dark_red", "red"),
+        ("light_green", "green"),
+        ("dark_blue", "blue"),
+        ("light_cyan", "cyan"),
+        ("dark_magenta", "magenta"),
+        ("not_available", "na"),
+        ("other", "oth"),
+    ],
+    ids=[
+        "primary-light_red",
+        "primary-dark_red",
+        "primary-light_green",
+        "primary-dark_blue",
+        "secondary-light_cyan",
+        "secondary-dark_magenta",
+        "missingness-not_available",
+        "missingness-other",
+    ],
+)
+def test_single_valued_multi_enum(source_color, expected):
+    """Single-valued slot with any_of enum ranges maps correctly."""
+    tr = _make_transformer()
+    source = {"id": "light1", "color": source_color}
+    result = tr.map_object(source, source_type="Light")
+    assert result["color"] == expected
+
+
+def test_multivalued_multi_enum():
+    """Multivalued slot with any_of enum ranges maps all values."""
+    tr = _make_transformer()
+    source = {
+        "id": "light1",
+        "colors": ["light_red", "dark_green", "light_magenta", "not_available"],
+    }
+    result = tr.map_object(source, source_type="Light")
+    assert result["colors"] == ["red", "green", "magenta", "na"]
+
+
+def test_no_matching_enum_returns_none():
+    """Value not in any enum derivation returns None."""
+    tr = _make_transformer()
+    source = {"id": "light1", "color": "nonexistent_value"}
+    result = tr.map_object(source, source_type="Light")
+    assert result["color"] is None
+
+
+def test_container_with_multi_enum():
+    """End-to-end: container with nested objects using multi-enum slots."""
+    tr = _make_transformer()
+    source = {
+        "lights": [
+            {
+                "id": "l1",
+                "color": "light_red",
+                "colors": ["light_red", "dark_green", "not_available"],
+            },
+            {
+                "id": "l2",
+                "color": "light_cyan",
+                "colors": ["light_magenta"],
+            },
+        ],
+    }
+    result = tr.map_object(source, source_type="Container")
+    assert result["lights"][0]["color"] == "red"
+    assert result["lights"][0]["colors"] == ["red", "green", "na"]
+    assert result["lights"][1]["color"] == "cyan"
+    assert result["lights"][1]["colors"] == ["magenta"]
+
+
+def test_mirror_source_stops_iteration():
+    """mirror_source on an earlier enum prevents trying later enums."""
+    tr = ObjectTransformer()
+    tr.source_schemaview = SchemaView(SOURCE_SCHEMA)
+    tr.target_schemaview = SchemaView(TARGET_SCHEMA)
+
+    spec = copy.deepcopy(TRANSFORM_SPEC)
+    # Set mirror_source on PrimaryColors derivation
+    spec["enum_derivations"]["SimplePrimary"]["mirror_source"] = True
+    tr.create_transformer_specification(spec)
+
+    # "unknown_value" doesn't match any PrimaryColors PV derivation,
+    # but mirror_source=True means it returns unchanged
+    source = {"id": "light1", "color": "unknown_value"}
+    result = tr.map_object(source, source_type="Light")
+    assert result["color"] == "unknown_value"
+
+
+def test_null_color_stays_none():
+    """Null source value is not transformed."""
+    tr = _make_transformer()
+    source = {"id": "light1", "color": None}
+    result = tr.map_object(source, source_type="Light")
+    assert result["color"] is None
+
+
+def test_pv_populated_from_list_form_maps_multiple_sources():
+    """populated_from as a list maps any listed source value to the target PV."""
+    tr = ObjectTransformer()
+    tr.source_schemaview = SchemaView(SOURCE_SCHEMA)
+    tr.target_schemaview = SchemaView(TARGET_SCHEMA)
+    spec = copy.deepcopy(TRANSFORM_SPEC)
+    # Replace SimplePrimary's deprecated sources with list-form populated_from.
+    spec["enum_derivations"]["SimplePrimary"]["permissible_value_derivations"] = {
+        "red": {"populated_from": ["light_red", "dark_red"]},
+        "green": {"populated_from": ["light_green", "dark_green"]},
+        "blue": {"populated_from": ["light_blue", "dark_blue"]},
+    }
+    tr.create_transformer_specification(spec)
+
+    for src, expected in [("light_red", "red"), ("dark_red", "red"), ("dark_blue", "blue")]:
+        result = tr.map_object({"id": "l1", "color": src}, source_type="Light")
+        assert result["color"] == expected
+
+
+def test_pv_populated_from_scalar_form_still_works():
+    """Scalar populated_from is wrapped to a one-element list at load time."""
+    tr = ObjectTransformer()
+    tr.source_schemaview = SchemaView(SOURCE_SCHEMA)
+    tr.target_schemaview = SchemaView(TARGET_SCHEMA)
+    spec = copy.deepcopy(TRANSFORM_SPEC)
+    spec["enum_derivations"]["MissingnessTarget"]["permissible_value_derivations"] = {
+        "na": {"populated_from": "not_available"},
+        "oth": {"populated_from": "other"},
+    }
+    tr.create_transformer_specification(spec)
+    # Pydantic representation is always a list after normalization.
+    pvds = tr.specification.enum_derivations["MissingnessTarget"].permissible_value_derivations
+    assert pvds["na"].populated_from == ["not_available"]
+
+    result = tr.map_object({"id": "l1", "color": "not_available"}, source_type="Light")
+    assert result["color"] == "na"
+
+
+def test_pv_sources_only_is_migrated_to_populated_from():
+    """sources-only PV derivs are migrated so the runtime sees only populated_from."""
+    tr = _make_transformer()
+    # SimplePrimary in TRANSFORM_SPEC uses sources: [...] — confirm migration cleared sources.
+    pvds = tr.specification.enum_derivations["SimplePrimary"].permissible_value_derivations
+    assert pvds["red"].populated_from == ["light_red", "dark_red"]
+    # sources is cleared after migration — the runtime relies on populated_from alone.
+    assert not pvds["red"].sources
+
+
+def _make_transformer_with_enum_expr(expr: str, unrestricted_eval: bool) -> ObjectTransformer:
+    """Build a transformer whose SimplePrimary enum derivation carries *expr*."""
+    tr = ObjectTransformer(unrestricted_eval=unrestricted_eval)
+    tr.source_schemaview = SchemaView(SOURCE_SCHEMA)
+    tr.target_schemaview = SchemaView(TARGET_SCHEMA)
+    spec = copy.deepcopy(TRANSFORM_SPEC)
+    spec["enum_derivations"]["SimplePrimary"]["expr"] = expr
+    tr.create_transformer_specification(spec)
+    return tr
+
+
+def test_enum_expr_restricted_evaluates():
+    """A restricted-syntax enum expr is evaluated against the source object, no opt-in needed."""
+    tr = _make_transformer_with_enum_expr("'EXPR:' + color", unrestricted_eval=False)
+    result = tr.map_object({"id": "light1", "color": "light_red"}, source_type="Light")
+    assert result["color"] == "EXPR:light_red"
+
+
+def test_enum_expr_unrestricted_fallback():
+    """An expression rejected by simpleeval falls back to asteval only when unrestricted_eval is opted in."""
+    tr = _make_transformer_with_enum_expr("target = src['color']", unrestricted_eval=True)
+    result = tr.map_object({"id": "light1", "color": "light_red"}, source_type="Light")
+    assert result["color"] == "light_red"
+
+
+def test_enum_expr_restricted_raises_without_opt_in():
+    """The same asteval-only expr raises rather than silently escalating when not opted in."""
+    tr = _make_transformer_with_enum_expr("target = src['color']", unrestricted_eval=False)
+    with pytest.raises(TransformationError):
+        tr.map_object({"id": "light1", "color": "light_red"}, source_type="Light")
+
+
+@pytest.mark.parametrize("unrestricted_eval", [False, True])
+def test_enum_expr_strict_unknown_name_raises_without_fallback(unrestricted_eval):
+    """A strict-mode typo in an enum expr raises and never escalates to unrestricted eval."""
+    tr = ObjectTransformer(strict=True, unrestricted_eval=unrestricted_eval)
+    tr.source_schemaview = SchemaView(SOURCE_SCHEMA)
+    tr.target_schemaview = SchemaView(TARGET_SCHEMA)
+    spec = copy.deepcopy(TRANSFORM_SPEC)
+    spec["enum_derivations"]["SimplePrimary"]["expr"] = "colorr"
+    tr.create_transformer_specification(spec)
+    with pytest.raises(TransformationError):
+        tr.map_object({"id": "light1", "color": "light_red"}, source_type="Light")
+
+
+def test_scalar_enum_expr_can_reference_source_as_src_in_restricted_mode():
+    """A plain enum-range slot passes the scalar value; the expr sees it as ``src`` without opt-in."""
+    source_schema = """\
+id: https://example.org/scalar-source
+name: scalar-source
+prefixes:
+  linkml: https://w3id.org/linkml/
+imports:
+  - linkml:types
+enums:
+  Color:
+    permissible_values:
+      red:
+      green:
+classes:
+  Rec:
+    tree_root: true
+    attributes:
+      id:
+        identifier: true
+        range: string
+      color:
+        range: Color
+"""
+    target_schema = source_schema.replace("scalar-source", "scalar-target").replace("Color", "TColor")
+
+    tr = ObjectTransformer(unrestricted_eval=False)
+    tr.source_schemaview = SchemaView(source_schema)
+    tr.target_schemaview = SchemaView(target_schema)
+    tr.create_transformer_specification(
+        {
+            "class_derivations": {
+                "Rec": {
+                    "populated_from": "Rec",
+                    "slot_derivations": {"id": {}, "color": {"populated_from": "color"}},
+                }
+            },
+            "enum_derivations": {
+                "TColor": {"name": "TColor", "populated_from": "Color", "expr": "'X:' + src"},
+            },
+        }
+    )
+
+    result = tr.map_object({"id": "r1", "color": "red"}, source_type="Rec")
+    assert result["color"] == "X:red"
+
+
+def test_explicit_range_any_with_any_of():
+    """Slots with explicit range: Any plus any_of enum ranges are mapped correctly."""
+    schema = SOURCE_SCHEMA.replace(
+        "      color:\n        any_of:",
+        "      color:\n        range: Any\n        any_of:",
+    )
+    tr = ObjectTransformer()
+    tr.source_schemaview = SchemaView(schema)
+    tr.target_schemaview = SchemaView(TARGET_SCHEMA)
+    tr.create_transformer_specification(copy.deepcopy(TRANSFORM_SPEC))
+
+    source = {"id": "light1", "color": "light_red"}
+    result = tr.map_object(source, source_type="Light")
+    assert result["color"] == "red"

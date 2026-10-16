@@ -1,0 +1,974 @@
+id: https://w3id.org/linkml/transformer
+name: linkml-map
+title: LinkML Map Data Model
+description: |-
+  Datamodel for LinkML schema mappings and transformations.
+
+  A mapper generates instances of a *target* data model from
+  instances of a *source* data model. This transformation process
+  is guided by a *TransformationSpecification*.
+
+  The specification is independent of any one method for transforming
+  data. It allows different approaches, including:
+
+  - direct implementation, transforming python or json objects
+  - translation of the specification into SQL commands, to operate on relations
+  - translation of the specification into SPARQL CONSTRUCTs, to operate on triples
+  - translation into another specification language, such as R2RML
+prefixes:
+  linkml: https://w3id.org/linkml/
+  linkmlmap: https://w3id.org/linkml/transformer/
+  dcterms: http://purl.org/dc/terms/
+  schema: http://schema.org/
+  rdfs: http://www.w3.org/2000/01/rdf-schema#
+  sh: http://www.w3.org/ns/shacl#
+  STATO: http://purl.obolibrary.org/obo/STATO_
+  sssom: https://w3id.org/sssom/
+default_prefix: linkmlmap
+
+imports:
+  - linkml:types
+
+types:
+
+  ClassReference:
+    typeof: string
+
+  SlotReference:
+    typeof: string
+
+  EnumReference:
+    typeof: string
+
+classes:
+
+  Any:
+    description: >-
+      A wildcard type that accepts any value. Used where the model deliberately
+      avoids coupling to a specific range, such as embedded LinkML definition
+      objects.
+    class_uri: linkml:Any
+
+  SpecificationComponent:
+    abstract: true
+    attributes:
+      description:
+        description: description of the specification component
+        slot_uri: dcterms:description
+      implements:
+        description: A reference to a specification that this component implements.
+        multivalued: true
+        range: uriorcurie
+      comments:
+        description: >-
+          A list of comments about this component. Comments are free text, and may be
+          used to provide additional information about the component, including
+          instructions for its use.
+        multivalued: true
+        range: string
+        slot_uri: rdfs:comment
+
+  TransformationSpecification:
+    is_a: SpecificationComponent
+    description: A collection of mappings between source and target classes
+    tree_root: true
+    attributes:
+      id:
+        # identifier: true
+        description: Unique identifier for this transformation specification
+        slot_uri: schema:identifier
+      title:
+        # Corresponds to fair_mappings_schema:MappingSpecification.name
+        description: human readable title for this transformation specification
+        slot_uri: dcterms:title
+      publication_date:
+        description: date of publication of this transformation specification
+        range: date
+        slot_uri: dcterms:issued
+      license:
+        description: license under which this transformation specification is published
+        range: uriorcurie
+        slot_uri: dcterms:license
+      version:
+        description: version of this transformation specification
+        range: string
+        slot_uri: schema:version
+      prefixes:
+        description: maps prefixes to URL expansions
+        range: KeyVal
+        multivalued: true
+        inlined: true
+        slot_uri: sh:declare
+      copy_directives:
+        description: >-
+          Directives controlling which elements of the source schema are
+          copied into the target schema.
+        range: CopyDirective
+        multivalued: true
+        inlined: true
+      source_schema:
+        # Corresponds to fair_mappings_schema:MappingSpecification.subject_source
+        range: SchemaReference
+        inlined: true
+        description: Reference to the schema that describes the source (input) objects.
+      target_schema:
+        # Corresponds to fair_mappings_schema:MappingSpecification.object_source
+        range: SchemaReference
+        inlined: true
+        description: Reference to the schema that describes the target (output) objects.
+      source_schema_patches:
+        range: Any
+        description: >-
+          Schema patches to apply to the source schema before transformation.
+          Useful for adding foreign key relationships to auto-generated schemas.
+          Uses LinkML schema YAML structure (classes, slots, attributes, etc.).
+      creator:
+        description: A list of creators of this transformation specification
+        range: Agent
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+        slot_uri: dcterms:creator
+      author:
+        description: A list of authors of this transformation specification
+        range: Agent
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+      reviewer:
+        description: A list of reviewers of this transformation specification
+        range: Agent
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+      mapping_method:
+        description: The method used to create this mapping, e.g. manual curation, automated
+          mapping, etc.
+        range: uriorcurie
+      documentation:
+        description: URL or reference to documentation for the mapping specification
+        range: uri
+      content_url:
+        description: Reference to the actual content of the mapping specification
+        range: uri
+      mint_ids:
+        range: boolean
+        description: >-
+          Whether to synthesize an identifier from a hash of the record's
+          content when the target class has an identifier slot that the class
+          derivation does not derive. Defaults to false. An identifier that is
+          neither derived nor minted is an error, and no records are produced.
+          Overridden by the target class's entry in class_defaults, and by a
+          class derivation's own mint_ids.
+      class_defaults:
+        description: >-
+          Settings for every class derivation whose target is the named class,
+          unless the derivation sets its own. Holds per-class policy settings
+          only; derivation content belongs in class_derivations.
+        range: ClassDefault
+        multivalued: true
+        inlined: true
+      class_derivations:
+        description: >-
+          Instructions on how to derive a set of classes in the target schema
+          from classes in the source schema.
+        range: ClassDerivation
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+      enum_derivations:
+        description: >-
+          Instructions on how to derive a set of enums in the target schema
+        range: EnumDerivation
+        multivalued: true
+        inlined: true
+      slot_derivations:
+        description: >-
+          Instructions on how to derive a set of top level slots in the target schema
+        range: SlotDerivation
+        multivalued: true
+        inlined: true
+        deprecated: >-
+          Not implemented. Top-level slot derivations lack deterministic semantics
+          because a slot's derivation depends on the class context in which it
+          appears — the same slot may need different derivations in different
+          classes. Use slot_derivations within each ClassDerivation instead.
+          See https://github.com/linkml/linkml-map/issues/47
+
+  SchemaReference:
+    description: >-
+      A reference to a LinkML schema, with optional version and locator
+      metadata. Used by `source_schema` and `target_schema` on
+      `TransformationSpecification`.
+    attributes:
+      name:
+        description: The name or identifier of the schema.
+        range: string
+        required: true
+      version:
+        description: Version string for the schema (e.g. semver or date-based).
+        range: string
+        slot_uri: schema:version
+      schema_uri:
+        description: The URI/IRI identifier of the schema (matches the schema's `id`).
+        range: uri
+      source_file:
+        description: >-
+          Optional file path or URL from which the schema can be loaded.
+        range: string
+
+  ElementDerivation:
+    is_a: SpecificationComponent
+    abstract: true
+    description: >-
+      An abstract grouping for classes that provide a specification of how to
+      derive a target element from a source element.
+    attributes:
+      name:
+        identifier: true
+        description: Name of the element in the target schema
+      copy_directives:
+        description: >-
+          Directives controlling which sub-elements of the source element are
+          copied into the derived target element.
+        range: CopyDirective
+        multivalued: true
+        inlined: true
+      overrides:
+        description: overrides source schema slots
+        range: Any
+        #multivalued: true
+        #inlined: true
+      is_a:
+        description: The parent element that the derived target element inherits from.
+        range: ElementDerivation
+        slot_uri: linkml:is_a
+      mixins:
+        description: Mixin elements applied to the derived target element.
+        range: ElementDerivation
+        multivalued: true
+        inlined: false
+        slot_uri: linkml:mixins
+      value_mappings:
+        range: KeyVal
+        multivalued: true
+        inlined: true
+        description: >-
+          A mapping table that is applied directly to mappings, in order of precedence.
+          Keys should always be quoted in YAML to prevent type coercion — unquoted
+          true/false become booleans and bare numbers become integers, which will not
+          match the stringified source value used for lookup.
+      expression_mappings:
+        range: KeyVal
+        multivalued: true
+        inlined: true
+        description: >-
+          A mapping table where the values are expressions evaluated against source
+          bindings. Looked up by the same key as value_mappings (the stringified
+          source value). Keys should always be quoted (see value_mappings).
+          If both value_mappings and expression_mappings are present,
+          value_mappings takes precedence for keys that appear in both.
+      expression_to_value_mappings:
+        range: KeyVal
+        multivalued: true
+        inlined: true
+        description: >-
+          A mapping table in which the keys are boolean expressions and
+          the values are literal results. On enum derivations, used for
+          scalar binning: each key is evaluated with value() bound to the
+          incoming value, and the first truthy key's value is returned as
+          the target permissible value. See issue #99.
+      expression_to_expression_mappings:
+        range: KeyVal
+        multivalued: true
+        inlined: true
+        deprecated: >-
+          Deprecated: use case() with and/or operators instead (#127).
+          Will be removed before 1.0.
+        description: >-
+          A mapping table in which the keys and values are expressions
+      mirror_source:
+        description: >-
+          If true, pass the source value through unchanged instead of
+          transforming it.
+        range: boolean
+
+
+  ClassDefault:
+    description: >-
+      Settings applied to every class derivation that targets this class,
+      unless the derivation sets its own.
+    attributes:
+      name:
+        identifier: true
+        description: Name of the class in the target schema
+      mint_ids:
+        range: boolean
+        description: >-
+          Whether derivations of this class mint content-hash identifiers.
+          Takes precedence over the specification's mint_ids; a class
+          derivation's own mint_ids takes precedence over this.
+
+  ClassDerivation:
+    is_a: ElementDerivation
+    description: >-
+      A specification of how to derive a target class from a source class.
+    attributes:
+      #name:
+      #  key: true
+      #  description: Name of the class in the target schema
+      populated_from:
+        range: ClassReference
+        description: >-
+          Source class to derive this target class from.
+      sources:
+        range: ClassReference
+        multivalued: true
+        deprecated: >-
+          Deprecated. Use populated_from instead.
+          See https://github.com/linkml/linkml-map/issues/193 for planned
+          list support in populated_from. Will be removed in a future version.
+        description: >-
+          Deprecated. Use populated_from instead.
+      joins:
+        range: AliasedClass
+        multivalued: true
+        inlined: true
+        description: Additional classes to be joined to derive instances of the target class
+        comments:
+          - supports cross-table lookups via source_key/lookup_key or the join_on field
+      slot_derivations:
+        description: >-
+          Instructions on how to derive the slots of this target class from
+          source data.
+        range: SlotDerivation
+        multivalued: true
+        inlined: true
+      target_definition:
+        range: Any
+        description: >-
+          LinkML class definition object for this slot.
+        comments:
+          - currently defined as Any to avoid coupling with metamodel
+      pivot_operation:
+        range: PivotOperation
+        description: Configuration for pivot (unmelt) operations at class level
+      mint_ids:
+        range: boolean
+        description: >-
+          Overrides the specification's mint_ids, and the target class's entry
+          in class_defaults, for this class derivation.
+          Set to false on classes whose identifiers other records reference,
+          so a missing derivation is an error rather than a content hash.
+
+  ObjectDerivation:
+    is_a: ElementDerivation
+    deprecated: >-
+      Use list-based class_derivations instead of nesting via object_derivations.
+      See https://github.com/linkml/linkml-map/issues/112
+    description: >-
+      Deprecated. A nested derivation for constructing slot values that are
+      class instances. Use list-based class_derivations instead.
+    attributes:
+      name:
+        description: Name of the element in the target schema
+        required: false
+      class_derivations:
+        description: >-
+          Class derivations used to construct nested instances for this
+          (deprecated) object derivation.
+        range: ClassDerivation
+        multivalued: true
+        inlined: true
+
+  AliasedClass:
+    description: alias-class key value pairs for classes
+    attributes:
+      alias:
+        key: true
+        description: name of the class to be aliased
+      class_named:
+        description: local alias for the class
+      source_key:
+        description: column in the primary (populated_from) table used as the join key
+      lookup_key:
+        description: column in the secondary (joined) table used as the join key
+      join_on:
+        description: shorthand for source_key and lookup_key when both share the same column name
+
+  SlotDerivation:
+    is_a: ElementDerivation
+    description: A specification of how to derive the value of a target slot from a source slot
+    attributes:
+      name:
+        key: true
+        description: Target slot name
+      populated_from:
+        range: SlotReference
+        description: >-
+          Source slot to derive this target slot from.
+      sources:
+        range: SlotReference
+        multivalued: true
+        deprecated: >-
+          Deprecated. Use populated_from instead.
+          See https://github.com/linkml/linkml-map/issues/193 for planned
+          list support in populated_from. Will be removed in a future version.
+        description: >-
+          Deprecated. Use populated_from instead.
+      class_derivations:
+        description: >-
+          Instructions on how to derive nested class instances for this slot.
+          Each entry specifies how to construct an instance of a target class
+          from source data. For multivalued slots, each entry produces one
+          object in the resulting list.
+        range: ClassDerivation
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+      object_derivations:
+        deprecated: >-
+          Use list-based class_derivations instead of nesting via object_derivations.
+          See https://github.com/linkml/linkml-map/issues/112
+        description: >-
+          Deprecated. Use list-based class_derivations instead.
+          One or more object derivations used to construct the slot value(s),
+          which must be instances of a class.
+        range: ObjectDerivation
+        multivalued: true
+        inlined: true
+        inlined_as_list: true
+      derived_from:
+        range: SlotReference
+        multivalued: true
+        deprecated: >-
+          This field is fully derivable from expr and is not used by the runtime.
+          It will be removed in a future version.
+        description: >-
+          Deprecated. This field is ignored by the runtime and will be removed.
+          It was intended to list source slots feeding into an expr-based
+          derivation, but this information is fully derivable from the expr itself.
+      expr:
+        range: string
+        description: >-
+          An expression to be evaluated on the source object to derive the target slot.
+          Should be specified using the LinkML expression language.
+      value:
+        range: Any
+        description: >-
+          A constant value to assign to the target slot.
+      missing_values:
+        range: Any
+        multivalued: true
+        description: >-
+          Source values to treat as missing and emit as null instead of the literal
+          value — e.g. sentinel codes like -9, 99, or 999 meaning "not collected".
+          Accepts a single value or a list.
+      range:
+        description: >-
+          The range (value type) to assign to the derived target slot,
+          overriding the range inferred from the source.
+        slot_uri: linkml:range
+        range: string
+      unit_conversion:
+        description: >-
+          Configuration for converting the source value's unit of measure when
+          deriving this slot.
+        range: UnitConversionConfiguration
+      inverse_of:
+        range: Inverse
+        description: >-
+          Used to specify a class-slot tuple that is the inverse of the derived/target slot.
+          This is used primarily for mapping to relational databases or formalisms that do
+          not allow multiple values. The class representing the repeated element has a foreign
+          key slot inserted in that 'back references' the original multivalued slot.
+      hide:
+        range: boolean
+        description: True if this is suppressed
+      type_designator:
+        description: >-
+          True if this target slot designates the type (class) of the instance,
+          analogous to LinkML's designates_type.
+        range: boolean
+      target_definition:
+        range: Any
+        description: >-
+          LinkML definition object for this slot.
+        comments:
+          - currently defined as Any to avoid coupling with metamodel
+      cast_collection_as:
+        description: >-
+          Coerce the derived slot's collection form (for example single-valued,
+          list, or dictionary).
+        range: CollectionType
+      dictionary_key:
+        description: >-
+          When the derived value is a list of objects, the slot whose value is
+          used as the key to index them into a dictionary.
+        range: string
+      stringification:
+        description: >-
+          Configuration for combining multiple values into a single string
+          value.
+        range: StringificationConfiguration
+      aggregation_operation:
+        description: >-
+          An aggregation operation that reduces multiple source values into this
+          slot's value.
+        range: AggregationOperation
+      pivot_operation:
+        range: PivotOperation
+        description: Configuration for pivot (melt) operations producing this slot
+      offset:
+        description: >-
+          Configuration for calculating a value by applying an offset to a baseline value.
+          The baseline value comes from the slot's populated_from field.
+          This is commonly used for longitudinal data where measurements are recorded relative to a baseline.
+          For example, calculating age_at_visit from age + (days * 1/365).
+        range: Offset
+
+  EnumDerivation:
+    is_a: ElementDerivation
+    description: A specification of how to derive the value of a target enum from a source enum
+    attributes:
+      name:
+        key: true
+        description: Target enum name
+      populated_from:
+        range: EnumReference
+        description: >-
+          Source enum to derive this target enum from.
+      sources:
+        range: EnumReference
+        multivalued: true
+        deprecated: >-
+          Deprecated. Use populated_from instead.
+          See https://github.com/linkml/linkml-map/issues/193 for planned
+          list support in populated_from. Will be removed in a future version.
+        description: >-
+          Deprecated. Use populated_from instead.
+      expr:
+        range: string
+        description: >-
+          An expression to be evaluated on the source object to derive the target slot.
+          Should be specified using the LinkML expression language.
+      hide:
+        range: boolean
+        description: True if this is suppressed
+      permissible_value_derivations:
+        description: Instructions on how to derive a set of PVs in the target schema
+        range: PermissibleValueDerivation
+        multivalued: true
+        inlined: true
+
+  PermissibleValueDerivation:
+    is_a: ElementDerivation
+    description: A specification of how to derive the value of a PV from a source enum
+    todos:
+      - this is currently under-specified. We will need boolean combinators to express if-then-else
+    attributes:
+      name:
+        key: true
+        description: Target permissible value text
+      expr:
+        description: >-
+          An expression evaluated on the source object to derive this
+          permissible value. Should be specified using the LinkML expression
+          language.
+        range: string
+      populated_from:
+        range: string
+        multivalued: true
+        description: >-
+          Source permissible value(s) that map to this target permissible value.
+          Accepts a single value or a list; scalar input is normalized to a
+          one-element list at load time.
+      sources:
+        range: string
+        multivalued: true
+        deprecated: >-
+          Deprecated. Use populated_from instead, which now accepts a list.
+          See https://github.com/linkml/linkml-map/issues/193. Will be removed
+          in a future version.
+        description: >-
+          Deprecated. Use populated_from instead.
+      hide:
+        description: True if this is suppressed
+        range: boolean
+
+  PrefixDerivation:
+    description: >-
+      A specification of how to derive a target prefix declaration. Currently a
+      placeholder with no additional fields.
+    is_a: ElementDerivation
+
+  UnitConversionConfiguration:
+    description: >-
+      Configuration for converting a slot value from a source unit of measure to
+      a target unit during transformation.
+    attributes:
+      target_unit:
+        description: >-
+          The unit to convert the value into. If omitted, the source unit is
+          used unchanged.
+      target_unit_scheme:
+        description: The unit scheme or system identifying target_unit (for example ucum).
+        range: string
+        examples:
+          - value: ucum
+      source_unit:
+        description: >-
+          The unit the source value is expressed in. Cross-checked against any
+          unit declared on the source slot in the schema.
+      source_unit_scheme:
+        description: The unit scheme or system identifying source_unit (for example ucum).
+        range: string
+        examples:
+          - value: ucum
+      source_unit_slot:
+        description: >-
+          For structured value-and-unit source input, the key within the source
+          value that holds the unit.
+      source_magnitude_slot:
+        description: >-
+          For structured value-and-unit source input, the key within the source
+          value that holds the numeric magnitude.
+      target_unit_slot:
+        description: >-
+          When emitting structured output, the key to write the target unit
+          into.
+      target_magnitude_slot:
+        description: >-
+          When emitting structured output, the key to write the converted
+          magnitude into. Its presence makes the result a structured value
+          rather than a bare number.
+      none_if_non_numeric:
+        range: boolean
+        description: >-
+          If true, return None when the source value cannot be coerced to a
+          numeric type instead of raising an error. This is an explicit opt-in
+          for columns that contain non-numeric coded values (e.g. 'A', 'M')
+          mixed with numeric data.
+
+  Offset:
+    description: >-
+      Configuration for calculating a value by applying an offset to a baseline value.
+      The baseline value comes from the slot's populated_from field.
+      This is commonly used for longitudinal data where measurements are recorded relative to a baseline.
+      For example, calculating age_at_visit from age + (days * 1/365).
+
+      The calculation is: result = baseline ± (offset_value * offset_field_value)
+      where baseline comes from populated_from.
+    attributes:
+      offset_value:
+        range: float
+        required: true
+        description: >-
+          Multiplier applied to the offset field value.
+          For example, use 1/365 (or 0.00273973) to convert days to years,
+          or 1/12 (or 0.0833333) to convert months to years.
+      offset_field:
+        range: string
+        required: true
+        description: >-
+          Name of the field in the source object that contains the offset amount.
+          This value will be multiplied by offset_value.
+      offset_reverse:
+        range: boolean
+        description: >-
+          If true, subtract the offset from the baseline (baseline - offset).
+          If false, add the offset to the baseline (baseline + offset).
+          Defaults to false (addition).
+
+  StringificationConfiguration:
+    description: >-
+      Configuration for collapsing multiple values into a single delimited or
+      serialized string value.
+    attributes:
+      delimiter:
+        description: Delimiter used to join multiple values into a single string.
+        range: string
+        examples:
+          - value: ','
+          - value: '|'
+          - value: ';'
+      reversed:
+        description: >-
+          If true, reverse the operation, splitting a delimited or serialized
+          string back into multiple values.
+        range: boolean
+      over_slots:
+        description: The source slots whose values are combined into the stringified result.
+        range: string
+        multivalued: true
+      syntax:
+        description: >-
+          Serialization syntax used to stringify the values when no delimiter is
+          given.
+        range: SerializationSyntaxType
+        examples:
+          - value: 'json'
+          - value: 'yaml'
+
+  Inverse:
+    description: Used for back references in mapping to relational model
+    aliases:
+      - backref
+      - back_references
+    attributes:
+      slot_name:
+        description: Name of the slot on the referenced class that back-references the derived slot.
+      class_name:
+        description: Name of the class that holds the back-reference (foreign key) slot.
+
+  TransformationOperation:
+    abstract: true
+
+  AggregationOperation:
+    is_a: TransformationOperation
+    description: >-
+      An operation that reduces multiple input values to a single value using an
+      aggregation function such as sum, average, or count.
+    attributes:
+      operator:
+        description: The aggregation function to apply (for example SUM, AVERAGE, COUNT).
+        range: AggregationType
+        required: true
+      null_handling:
+        description: How to handle null values encountered during aggregation.
+        range: InvalidValueHandlingStrategy
+      invalid_value_handling:
+        description: >-
+          How to handle values that cannot be interpreted as valid input to the
+          aggregation.
+        range: InvalidValueHandlingStrategy
+
+  GroupingOperation:
+    is_a: TransformationOperation
+    description: An operation that groups source rows prior to aggregation.
+    attributes:
+      null_handling:
+        description: How to handle null values when grouping.
+        range: InvalidValueHandlingStrategy
+
+  PivotOperation:
+    aliases:
+      - melt/unmelt
+      - reification/dereification
+    is_a: TransformationOperation
+    description: >-
+      An operation that reshapes data between wide and long (EAV)
+      representations, i.e. melt (wide to long) and unmelt (long to wide).
+    attributes:
+      direction:
+        description: Whether to MELT (wide to long) or UNMELT (long to wide).
+        range: PivotDirectionType
+        required: true
+      variable_slot:
+        aliases:
+          - var_name
+        range: SlotReference
+        ifabsent: string(variable)
+        description: Slot to use for the variable column in the melted/long representation.
+          In EAV this is the name of the 'A' variable
+      value_slot:
+        aliases:
+          - value_name
+        range: SlotReference
+        ifabsent: string(value)
+        description: Slot to use for the value column in the melted/long representation.
+          In EAV this is the name of the 'V' variable
+      unmelt_to_class:
+        description: In an unmelt operation, attributes (which are values in the long/melted/EAV
+          representation) must conform to valid attributes in this class
+        range: ClassReference
+      unmelt_to_slots:
+        description: >-
+          For an unmelt operation, the target wide-format slots to populate from
+          the long/EAV rows.
+        range: SlotReference
+        multivalued: true
+      unit_slot:
+        range: SlotReference
+        description: Optional slot containing unit information for {variable}_{unit} naming
+      slot_name_template:
+        range: string
+        ifabsent: string({variable})
+        description: Template for generating target slot names. Supports {variable} and {unit}.
+      source_slots:
+        range: SlotReference
+        multivalued: true
+        description: For MELT, the list of wide-format slots to melt
+      id_slots:
+        range: SlotReference
+        multivalued: true
+        description: Slots that identify the entity (not pivoted)
+
+  KeyVal:
+    description: A generic key-value pair.
+    attributes:
+      key:
+        description: The key.
+        key: true
+      value:
+        description: The value associated with the key.
+        range: Any
+
+  # Aligned with fair_mappings_schema:Agent
+  Agent:
+    abstract: true
+    description: An entity that can create or contribute to a digital object, such as an author or creator.
+    attributes:
+      id:
+        identifier: true
+        description: Identifier for the agent
+        range: uriorcurie
+      name:
+        description: Name of the agent
+        range: string
+        slot_uri: schema:name
+      type:
+        description: Type of the agent
+        range: string
+        designates_type: true
+
+  # Aligned with fair_mappings_schema:Person
+  Person:
+    is_a: Agent
+    description: An individual person who contributes to a mapping specification
+    attributes:
+      orcid:
+        description: ORCID identifier for the person
+        range: uriorcurie
+      affiliation:
+        description: Institutional affiliation of the person
+        range: string
+
+  # Aligned with fair_mappings_schema:Organization
+  Organization:
+    is_a: Agent
+    description: An organization or institution that contributes to a mapping specification
+    attributes:
+      ror_id:
+        description: ROR (Research Organization Registry) identifier
+        range: uriorcurie
+      url:
+        description: URL or web address of the organization
+        range: uri
+
+  # Aligned with fair_mappings_schema:Software
+  Software:
+    is_a: Agent
+    description: A software tool or system used in creating mappings
+    attributes:
+      version:
+        description: Version of the software
+        range: string
+      repository_url:
+        description: URL to a code repository
+        range: uri
+
+  CopyDirective:
+    description: >-
+      Instructs a Schema Mapper in how to map to a target schema. Not used for data transformation.
+
+      This is the process to process a directive:
+      1. If `copy_all`, add all sub-elements to the list of sub-elements to be copied.
+      2. If `exclude`, remove the specified sub-elements from the above list.
+      3. If `exclude_all`, clean-up the above list. Effectively making previous steps useless.
+      4. If `include`, add the specified sub-elements from the list result of previous steps.
+
+      Implementations might decide to somehow report (error, warning,...) meaningless combinations (like specifying `copy_all` and `exclude_all`).
+
+      Validation on the correctness of the resulting derived schema might be done optionally by the implementation.
+      For example, removing a slot but keeping a class that requires it would invalidate the derived-schema.
+      It is always possible to validate the schema with the LinkML linter after derivation.
+
+      What are the considered sub-elements depends on the calls of Element to be transformed.
+      For example, for a class they are `slots` and `attributes`.
+    status: testing
+    attributes:
+      element_name:
+        description: Name of the source element this directive applies to (a class, slot, enum, etc.).
+        key: true
+      copy_all:
+        range: boolean
+        description: Copy all sub-elements of the Element being derived.
+      exclude_all:
+        range: boolean
+        description: Do not copy any of the sub-elements of the Element being derived.
+      exclude:
+        range: Any
+        description: >-
+          Remove certain sub-elements from the list of sub-elements to be copied.
+
+          As of now there it is under-specified, how to specify the sub-elements to exclude.
+          One possible implementation would be a list where all element types can be mixed, since there might not be name conflicts across element types.
+      include:
+        range: Any
+        description: >-
+          Add certain sub-elements to the list of sub-elements to be copied.
+
+          As of now there it is under-specified, how to specify the sub-elements to include.
+          One possible implementation would be a list where all element types can be mixed, since there might not be name conflicts across element types.
+      add:
+        description: >-
+          Add new sub-elements that are not present in the source element.
+          Currently under-specified and not yet implemented (see issue #245).
+        range: Any
+
+enums:
+  CollectionType:
+    permissible_values:
+      SingleValued:
+      MultiValued:
+      MultiValuedList:
+      MultiValuedDict:
+  SerializationSyntaxType:
+    permissible_values:
+      JSON:
+      YAML:
+      TURTLE:
+  AggregationType:
+    permissible_values:
+      SUM:
+      AVERAGE:
+        aliases:
+          - mean
+          - avg
+        exact_mappings:
+          - STATO:0000230
+      COUNT:
+        exact_mappings:
+          - STATO:0000047
+      MIN:
+      MAX:
+      STD_DEV:
+        exact_mappings:
+          - STATO:0000237
+      VARIANCE:
+      MEDIAN:
+        exact_mappings:
+          - STATO:0000674
+      MODE:
+        exact_mappings:
+          - STATO:0000033
+      CUSTOM:
+      SET:
+      LIST:
+      ARRAY:
+  InvalidValueHandlingStrategy:
+    permissible_values:
+      IGNORE:
+      TREAT_AS_ZERO:
+      ERROR_OUT:
+  PivotDirectionType:
+    permissible_values:
+      MELT:
+        aliases:
+          - unpivot
+          - wide to long
+      UNMELT:
+        aliases:
+          - pivot
+          - long to wide

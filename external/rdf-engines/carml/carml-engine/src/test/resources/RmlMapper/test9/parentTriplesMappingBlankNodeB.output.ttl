@@ -1,0 +1,23 @@
+_:black a <http://example.com/Color> ;
+	<http://example.com/hasCode> <http://example.com/ColorCode/255,255,255,1> .
+<http://example.com/ColorCode/255,255,255,1> a <http://example.com/RGBA> .
+
+_:white a <http://example.com/Color> ;
+	<http://example.com/hasCode> <http://example.com/ColorCode/0,0,0,1> .
+<http://example.com/ColorCode/0,0,0,1> a <http://example.com/RGBA> .
+
+_:red a <http://example.com/Color> ;
+	<http://example.com/hasCode> <http://example.com/ColorCode/255,0,0,1> .
+<http://example.com/ColorCode/255,0,0,1> a <http://example.com/RGBA> .
+
+_:blue a <http://example.com/Color> ;
+	<http://example.com/hasCode> <http://example.com/ColorCode/0,0,255,1> .
+<http://example.com/ColorCode/0,0,255,1> a <http://example.com/RGBA> .
+
+_:yellow a <http://example.com/Color> ;
+	<http://example.com/hasCode> <http://example.com/ColorCode/255,255,0,1> .
+<http://example.com/ColorCode/255,255,0,1> a <http://example.com/RGBA> .
+
+_:green a <http://example.com/Color> ;
+	<http://example.com/hasCode> <http://example.com/ColorCode/0,255,0,1> .
+<http://example.com/ColorCode/0,255,0,1> a <http://example.com/RGBA> .

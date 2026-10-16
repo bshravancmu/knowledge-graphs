@@ -1,0 +1,8 @@
+| CSV Column           | Ontology Property | Entity Class | Rel. Entity Class | Subject Generation    | Join | Datatype | Function Name | Function Output |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| entry/cac-place-ext:ContractFolderStatus/cbc:ContractFolderID | :hasID | :Procedure | :Identifier | concat('proc_', ContractFolderID) |  | xsd:string | generate_procedure_id | proc_561770M |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProject/cbc:Name | rdfs:label | :Procedure |  | concat('proc_', ContractFolderID) |  | xsd:string | identity | Suministro de vehículos usados para servicio del Parque Movil... |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProject/cbc:TypeCode | :hasProcurementScopeDividedIntoLot | :Procedure | :Lot | concat('proc_', ContractFolderID) | ContractFolderID = Lot.ProcurementProjectID | xsd:string | map_contract_type_code | {'1': 'Goods', ...} |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProjectLot/cbc:ID | :hasID | :Lot | :Identifier | concat('lot_', ContractFolderID, '_', ID) |  | xsd:string | generate_lot_id | lot_561770M_1 |
+| entry/cac-place-ext:ContractFolderStatus/cac:LocatedContractingParty/cac:Party/cac:PartyIdentification[schemeName='NIF']/cbc:ID | :hasID | org:Organization | :Identifier | concat('org_', ID) |  | xsd:string | generate_org_id | org_P0200000H |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProject/cac:RequiredCommodityClassification/cbc:ItemClassificationCode | skos:Concept | :Procedure | skos:Concept | concat('proc_', ContractFolderID) | skos:exactMatch in CPV list | xsd:string | map_cpv_code | {'34136000': 'Vehicles', ...} |

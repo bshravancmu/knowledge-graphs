@@ -1,0 +1,174 @@
+// Copyright 2022, University of Freiburg
+// Chair of Algorithms and Data Structures
+// Author: Hannah Bast <bast@cs.uni-freiburg.de>
+
+#ifndef QLEVER_REDUCED_FEATURE_SET_FOR_CPP17
+#ifndef QLEVER_SRC_UTIL_HTTP_HTTPCLIENT_H
+#define QLEVER_SRC_UTIL_HTTP_HTTPCLIENT_H
+
+// IMPORTANT: The header `util/HttpServer/beast.h` redefines some variables
+// (important for our code) which are also defined in some of the ´<boost/...>´
+// headers. The header `util/HttpServer/beast.h` should therefore always come
+// first. Otherwise, there will be "redefinition" warnings when compiling and
+// possible segmentation faults at runtime.
+//
+// TODO: It goes without saying that we should try to get rid of this anomaly as
+// soon as possible. We should avoid redefining variables in the beast code, the
+// order of the includes should not matter, and it should certainly not cause
+// segmentation faults.
+
+#include <optional>
+#include <string>
+
+#include "backports/span.h"
+#include "util/CancellationHandle.h"
+#include "util/Generator.h"
+#include "util/http/HttpProxyConfig.h"
+#include "util/http/HttpUtils.h"
+#include "util/http/beast.h"
+
+// Helper struct holding the response of a http/https request.
+struct HttpOrHttpsResponse {
+  boost::beast::http::status status_;
+  std::string contentType_;
+  std::string location_;
+  cppcoro::generator<ql::span<std::byte>> body_;
+
+  // Return the first `length` bytes of the response body as a string.
+  std::string readResponseHead(size_t length) && {
+    std::string ctx;
+    ctx.reserve(length);
+    for (const auto& bytes : std::move(body_)) {
+      // only copy until the ctx has reached length
+      size_t bytesToCopy = std::min(bytes.size(), length - ctx.size());
+      ctx += std::string_view(reinterpret_cast<const char*>(bytes.data()),
+                              bytesToCopy);
+      if (ctx.size() == length) {
+        break;
+      }
+    }
+    return ctx;
+  }
+};
+
+// A class for basic communication with a remote server via HTTP or HTTPS. For
+// now, contains functionality for setting up a connection, sending one or
+// several GET or POST requests (and getting the response), and closing the
+// connection.
+//
+// The `StreamType` determines whether the protocol used will be HTTP or HTTPS,
+// see the two instantiations `HttpCLient` and `HttpsClient` below.
+template <typename StreamType>
+class HttpClientImpl {
+ public:
+  // The constructor sets up the connection to the client. If `proxy` is set,
+  // the TCP connection goes to the proxy instead of to `host`:`port`, and it is
+  // the proxy that connects to `host`:`port` on our behalf. For HTTPS this
+  // requires establishing a tunnel with the `CONNECT` method before the TLS
+  // handshake (see `establishProxyTunnel` in `HttpClient.cpp`). For plain HTTP
+  // nothing else has to happen here, but the request target passed to
+  // `sendRequest` then has to be in absolute form (see `absoluteFormTarget` in
+  // `HttpProxyConfig.h`), which `sendHttpOrHttpsRequest` below takes care of.
+  HttpClientImpl(
+      std::string_view host, std::string_view port,
+      const std::optional<ad_utility::httpProxy::Proxy>& proxy = std::nullopt);
+
+  // The destructor closes the connection.
+  ~HttpClientImpl();
+
+  // Send a request (the first argument must be either `http::verb::get` or
+  // `http::verb::post`) and return the status and content-type as
+  // well as the body of the response (possibly very large) as an
+  // `cppcoro::generator<ql::span<std::byte>>`. The connection can be used
+  // for only one request, as the client is moved to the content yielding
+  // coroutine.
+  //
+  // Note that `host` only determines the `Host` header; where the request
+  // actually goes was already decided by the constructor. With a proxy, `Host`
+  // hence still names the target server, and `target` has to be in absolute
+  // form, see there.
+  static HttpOrHttpsResponse sendRequest(
+      std::unique_ptr<HttpClientImpl> client,
+      const boost::beast::http::verb& method, std::string_view host,
+      std::string_view target, ad_utility::SharedCancellationHandle handle,
+      std::string_view requestBody = "",
+      std::string_view contentTypeHeader = "text/plain",
+      std::string_view acceptHeader = "text/plain");
+
+  // Simple way to establish a websocket connection
+  boost::beast::http::response<boost::beast::http::string_body>
+  sendWebSocketHandshake(const boost::beast::http::verb& method,
+                         std::string_view host, std::string_view target);
+
+ private:
+  // The connection stream and associated objects. See the implementation of
+  // `openStream` for why we need all of them, and not just `stream_`.
+  boost::asio::io_context ioContext_;
+  // For some reason this work guard is required when no threads are attached
+  // immediately.
+  boost::asio::executor_work_guard<boost::asio::io_context::executor_type>
+      workGuard_ = boost::asio::make_work_guard(ioContext_);
+  std::unique_ptr<boost::asio::ssl::context> ssl_context_;
+  std::unique_ptr<StreamType> stream_;
+  // The value for the `Proxy-Authorization` header of relayed plain HTTP
+  // requests (empty if there is no proxy or it needs no authentication). Only
+  // used for plain HTTP: for HTTPS, the credentials are sent on the `CONNECT`
+  // request instead, and must not appear inside the TLS session, where the
+  // target server would see them.
+  std::string proxyAuthorization_;
+};
+
+// Instantiation for HTTP.
+using HttpClient = HttpClientImpl<boost::beast::tcp_stream>;
+
+// Instantiation for HTTPS.
+using HttpsClient =
+    HttpClientImpl<boost::asio::ssl::stream<boost::asio::ip::tcp::socket>>;
+
+// The type of the `sendHttpOrHttpsRequest` function below, wrapped in a
+// `std::function`. This type alias can be used when mocking an HTTP connection
+// for testing purposes.
+using SendRequestType = std::function<HttpOrHttpsResponse(
+    const ad_utility::httpUtils::Url&,
+    ad_utility::SharedCancellationHandle handle,
+    const boost::beast::http::verb&, std::string_view, std::string_view,
+    std::string_view, size_t)>;
+
+// Global convenience function for sending a request (default: GET) to the given
+// URL and obtaining the result as a `cppcoro::generator<ql::span<std::byte>>`.
+// The protocol (HTTP or HTTPS) is chosen automatically based on the URL. The
+// `requestBody` is the payload sent for POST requests (default: empty). If
+// `maxRedirects` is greater than 0, the function will automatically follow
+// redirects (301, 302, 307, 308) up to the specified limit. All requests are
+// routed through the proxy configured for this process, see `globalProxy()`.
+// For Emscripten this is implemented with the `fetch` API of the surrounding
+// JavaScript environment instead, which differs in a few points that are listed
+// at the top of `HttpClientEmscripten.cpp`; the proxy is one of them.
+HttpOrHttpsResponse sendHttpOrHttpsRequest(
+    const ad_utility::httpUtils::Url& url,
+    ad_utility::SharedCancellationHandle handle,
+    const boost::beast::http::verb& method = boost::beast::http::verb::get,
+    std::string_view postData = "",
+    std::string_view contentTypeHeader = "text/plain",
+    std::string_view acceptHeader = "text/plain", size_t maxRedirects = 0);
+
+// Same as above, but route the requests through `proxy` (or directly, if it is
+// `std::nullopt`) instead of through the proxy configured for this process.
+// Mostly useful for tests, as the latter is read from the environment only once
+// per process. Note that this deliberately is not an overload of the above,
+// which could then no longer be converted to a `SendRequestType`.
+//
+// NOTE: `fetch` cannot be told to use a proxy, so this does not exist for
+// Emscripten; using it there is a compile error rather than a link error.
+#ifndef __EMSCRIPTEN__
+HttpOrHttpsResponse sendHttpOrHttpsRequestWithProxy(
+    const ad_utility::httpUtils::Url& url,
+    ad_utility::SharedCancellationHandle handle,
+    const boost::beast::http::verb& method, std::string_view postData,
+    std::string_view contentTypeHeader, std::string_view acceptHeader,
+    size_t maxRedirects,
+    const std::optional<ad_utility::httpProxy::Proxy>& proxy);
+#endif  // __EMSCRIPTEN__
+
+#endif
+#endif  // QLEVER_SRC_UTIL_HTTP_HTTPCLIENT_H

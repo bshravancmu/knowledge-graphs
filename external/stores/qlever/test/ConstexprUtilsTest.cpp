@@ -1,0 +1,511 @@
+//  Copyright 2022, University of Freiburg,
+//                  Chair of Algorithms and Data Structures.
+//  Author: Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
+//
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
+
+#include <array>
+#include <string_view>
+#include <utility>
+
+#include "gtest/gtest.h"
+#include "util/ConstexprUtils.h"
+#include "util/Exception.h"
+#include "util/GTestHelpers.h"
+#include "util/TypeTraits.h"
+
+using namespace ad_utility;
+
+// _____________________________________________________________________________
+TEST(ConstexprUtils, allDistinct) {
+  static_assert(allDistinct(std::array<int, 0>{}));
+  static_assert(allDistinct(std::array{1}));
+  static_assert(allDistinct(std::array{1, 2, 3}));
+  static_assert(!allDistinct(std::array{1, 1}));
+  static_assert(!allDistinct(std::array{1, 2, 1}));
+  static_assert(!allDistinct(std::array{1, 2, 2}));
+
+  // The intended use case: filename suffixes.
+  static_assert(allDistinct(std::array<std::string_view, 3>{"", ".a", ".b"}));
+  static_assert(!allDistinct(std::array<std::string_view, 3>{"", ".a", ".a"}));
+
+  // Also works at runtime.
+  EXPECT_TRUE(allDistinct(std::array{1, 2, 3}));
+  EXPECT_FALSE(allDistinct(std::array{3, 2, 3}));
+}
+
+// _____________________________________________________________________________
+TEST(ConstexprUtils, pow) {
+  static_assert(pow(0, 0) == 1);
+  static_assert(pow(0.0, 0) == 1);
+  static_assert(pow(0, 1) == 0);
+  static_assert(pow(0.0, 1) == 0);
+  static_assert(pow(0, 15) == 0);
+  static_assert(pow(0.0, 15) == 0);
+  static_assert(pow(1, 0) == 1);
+  static_assert(pow(1.0, 0) == 1);
+  static_assert(pow(15, 0) == 1);
+  static_assert(pow(15.0, 0) == 1);
+
+  static_assert(pow(1, 12) == 1);
+  static_assert(pow(1.0, 12) == 1);
+
+  static_assert(pow(2, 10) == 1024);
+  static_assert(pow(1.5, 4) == 1.5 * 1.5 * 1.5 * 1.5);
+
+  static_assert(pow(-1, 2) == 1);
+  static_assert(pow(-1, 3) == -1);
+
+  static_assert(pow(-2, 2) == 4);
+  static_assert(pow(-2, 3) == -8);
+}
+
+// Easier testing for equality of `ValueSequence`. They must have the
+// same underlying type and the same values.
+// Note: we cannot call this `operator==` because the operator would only be
+// found by argument-dependent lookup if it was in the `std::` namespace, and
+// adding functions there is by default forbidden.
+
+template <typename T, T... Ts>
+auto toArray(const ValueSequence<T, Ts...>&) {
+  return std::array<T, sizeof...(Ts)>{Ts...};
+}
+
+template <typename T, const T&... Ts>
+auto toArray(const ValueSequenceRef<T, Ts...>&) {
+  return std::array<T, sizeof...(Ts)>{Ts...};
+}
+
+template <typename T, typename U, T... Ts, U... Us>
+bool compare(const ValueSequence<T, Ts...>& v1,
+             const ValueSequence<U, Us...>& v2) {
+  if constexpr (std::is_same_v<U, T> && sizeof...(Us) == sizeof...(Ts)) {
+    return toArray(v1) == toArray(v2);
+  } else {
+    return false;
+  }
+}
+
+template <typename T, typename U, const T&... Ts, const U&... Us>
+bool compare(const ValueSequenceRef<T, Ts...>& v1,
+             const ValueSequenceRef<U, Us...>& v2) {
+  if constexpr (std::is_same_v<U, T> && sizeof...(Us) == sizeof...(Ts)) {
+    return toArray(v1) == toArray(v2);
+  } else {
+    return false;
+  }
+}
+
+TEST(ConstexprUtils, toIntegerSequence) {
+  ASSERT_TRUE(compare(ValueSequence<int>{},
+                      (toIntegerSequence<std::array<int, 0>{}>())));
+  ASSERT_TRUE(compare(ValueSequence<int, 3, 2>{},
+                      (toIntegerSequence<std::array{3, 2}>())));
+  ASSERT_TRUE(compare(ValueSequence<int, -12>{},
+                      (toIntegerSequence<std::array{-12}>())));
+  ASSERT_TRUE(compare(ValueSequence<int, 5, 3, 3, 4, -1>{},
+                      (toIntegerSequence<std::array{5, 3, 3, 4, -1}>())));
+
+  // Mismatching types.
+  ASSERT_FALSE(compare(ValueSequence<float>{},
+                       (toIntegerSequence<std::array<int, 0>{}>())));
+  ASSERT_FALSE(compare(ValueSequence<unsigned, 5, 4>{},
+                       (toIntegerSequence<std::array{5, 4}>())));
+
+  // Mismatching values
+  ASSERT_FALSE(compare(ValueSequence<int, 3, 2>{},
+                       (toIntegerSequence<std::array{3, 3}>())));
+  ASSERT_FALSE(compare(ValueSequence<int, -12>{},
+                       (toIntegerSequence<std::array{-12, 4}>())));
+  ASSERT_FALSE(compare(ValueSequence<int, -12, 4>{},
+                       (toIntegerSequence<std::array{-12}>())));
+}
+
+// Similar tests for `toIntegerSequenceRef`. The template parameters have to be
+// declared upfront, s.t. they are objects that have linkage and therefore can
+// be used as `const&` template parameters.
+static constexpr std::array<int, 0> emptyArray{};
+static constexpr std::array<int, 2> threeTwoArray{3, 2};
+static constexpr std::array<int, 2> twoOneArray{2, 1};
+TEST(ConstexprUtils, toIntegerSequenceRef) {
+  ASSERT_TRUE(
+      compare(ValueSequence<int>{}, (toIntegerSequenceRef<emptyArray>())));
+  ASSERT_TRUE(compare(ValueSequence<int, 3, 2>{},
+                      (toIntegerSequenceRef<threeTwoArray>())));
+}
+
+// _____________________________________________________________________________
+TEST(ConstexprUtils, ValueSequenceRef) {
+  auto comp = std::array{twoOneArray, threeTwoArray};
+  ASSERT_EQ(
+      toArray(
+          ValueSequenceRef<std::array<int, 2>, twoOneArray, threeTwoArray>{}),
+      comp);
+}
+
+TEST(ConstexprUtils, cartesianPowerAsArray) {
+  std::array<std::array<int, 1>, 4> a{std::array{0}, std::array{1},
+                                      std::array{2}, std::array{3}};
+  ASSERT_EQ(a, (cartesianPowerAsArray<4, 1>()));
+
+  std::array<std::array<int, 2>, 4> b{std::array{0, 0}, std::array{0, 1},
+                                      std::array{1, 0}, std::array{1, 1}};
+  ASSERT_EQ(b, (cartesianPowerAsArray<2, 2>()));
+
+  std::array<std::array<int, 3>, 8> c{std::array{0, 0, 0}, std::array{0, 0, 1},
+                                      std::array{0, 1, 0}, std::array{0, 1, 1},
+                                      std::array{1, 0, 0}, std::array{1, 0, 1},
+                                      std::array{1, 1, 0}, std::array{1, 1, 1}};
+  ASSERT_EQ(c, (cartesianPowerAsArray<2, 3>()));
+}
+
+TEST(ConstexprUtils, cartesianPowerAsIntegerArray) {
+  ValueSequence<std::array<int, 1>, std::array{0}, std::array{1}, std::array{2},
+                std::array{3}>
+      a;
+  ASSERT_TRUE(compare(a, (cartesianPowerAsIntegerArray<4, 1>())));
+
+  ValueSequence<std::array<int, 2>, std::array{0, 0}, std::array{0, 1},
+                std::array{1, 0}, std::array{1, 1}>
+      b;
+  ASSERT_TRUE(compare(b, (cartesianPowerAsIntegerArray<2, 2>())));
+
+  ValueSequence<std::array<int, 3>, std::array{0, 0, 0}, std::array{0, 0, 1},
+                std::array{0, 1, 0}, std::array{0, 1, 1}, std::array{1, 0, 0},
+                std::array{1, 0, 1}, std::array{1, 1, 0}, std::array{1, 1, 1}>
+      c;
+  ASSERT_TRUE(compare(c, (cartesianPowerAsIntegerArray<2, 3>())));
+}
+
+TEST(ConstexprUtils, ConstexprForLoop) {
+  size_t i{0};
+
+  // Add `i` up to one hundred.
+  ConstexprForLoopVi(std::make_index_sequence<100>{},
+                     [&i](auto /*valueIdentity*/) { i++; });
+  ASSERT_EQ(i, 100);
+
+  // Add up 2, 5, and 9 at run time.
+  i = 0;
+  ConstexprForLoopVi(std::index_sequence<2, 5, 9>{},
+                     [&i](auto NumberToAdd) { i += NumberToAdd; });
+  ASSERT_EQ(i, 16);
+
+  // Shouldn't do anything, because the index sequence is empty.
+  i = 0;
+  ConstexprForLoopVi(std::index_sequence<>{},
+                     [&i](auto NumberToAdd) { i += NumberToAdd; });
+  ASSERT_EQ(i, 0);
+}
+
+TEST(ConstexprUtils, RuntimeValueToCompileTimeValue) {
+  // Create one function, that sets `i` to x, for every possible
+  // version of x in [0,100].
+  size_t i = 1;
+  auto setI = [&i](auto Number) { i = Number.value; };
+  for (size_t d = 0; d <= 100; d++) {
+    RuntimeValueToCompileTimeValueVi<100>(d, setI);
+    ASSERT_EQ(i, d);
+  }
+
+  // Should cause an exception, if the given value is bigger than the
+  // `MaxValue`.
+  ASSERT_ANY_THROW(RuntimeValueToCompileTimeValueVi<5>(10, setI));
+}
+
+// A helper struct for the following test.
+struct F1 {
+  CPP_template(int i)(requires(i == 0 || i == 1)) int operator()() const {
+    return i + 1;
+  }
+};
+// _____________________________________________________________
+TEST(ConstexprUtils, ConstexprSwitch) {
+  using namespace ad_utility;
+  {
+    auto f = ad_utility::ApplyAsValueIdentity{[](auto i) { return i * 2; }};
+    ASSERT_EQ((ConstexprSwitch<1, 2, 3, 5>{}(f, 2)), 4);
+    ASSERT_EQ((ConstexprSwitch<1, 2, 3, 5>{}(f, 5)), 10);
+    ASSERT_ANY_THROW((ConstexprSwitch<1, 2, 3, 5>{}(f, 4)));
+  }
+  {
+    auto f =
+        ad_utility::ApplyAsValueIdentity{[](auto i, int j) { return i * j; }};
+    ASSERT_EQ((ConstexprSwitch<1, 2, 3, 5>{}(f, 2, 7)), 14);
+    ASSERT_EQ((ConstexprSwitch<1, 2, 3, 5>{}(f, 5, 2)), 10);
+    ASSERT_ANY_THROW((ConstexprSwitch<1, 2, 3, 5>{}(f, 4, 3)));
+  }
+
+  // F1 can only be called with 0 and 1 as template arguments.
+  static_assert(std::invocable<decltype(ConstexprSwitch<0, 1>{}), F1, int>);
+  static_assert(!std::invocable<decltype(ConstexprSwitch<0, 1, 2>{}), F1, int>);
+}
+
+namespace {
+constexpr std::array<int, 4> switchFromArrayCases{1, 2, 3, 5};
+}
+
+// The same tests as for `ConstexprSwitch` above, but going through
+// `constexprSwitchFromTuple`, which reads the cases from a `std::array`.
+TEST(ConstexprUtils, constexprSwitchFromTuple) {
+  using namespace ad_utility;
+  {
+    auto f = ad_utility::ApplyAsValueIdentity{[](auto i) { return i * 2; }};
+    ASSERT_EQ((constexprSwitchFromTuple<switchFromArrayCases>(f, 2)), 4);
+    ASSERT_EQ((constexprSwitchFromTuple<switchFromArrayCases>(f, 5)), 10);
+    ASSERT_ANY_THROW((constexprSwitchFromTuple<switchFromArrayCases>(f, 4)));
+  }
+  {
+    auto f =
+        ad_utility::ApplyAsValueIdentity{[](auto i, int j) { return i * j; }};
+    ASSERT_EQ((constexprSwitchFromTuple<switchFromArrayCases>(f, 2, 7)), 14);
+    ASSERT_EQ((constexprSwitchFromTuple<switchFromArrayCases>(f, 5, 2)), 10);
+    ASSERT_ANY_THROW((constexprSwitchFromTuple<switchFromArrayCases>(f, 4, 3)));
+  }
+}
+
+namespace {
+// Cases of different types, which is the reason `constexprSwitchFromTuple`
+// accepts an arbitrary tuple-like rather than `std::array`.
+constexpr std::tuple<int, char, long> switchFromTupleMixedCases{1, 'a', 5L};
+};  // namespace
+
+// `constexprSwitchFromTuple` with cases of different types. The lambda has to
+// map all of them to a common return type, as the cases are expanded into a
+// single `ConstexprSwitch`.
+TEST(ConstExprUtils, constexprSwitchFromTupleWithMixedTypes) {
+  using namespace ad_utility;
+  auto f = ad_utility::ApplyAsValueIdentity{
+      [](auto c) -> int { return static_cast<int>(c); }};
+  ASSERT_EQ((constexprSwitchFromTuple<switchFromTupleMixedCases>(f, 1)), 1);
+  ASSERT_EQ((constexprSwitchFromTuple<switchFromTupleMixedCases>(f, 'a')), 97);
+  ASSERT_EQ((constexprSwitchFromTuple<switchFromTupleMixedCases>(f, 5L)), 5);
+  ASSERT_ANY_THROW((constexprSwitchFromTuple<switchFromTupleMixedCases>(f, 4)));
+}
+
+struct PushToVector {
+  std::vector<std::string>* typeToStringVector;
+
+  template <typename T>
+  void operator()() const {
+    if constexpr (ad_utility::isSimilar<T, int>) {
+      typeToStringVector->emplace_back("int");
+    } else if constexpr (ad_utility::isSimilar<T, bool>) {
+      typeToStringVector->emplace_back("bool");
+    } else if constexpr (ad_utility::isSimilar<T, std::string>) {
+      typeToStringVector->emplace_back("std::string");
+    } else {
+      AD_FAIL();
+    }
+  }
+};
+
+struct PushToVectorWithTI {
+  std::vector<std::string>* typeToStringVector;
+
+  template <typename T>
+  void operator()(use_type_identity::TI<T>) const {
+    if constexpr (ad_utility::isSimilar<T, int>) {
+      typeToStringVector->emplace_back("int");
+    } else if constexpr (ad_utility::isSimilar<T, bool>) {
+      typeToStringVector->emplace_back("bool");
+    } else if constexpr (ad_utility::isSimilar<T, std::string>) {
+      typeToStringVector->emplace_back("std::string");
+    } else {
+      AD_FAIL();
+    }
+  }
+};
+
+/*
+@brief Create a lambda, that adds the string representation of a (supported)
+type to a given vector.
+
+@returns A lambda, that takes an explicit template type parameter and adds the
+string representation at the end of `*typeToStringVector`.
+*/
+auto typeToStringFactory(std::vector<std::string>* typeToStringVector) {
+  return PushToVector{typeToStringVector};
+}
+
+auto typeToStringFactoryWithTI(std::vector<std::string>* typeToStringVector) {
+  return PushToVectorWithTI{typeToStringVector};
+}
+
+/*
+@brief Test a normal call for a `constExprForEachType` function.
+
+@param callToForEachWrapper A lambda wrapper, that takes an explicit template
+parameter pack and a lambda function argument, which it passes to a
+`constExprForEachType` function in the correct form.
+*/
+template <typename F, typename Factory>
+void testConstExprForEachNormalCall(
+    const F& callToForEachWrapper, Factory callToTypeToStringFactory,
+    ad_utility::source_location l = AD_CURRENT_SOURCE_LOC()) {
+  // For generating better messages, when failing a test.
+  auto trace{generateLocationTrace(l, "testConstExprForEachNormalCall")};
+
+  std::vector<std::string> typeToStringVector{};
+  auto typeToString = callToTypeToStringFactory(&typeToStringVector);
+
+  // Normal call.
+  callToForEachWrapper.template
+  operator()<int, bool, std::string, bool, bool, int, int, int>(typeToString);
+
+  ASSERT_STREQ(typeToStringVector.at(0).c_str(), "int");
+  ASSERT_STREQ(typeToStringVector.at(1).c_str(), "bool");
+  ASSERT_STREQ(typeToStringVector.at(2).c_str(), "std::string");
+  ASSERT_STREQ(typeToStringVector.at(3).c_str(), "bool");
+  ASSERT_STREQ(typeToStringVector.at(4).c_str(), "bool");
+  ASSERT_STREQ(typeToStringVector.at(5).c_str(), "int");
+  ASSERT_STREQ(typeToStringVector.at(6).c_str(), "int");
+  ASSERT_STREQ(typeToStringVector.at(7).c_str(), "int");
+}
+
+struct TestForEachTypeInParameterPack {
+  template <typename... Ts, typename F>
+  void operator()(const F& func) const {
+    forEachTypeInParameterPack<Ts...>(func);
+  }
+};
+
+TEST(ConstexprUtils, ForEachTypeInParameterPack) {
+  // Normal call.
+  testConstExprForEachNormalCall(TestForEachTypeInParameterPack{},
+                                 typeToStringFactory);
+
+  // No types given should end in nothing happening.
+  std::vector<std::string> typeToStringVector{};
+  auto typeToString = typeToStringFactory(&typeToStringVector);
+  forEachTypeInParameterPack<>(typeToString);
+  ASSERT_TRUE(typeToStringVector.empty());
+}
+
+struct TestForEachTypeInParameterPackWithTI {
+  template <typename... Ts, typename F>
+  void operator()(const F& func) const {
+    forEachTypeInParameterPackWithTI<Ts...>(func);
+  }
+};
+
+TEST(ConstexprUtils, ForEachTypeInParameterPackWithTI) {
+  // Normal call.
+  testConstExprForEachNormalCall(TestForEachTypeInParameterPackWithTI{},
+                                 typeToStringFactoryWithTI);
+
+  // No types given should end in nothing happening.
+  std::vector<std::string> typeToStringVector{};
+  auto typeToString = typeToStringFactoryWithTI(&typeToStringVector);
+  forEachTypeInParameterPackWithTI<>(typeToString);
+  ASSERT_TRUE(typeToStringVector.empty());
+}
+
+struct TestForEachTypeInTemplateTypeOfVariant {
+  template <typename... Ts, typename F>
+  void operator()(const F& func) const {
+    forEachTypeInTemplateType<std::variant<Ts...>>(func);
+  }
+};
+
+struct TestForEachTypeInTemplateTypeOfTuple {
+  template <typename... Ts, typename F>
+  void operator()(const F& func) const {
+    forEachTypeInTemplateType<std::tuple<Ts...>>(func);
+  }
+};
+
+TEST(ConstexprUtils, forEachTypeInTemplateType) {
+  // Normal call with `std::variant`.
+  testConstExprForEachNormalCall(TestForEachTypeInTemplateTypeOfVariant{},
+                                 typeToStringFactory);
+
+  // Normal call with `std::tuple`.
+  testConstExprForEachNormalCall(TestForEachTypeInTemplateTypeOfTuple{},
+                                 typeToStringFactory);
+}
+
+struct TestForEachTypeInTemplateTypeWithTIOfVariant {
+  template <typename... Ts, typename F>
+  void operator()(const F& func) const {
+    using use_type_identity::ti;
+    forEachTypeInTemplateTypeWithTI(ti<std::variant<Ts...>>, func);
+  }
+};
+
+struct TestForEachTypeInTemplateTypeWithTIOfTuple {
+  template <typename... Ts, typename F>
+  void operator()(const F& func) const {
+    using use_type_identity::ti;
+    forEachTypeInTemplateTypeWithTI(ti<std::tuple<Ts...>>, func);
+  }
+};
+
+TEST(ConstexprUtils, forEachTypeInTemplateTypeWithTI) {
+  // Normal call with `std::variant`.
+  testConstExprForEachNormalCall(TestForEachTypeInTemplateTypeWithTIOfVariant{},
+                                 typeToStringFactoryWithTI);
+
+  // Normal call with `std::tuple`.
+  testConstExprForEachNormalCall(TestForEachTypeInTemplateTypeWithTIOfTuple{},
+                                 typeToStringFactoryWithTI);
+}
+
+template <typename Values>
+struct TestForEachValueInValueSequence {
+  Values& values;
+
+  template <auto V>
+  void operator()() const {
+    values.push_back(V);
+  }
+};
+
+template <typename Values>
+TestForEachValueInValueSequence(Values&)
+    -> TestForEachValueInValueSequence<Values>;
+
+TEST(ConstexprUtils, forEachValueInValueSequence) {
+  // Test with an empty ValueSequence.
+  {
+    std::vector<int> values;
+    auto collectValues = TestForEachValueInValueSequence{values};
+    forEachValueInValueSequence(ValueSequence<int>{}, collectValues);
+    ASSERT_TRUE(values.empty());
+  }
+
+  // Test with a ValueSequence of integers.
+  {
+    std::vector<int> values;
+    auto collectValues = TestForEachValueInValueSequence{values};
+    forEachValueInValueSequence(ValueSequence<int, 1, 2, 3>{}, collectValues);
+    ASSERT_EQ(values.size(), 3);
+    ASSERT_EQ(values[0], 1);
+    ASSERT_EQ(values[1], 2);
+    ASSERT_EQ(values[2], 3);
+  }
+  // Also test the overload for `std::integer_sequence`.
+  {
+    std::vector<int> values;
+    auto collectValues = TestForEachValueInValueSequence{values};
+    forEachValueInValueSequence(std::integer_sequence<int, 1, 2, 3>{},
+                                collectValues);
+    ASSERT_EQ(values.size(), 3);
+    ASSERT_EQ(values[0], 1);
+    ASSERT_EQ(values[1], 2);
+    ASSERT_EQ(values[2], 3);
+  }
+
+  // Test with a ValueSequence of std::array.
+  {
+    using ArrayType = std::array<int, 3>;
+    std::vector<ArrayType> values;
+    auto collectValues = TestForEachValueInValueSequence{values};
+    forEachValueInValueSequence(
+        ValueSequence<ArrayType, ArrayType{1, 2, 3}, ArrayType{4, 5, 6}>{},
+        collectValues);
+    ASSERT_EQ(values.size(), 2);
+    ASSERT_EQ(values[0], (ArrayType{1, 2, 3}));
+    ASSERT_EQ(values[1], (ArrayType{4, 5, 6}));
+  }
+}

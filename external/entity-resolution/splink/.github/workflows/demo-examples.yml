@@ -1,0 +1,49 @@
+name: Demo Example Notebooks
+
+on:
+  pull_request:
+    paths:
+      - "splink/**"
+      - "docs/demos/examples/**"
+      - "!docs/demos/examples/examples_index.md"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  test-notebooks:
+    name: Test ${{ matrix.test-group }} notebook with Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+        test-group: ["duckdb", "spark", "sqlite"]
+    steps:
+      - name: Checkout
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup uv
+        id: setup_uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: false
+
+      - name: Install Python ${{ matrix.python-version }}
+        id: install_python
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        id: install_dependencies
+        run: cd docs/demos && uv sync --python ${{ matrix.python-version }}
+
+      - name: Run example notebooks (${{ matrix.test-group }})
+        id: run_demos
+        run: make demos DEMO_PATH=examples/${{ matrix.test-group }}

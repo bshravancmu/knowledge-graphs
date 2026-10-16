@@ -1,0 +1,4 @@
+@prefix ex: <http://example.com/>.
+
+<http://example.com/Student/4567> a ex:studentId ;
+	ex:hasSumScore "88"^^xsd:int .

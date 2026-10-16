@@ -1,0 +1,1237 @@
+"""
+Base class for all generators
+
+Developer Notes
+---------------
+
+Subclasses of this class implement specific generators. Each generator is in one of two styles:
+
+1. schemaloader-based, using a Visitor pattern (older)
+2. schemaview-based, no visitor pattern (newer)
+
+New generators should always using the latter approach
+
+See: https://github.com/linkml/linkml/issues/923
+
+"""
+
+import abc
+import logging
+import os
+import re
+import sys
+import warnings
+from collections.abc import Callable, Mapping
+from copy import deepcopy
+from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
+from typing import IO, Any, ClassVar, TextIO, Union, cast
+
+import click
+import yaml
+from click import Argument, Command, Option, ParameterSource
+
+from linkml import LOCAL_METAMODEL_YAML_FILE
+from linkml.cli.logging import DEFAULT_LOG_LEVEL_INT, log_level_option
+from linkml.utils.deprecation import METADATA_FLAG, deprecation_warning
+from linkml.utils.mergeutils import alias_root
+from linkml.utils.schemaloader import SchemaLoader
+from linkml.utils.typereferences import References
+from linkml_runtime import SchemaView
+from linkml_runtime.linkml_model.meta import (
+    ClassDefinition,
+    ClassDefinitionName,
+    Definition,
+    Element,
+    ElementName,
+    EnumDefinition,
+    EnumDefinitionName,
+    PrefixPrefixPrefix,
+    SchemaDefinition,
+    SlotDefinition,
+    SlotDefinitionName,
+    SubsetDefinition,
+    SubsetDefinitionName,
+    TypeDefinition,
+    TypeDefinitionName,
+    metamodel_version,
+)
+from linkml_runtime.utils.formatutils import camelcase, underscore
+from linkml_runtime.utils.namespaces import Namespaces
+
+logger = logging.getLogger(__name__)
+
+
+@lru_cache
+def _resolved_metamodel(mergeimports):
+    if not os.path.exists(LOCAL_METAMODEL_YAML_FILE):
+        raise AssertionError(f"{LOCAL_METAMODEL_YAML_FILE} not found")
+
+    base_dir = str(Path(str(LOCAL_METAMODEL_YAML_FILE)).parent)
+    logger.debug(f"BASE={base_dir}")
+    metamodel = SchemaLoader(
+        LOCAL_METAMODEL_YAML_FILE,
+        importmap={"linkml": base_dir},
+        base_dir=base_dir,
+        mergeimports=mergeimports,
+    )
+    metamodel.resolve()
+    return metamodel
+
+
+@dataclass
+class Generator(metaclass=abc.ABCMeta):
+    """
+    Base class for generators
+
+    For usage `Generator Docs <https://linkml.io/linkml/generators/>`_
+    """
+
+    schema: Union[str, TextIO, SchemaDefinition, "Generator", Path]
+    """metamodel compliant schema.  Can be URI, file name, actual schema, another generator, an
+        open file or a pre-parsed schema"""
+
+    # ClassVars
+    generatorname: ClassVar[str] = None
+    """ Name of the generator. Override with os.path.basename(__file__)"""
+
+    generatorversion: ClassVar[str] = None  # Generator version identifier
+    """Version of the generator. Consider deprecating and instead use overall linkml version"""
+
+    config_section_name: ClassVar[str] = None
+    """Section this generator reads from a ``--config-file`` (``generator_args.<name>``)."""
+
+    uses_schemaloader: ClassVar[bool] = True
+    """Old-style generator that uses the SchemaLoader and visitor pattern"""
+
+    # uses_schemaview: ClassVar[bool] = True
+    # """New-style generator that uses SchemaView"""
+
+    requires_metamodel: ClassVar[bool] = True
+    """Generator queries an instance of the metamodel"""
+
+    valid_formats: ClassVar[list[str]] = []
+    """Allowed formats - first format is default"""
+
+    visit_all_class_slots: ClassVar[bool] = False
+    """Visitor ClassVar: False means only visit own slots, True means visit all slots"""
+
+    visits_are_sorted: ClassVar[bool] = True
+    """Visitor ClassVar: True means visit basic types in alphabetial order, false in entry"""
+
+    sort_class_slots: ClassVar[bool] = False
+    """Visitor ClassVar: True means visit class slots in alphabetical order"""
+
+    # Object-level Vars
+    schemaview: SchemaView | None = None
+    """A wrapper onto the schema object"""
+
+    format: str | None = None
+    """expected output format"""
+
+    file_extension: ClassVar[str] = None
+
+    metadata: bool = True
+    """True means include date, generator, etc. information in source header if appropriate"""
+
+    include_generation_date: bool = False
+    """True stamps the output with a generation_date timestamp. Off by default so output is
+    reproducible (byte-stable) across runs; the date of generation is normally recoverable
+    from version control."""
+
+    useuris: bool | None = None
+    """True means declared class slot uri's are used.  False means use model uris"""
+
+    log_level: int | None = DEFAULT_LOG_LEVEL_INT
+    """Logging level, 0 is minimum"""
+
+    mergeimports: bool | None = True
+    """True means merge non-linkml sources into importing package.  False means separate packages"""
+
+    source_file_date: str | None = None
+    """Modification date of input source file"""
+
+    source_file_size: int | None = None
+    """Size of the source file in bytes"""
+
+    logger: logging.Logger | None = None
+    """Logger to use for logging messages"""
+
+    verbose: bool | None = None
+    """Verbosity"""
+
+    output: str | None = None
+    """Path to output file. Note all generators may not implement this
+    uniformly, see https://github.com/linkml/linkml/issues/923"""
+
+    _namespaces: ClassVar[Namespaces | None] = None
+    """Class-level sentinel default for the private backing store of the
+    :attr:`namespaces` property. Declaring it as a ``ClassVar`` keeps it out of
+    the dataclass-generated ``__init__`` while still providing a safe default
+    read (``None``) before the instance attribute is assigned. The public,
+    constructor-visible name is the field ``namespaces``.  On ``main`` that was a
+    plain dataclass field, so ``namespaces=`` was an implicit constructor kwarg;
+    it is preserved here so external callers/subclasses relying on it are not
+    silently broken by the switch to a property-backed field.
+    """
+
+    @property
+    def namespaces(self) -> Namespaces | None:
+        """Return the namespace registry.
+
+        On the SchemaLoader path (``uses_schemaloader=True``) this returns the
+        pre-built :class:`~linkml_runtime.utils.namespaces.Namespaces` object
+        populated by SchemaLoader.
+
+        On the SchemaView path (``uses_schemaloader=False``) accessing this
+        property is a sign of a hybrid design anti-pattern. A deprecation
+        warning is emitted and the call is transparently forwarded to
+        ``self.schemaview.namespaces()`` so that existing callers continue to
+        work while being nudged towards the correct API.
+        """
+        # Emit a warning when a SchemaView-based generator reads self.namespaces.
+        if not self.uses_schemaloader and self.schemaview is not None:
+            warnings.warn(
+                f"{type(self).__name__} uses SchemaView (uses_schemaloader=False) but "
+                "self.namespaces was accessed.  Use self.schemaview.namespaces() for URI "
+                "resolution instead; self.namespaces is a SchemaLoader-era artifact that "
+                "is not populated on the SchemaView path.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        # Return the namespace map, preferring an explicitly injected one.
+        if self._namespaces is not None:
+            return self._namespaces
+        if not self.uses_schemaloader and self.schemaview is not None:
+            return self.schemaview.namespaces()
+        return None
+
+    @namespaces.setter
+    def namespaces(self, value: Namespaces | None) -> None:
+        """Save passed namespace registry in the private backing store of the
+        :attr:`namespaces` property."""
+        self._namespaces = value
+
+    namespaces: Namespaces | None = namespaces
+    """Constructor kwarg backing the ``namespaces`` property (see above).
+
+    This does NOT create a second attribute that shadows the property.
+    A dataclass "field" is just an *annotation* plus a *default value*;
+    the only real class attribute named ``namespaces`` remains the
+    ``namespaces`` property object.
+    ``@dataclass`` reads that property object as the field's default and bakes it
+    into the generated ``__init__`` as ``namespaces=<property object>``
+    -- it does not overwrite the property, so attribute access still goes through
+    the getter/setter.
+    """
+
+    directory_output: bool = False
+    """True means output is to a directory, False is to stdout"""
+
+    base_dir: str = None  # Base directory of schema
+    """Working directory or base URL of sources.
+    Setting this is necessary for correct retrieval of relative imports."""
+
+    metamodel_name_map: dict[str, str] = None
+    """Allows mapping of names of metamodel elements such as slot, etc"""
+
+    importmap: str | Mapping[str, str] | None | None = None
+    """File name of import mapping file -- maps import name/uri to target"""
+
+    emit_prefixes: set[str] = field(default_factory=lambda: set())
+    """Prefixes to emit, for RDF-based generators"""
+
+    metamodel: SchemaLoader = None
+    """A SchemaLoader instance that points to the LinkML metamodel (meta.yaml)"""
+
+    stacktrace: bool = False
+    """True means print stack trace, false just error message"""
+
+    include: str | Path | SchemaDefinition | None = None
+    """If set, include extra schema outside of the imports mechanism"""
+
+    def __post_init__(self) -> None:
+        # The ``namespaces`` dataclass field defaults to the property object
+        # itself (see its declaration).  When no ``namespaces=`` kwarg is passed,
+        # the generated __init__ routes that default through the property setter
+        # into ``self._namespaces``; normalise that sentinel back to ``None`` so
+        # the SchemaLoader/SchemaView paths can populate it as usual.
+        if self._namespaces is Generator.__dict__["namespaces"]:
+            self._namespaces = None
+        if not self.logger:
+            self.logger = logger
+        if self.log_level is not None:
+            self.logger.setLevel(self.log_level)
+        if self.format is None:
+            self.format = self.valid_formats[0]
+        if self.format not in self.valid_formats:
+            raise ValueError(f"Unrecognized format: {format}; known={self.valid_formats}")
+        # legacy: all generators should use "mergeimports"
+        # self.merge_imports = self.mergeimports
+        if not self.metadata:
+            self.source_file_date = None
+            self.source_file_size = None
+        if self.requires_metamodel:
+            self.metamodel = _resolved_metamodel(self.mergeimports)
+
+        schema = self.schema
+        if isinstance(schema, Path):
+            schema = str(schema)
+
+        if self.uses_schemaloader:
+            self._initialize_using_schemaloader(schema)
+        else:
+            self.logger.info(f"Using SchemaView with im={self.importmap} // base_dir={self.base_dir}")
+            if (
+                isinstance(schema, SchemaDefinition)
+                and not self.include_generation_date
+                and schema.generation_date is not None
+            ):
+                # SchemaView keeps a reference to a SchemaDefinition it is handed,
+                # so clearing generation_date below would reach back into the
+                # caller's object. Copy first so the generator owns what it mutates.
+                schema = deepcopy(schema)
+            self.schemaview = SchemaView(schema, importmap=self.importmap, base_dir=self.base_dir)
+            if self.include:
+                if isinstance(self.include, str | Path):
+                    self.include = SchemaView(self.include, importmap=self.importmap, base_dir=self.base_dir).schema
+                self.schemaview.merge_schema(self.include)
+            self.schema = self.schemaview.schema
+            # Set metamodel_version if not already defined in the schema.
+            # This ensures consistency with SchemaLoader-based generators.
+            if not self.schema.metamodel_version:
+                self.schema.metamodel_version = metamodel_version
+
+        # Drop the load-time generation_date stamp unless it was explicitly asked for.
+        # This is the metaslot that gets serialized as a data triple by the RDF/JSON-LD
+        # generators, so clearing it here covers every generator uniformly.
+        if not self.include_generation_date and self.schema is not None:
+            self.schema.generation_date = None
+
+    def _initialize_using_schemaloader(self, schema: Union[str, TextIO, SchemaDefinition, "Generator"]):
+        # currently generators are very liberal in what they accept, including
+        # other generators.
+        # See https://github.com/linkml/linkml/issues/923 for discussion on how
+        # to simplify the overall framework
+        if isinstance(schema, Generator):
+            gen = schema
+            self.schema = gen.schema
+            self.synopsis = gen.synopsis
+            self.loaded = gen.loaded
+            self._namespaces = gen.namespaces
+            self.base_dir = gen.base_dir
+            self.importmap = gen.importmap
+            self.source_file_data = gen.source_file_date
+            self.source_file_size = gen.source_file_size
+            self.schema_location = gen.schema_location
+            self.schema_defaults = gen.schema_defaults
+            self.logger = gen.logger
+        else:
+            if isinstance(schema, SchemaDefinition):
+                # schemaloader based methods require schemas to have been created via SchemaLoader,
+                # which prepopulates some fields (e.g. definition_url). If the schema has not been processed through the
+                # loader, then roundtrip
+                schema = schema._as_dict
+            loader = SchemaLoader(
+                schema,
+                self.base_dir,
+                useuris=self.useuris,
+                importmap=self.importmap,
+                logger=self.logger,
+                mergeimports=self.mergeimports,
+                metadata=self.metadata,
+                source_file_date=self.source_file_date,
+                source_file_size=self.source_file_size,
+            )
+            loader.resolve()
+            self.schema = loader.schema
+            self.synopsis = loader.synopsis
+            self.loaded = loader.loaded
+            self._namespaces = loader.namespaces
+            self.base_dir = loader.base_dir
+            self.importmap = loader.importmap
+            self.source_file_data = loader.source_file_date
+            self.source_file_size = loader.source_file_size
+            self.schema_location = loader.schema_location
+            self.schema_defaults = loader.schema_defaults
+
+    @classmethod
+    def validate_generator_args(cls, args: Mapping[str, Any]) -> None:
+        """Validate ``generator_args`` before any generator is built from them.
+
+        ``gen-project`` calls this once per selected generator, all before any
+        output is generated, and the generator CLIs (e.g. ``gen-java``) call it
+        on their resolved options before construction -- so a bad configuration
+        value is caught up front rather than surfacing later as a generic
+        exception raised somewhere during schema loading, which it would then be
+        indistinguishable from. The default implementation does nothing;
+        override to check specific keys eagerly.
+
+        :param args: The merged ``generator_args`` for this generator (defaults
+            plus any user-supplied ``generator_args`` section), before path
+            interpolation.
+        :raises click.UsageError: if a value is invalid.
+        """
+
+    def serialize(self, **kwargs) -> str | None:
+        """
+        Generate output in the required format
+
+        :param kwargs: Generator specific parameters
+        :return: Generated output, or None if the generator writes its output
+            directly to disk instead of returning it (e.g. ExcelGenerator, JavaGenerator)
+        """
+        out = ""
+
+        deprecation_map = {"emit_metadata": "metadata", "head": "metadata"}
+        for flag in deprecation_map:
+            if flag in kwargs:
+                deprecation_warning(METADATA_FLAG)
+                new_flag = deprecation_map[flag]
+                kwargs[new_flag] = kwargs[flag]
+                del kwargs[flag]
+
+        # the default is to use the Visitor Pattern; each individual generator may
+        # choose to override methods {visit,end}_{element}.
+        # See https://github.com/linkml/linkml/issues/923
+        sub_out = self.visit_schema(**kwargs)
+        if sub_out is not None:
+            out += sub_out
+        for sn, ss in (
+            sorted(self.schema.subsets.items(), key=lambda s: s[0].lower())
+            if self.visits_are_sorted
+            else self.schema.subsets.items()
+        ):
+            sub_out = self.visit_subset(ss)
+            if sub_out is not None:
+                out += sub_out
+        for tn, typ in (
+            sorted(self.schema.types.items(), key=lambda s: s[0].lower())
+            if self.visits_are_sorted
+            else self.schema.types.items()
+        ):
+            sub_out = self.visit_type(typ)
+            if sub_out is not None:
+                out += sub_out
+        for enum in (
+            sorted(self.schema.enums.values(), key=lambda e: e.name.lower())
+            if self.visits_are_sorted
+            else self.schema.enums.values()
+        ):
+            sub_out = self.visit_enum(enum)
+            if sub_out is not None:
+                out += sub_out
+        for sn, slot in (
+            sorted(self.schema.slots.items(), key=lambda c: c[0].lower())
+            if self.visits_are_sorted
+            else self.schema.slots.items()
+        ):
+            sub_out = self.visit_slot(self.aliased_slot_name(slot), slot)
+            if sub_out is not None:
+                out += sub_out
+        for cls in (
+            sorted(self.schema.classes.values(), key=lambda c: c.name.lower())
+            if self.visits_are_sorted
+            else self.schema.classes.values()
+        ):
+            cls_out = self.visit_class(cls)
+            if cls_out:
+                if isinstance(cls_out, str):
+                    out += cls_out
+                for slot in self.all_slots(cls) if self.visit_all_class_slots else self.own_slots(cls):
+                    sub_out = self.visit_class_slot(cls, self.aliased_slot_name(slot), slot)
+                    if sub_out is not None:
+                        out += sub_out
+                sub_out = self.end_class(cls)
+                if sub_out is not None:
+                    out += sub_out
+        sub_out = self.end_schema(**kwargs)
+        if sub_out is not None:
+            out += sub_out
+        out = out.rstrip()
+        if not (out.count("\n") == 0 and out.startswith("http")):
+            out += "\n"
+        return out
+
+    def visit_schema(self, **kwargs) -> str | None:
+        """Visited once at the beginning of generation
+
+        @param kwargs: Arguments passed through from CLI -- implementation dependent
+        """
+        ...
+
+    def end_schema(self, **kwargs) -> str | None:
+        """Visited once at the end of generation
+
+        @param kwargs: Arguments passed through from CLI -- implementation dependent
+        """
+        ...
+
+    def visit_class(self, cls: ClassDefinition) -> str | bool | None:
+        """Visited once per schema class
+
+        @param cls: class being visited
+        @return: Visit slots and end class.  False means skip and go on
+        """
+        return True
+
+    def end_class(self, cls: ClassDefinition) -> str | None:
+        """Visited after visit_class_slots (if visit_class returned true)
+
+        @param cls: class being visited
+        """
+        ...
+
+    def visit_class_slot(self, cls: ClassDefinition, aliased_slot_name: str, slot: SlotDefinition) -> str | None:
+        """Visited for each slot in a class.  If class level visit_all_slots is true, this is visited once
+        for any class that is inherited (class itself, is_a, mixin, apply_to).  Otherwise, just the own slots.
+
+        @param cls: containing class
+        @param aliased_slot_name: Aliased slot name.  May not be unique across all class slots
+        @param slot: being visited
+        """
+        ...
+
+    def visit_slot(self, aliased_slot_name: str, slot: SlotDefinition) -> str | None:
+        """Visited once for every slot definition in the schema.
+
+        @param aliased_slot_name: Aliased name of the slot.  May not be unique
+        @param slot: visited slot
+        """
+        ...
+
+    def visit_type(self, typ: TypeDefinition) -> str | None:
+        """Visited once for every type definition in the schema
+
+        @param typ: Type definition
+        """
+        ...
+
+    def visit_subset(self, subset: SubsetDefinition) -> str | None:
+        """Visited once for every subset definition in the schema
+
+        #param subset: Subset definition
+        """
+        ...
+
+    def visit_enum(self, enum: EnumDefinition) -> str | None:
+        """Visited once for every enum definition in the schema
+
+        @param enum: Enum definition
+        """
+        ...
+
+    # =============================
+    # Helper methods
+    # =============================
+    def own_slots(self, cls: ClassDefinitionName | ClassDefinition) -> list[SlotDefinition]:
+        """Return the list of slots owned the class definition.  An "own slot" is any ``cls`` slot that does not appear
+        in the class is_a parent.  Own_slots include:
+
+            * any slot whose domain is cls
+            * slot_usage entries
+            * slots from mixins entries
+            * slots from apply_to entries
+
+
+        @param cls: class name or class definition name
+        @return: list of owned slots.  List is sorted if sort_class_slots is true, otherwise in class order
+        """
+        if not isinstance(cls, ClassDefinition):
+            cls = self.schema.classes[cls]
+        parent = self.schema.classes[cls.is_a] if cls.is_a else None
+        seen = set()
+        rval = []
+        for sname in cls.slots:
+            sname_base = alias_root(self.schema, sname)
+            if sname_base not in seen and (not parent or sname not in parent.slots):
+                slot = self.schema.slots[sname]
+                rval.append(slot)
+                seen.add(sname_base)
+        return sorted(rval, key=lambda s: s.name) if self.sort_class_slots else rval
+
+    def own_slot_names(self, cls: ClassDefinitionName | ClassDefinition) -> list[SlotDefinitionName]:
+        return [slot.name for slot in self.own_slots(cls)]
+
+    def all_slots(
+        self,
+        cls: ClassDefinitionName | ClassDefinition,
+        *,
+        cls_slots_first: bool = False,
+        seen: set[ClassDefinitionName] | None = None,
+    ) -> list[SlotDefinition]:
+        """Return all slots that are part of the class definition.  This includes all is_a, mixin and apply_to slots
+        but does NOT include slot_usage targets.  If class B has a slot_usage entry for slot "s", only the slot
+        definition for the redefined slot will be included, not its base.  Slots are added in the order they appear
+        in classes, with recursive is_a's being added first followed by mixins and finally apply_tos
+
+        @param cls: class definition or class definition name
+        @param cls_slots_first: True means return own slots at the top of the list
+        @param seen: List of slots already recorded. Used for internal recursion
+        @return: ordered list of slots in the class with slot usages removed
+        """
+        if not isinstance(cls, ClassDefinition):
+            cls = self.schema.classes[cls]
+        if seen is None:
+            seen = set()
+        rval = []
+
+        parent = self.schema.classes[cls.is_a] if cls.is_a else None
+        if cls_slots_first:
+            for slot in self.own_slots(cls):
+                sname_base = alias_root(self.schema, slot.name)
+                if sname_base not in seen:
+                    rval.append(slot)
+                    seen.add(sname_base)
+            return rval + (self.all_slots(parent, cls_slots_first=cls_slots_first, seen=seen) if parent else [])
+        else:
+            for sname in cls.slots:
+                sname_base = alias_root(self.schema, sname)
+                if sname_base not in seen:
+                    slot = self.schema.slots[sname]
+                    rval.append(slot)
+                    seen.add(sname_base)
+            return sorted(rval, key=lambda s: s.name) if self.sort_class_slots else rval
+
+    def parent(self, element: ClassDefinition | SlotDefinition) -> ClassDefinition | SlotDefinition | None:
+        """Return the parent of element, if any"""
+        return (
+            None
+            if element.is_a is None
+            else (
+                self.schema.classes[element.is_a]
+                if isinstance(element, ClassDefinition)
+                else self.schema.slots[element.is_a]
+            )
+        )
+
+    def ancestors(self, element: ClassDefinition | SlotDefinition) -> list[ElementName]:
+        """Return an ordered list of ancestor names for the supplied slot or class
+
+        @param element: Slot or class name or definition
+        @return: Ordered list of ancestor names
+        """
+        return [element.name] + ([] if element.is_a is None else self.ancestors(self.parent(element)))
+
+    def neighborhood(self, elements: str | ElementName | list[ElementName]) -> References:
+        """Return a list of all slots, classes and types that touch any element in elements, including the element
+        itself
+
+        @param elements: Element names to do proximity with
+        @return: All slots and classes that touch element
+        """
+        if isinstance(elements, str | ElementName):
+            elements = [elements]
+        touches = References()
+        for element in elements:
+            if element in self.schema.classes:
+                touches.classrefs.add(cast(ClassDefinitionName, element))
+                cls = self.schema.classes[cast(ClassDefinitionName, element)]
+                if cls.is_a:
+                    touches.classrefs.add(cls.is_a)
+                # Mixins include apply_to's
+                touches.classrefs.update(set(cls.mixins))
+                for slotname in cls.slots:
+                    slot = self.schema.slots[slotname]
+                    if slot.range in self.schema.classes:
+                        touches.classrefs.add(cast(ClassDefinitionName, slot.range))
+                    elif slot.range in self.schema.types:
+                        touches.typerefs.add(cast(TypeDefinitionName, slot.range))
+                for cv in self.schema.classes.values():
+                    if cv.is_a == element:
+                        touches.classrefs.add(cv.name)
+                if element in self.synopsis.rangerefs:
+                    for slotname in self.synopsis.rangerefs[element]:
+                        touches.slotrefs.add(slotname)
+                        if self.schema.slots[slotname].domain:
+                            touches.classrefs.add(self.schema.slots[slotname].domain)
+                if cls.in_subset:
+                    touches.subsetrefs.update(cls.in_subset)
+            if element in self.schema.slots:
+                touches.slotrefs.add(cast(SlotDefinitionName, element))
+                slot = self.schema.slots[cast(SlotDefinitionName, element)]
+                touches.slotrefs.update(set(slot.mixins))
+                if slot.is_a:
+                    touches.slotrefs.add(slot.is_a)
+                if element in self.synopsis.inverses:
+                    touches.slotrefs.update(self.synopsis.inverses[cast(SlotDefinitionName, element)])
+                if slot.domain:
+                    touches.classrefs.add(slot.domain)
+                if slot.range in self.schema.classes:
+                    touches.classrefs.add(cast(ClassDefinitionName, slot.range))
+                elif slot.range in self.schema.types:
+                    touches.typerefs.add(cast(TypeDefinitionName, slot.range))
+                if slot.in_subset:
+                    touches.subsetrefs.update(slot.in_subset)
+                for sv in self.schema.slots.values():
+                    if sv.is_a == element:
+                        touches.slotrefs.add(sv.name)
+            if element in self.schema.types:
+                touches.typerefs.add(cast(TypeDefinitionName, element))
+                typ = self.schema.types[cast(TypeDefinitionName, element)]
+                if element in self.synopsis.rangerefs:
+                    touches.slotrefs.update(self.synopsis.rangerefs[element])
+                if typ.typeof:
+                    touches.typerefs.add(cast(TypeDefinitionName, typ.typeof))
+                if typ.in_subset:
+                    touches.subsetrefs.update(typ.in_subset)
+                for tv in self.schema.types.values():
+                    if tv.typeof == element:
+                        touches.slotrefs.add(tv.name)
+            if element in self.schema.subsets:
+                touches.subsetrefs.add(cast(SubsetDefinitionName, element))
+                if element in self.synopsis.subsetrefs:
+                    touches.update(self.synopsis.subsetrefs[cast(SubsetDefinitionName, element)])
+            if not bool(touches):
+                self.logger.warning(f"neighborhood({element}) - {element} is undefined")
+
+        return touches
+
+    def range_type_path(self, typ: TypeDefinition) -> list[str]:
+        """
+        Return a formatted list of range types from the base up
+
+        :param typ: type definition whose name is to be formatted
+        :return: List of possible types with base at the leftmost
+        """
+        formatted_typ_name = self.class_or_type_name(typ.name)
+        if typ.typeof:
+            return self.range_type_path(self.schema.types[cast(TypeDefinitionName, typ.typeof)]) + [formatted_typ_name]
+        elif typ.repr:
+            return [typ.repr, formatted_typ_name]
+        else:
+            return [formatted_typ_name]
+
+    def class_identifier(self, def_or_name: str | ClassDefinition | TypeDefinition) -> SlotDefinitionName | None:
+        """
+        Return the class identifier if any
+
+        :param def_or_name: class name or definition
+        :return: name of class key (or identifier) if one exists
+        """
+        if isinstance(def_or_name, ClassDefinition):
+            cls = def_or_name
+        elif def_or_name in self.schema.classes:
+            cls = self.schema.classes[cast(ClassDefinitionName, def_or_name)]
+        else:
+            return None
+        for slotname in cls.slots:
+            slot = self.schema.slots[slotname]
+            if slot.identifier or slot.key:
+                return slotname
+        return None
+
+    @staticmethod
+    def enum_identifier_path(enum_or_enumname: str | EnumDefinition) -> list[str]:
+        """Return an enum_identifier path"""
+        return [
+            "str",
+            camelcase(enum_or_enumname.name if isinstance(enum_or_enumname, EnumDefinition) else enum_or_enumname),
+        ]
+
+    def class_identifier_path(self, cls_or_clsname: str | ClassDefinition, force_non_key: bool) -> list[str]:
+        """
+        Return the path closure to a class identifier if the class has a key and force_non_key is false otherwise
+        return a dictionary closure.
+
+        :param cls_or_clsname: class definition
+        :param force_non_key: True means inlined even if the class has a key
+        :return: path
+        """
+        cls = (
+            cls_or_clsname
+            if isinstance(cls_or_clsname, ClassDefinition)
+            else self.schema.classes[ClassDefinitionName(cls_or_clsname)]
+        )
+
+        # Determine whether the class has a key
+        identifier_slot = None
+        if not force_non_key:
+            identifier_slot = self.class_identifier(cls)
+
+        # No key or inlined, its closure is a dictionary
+        if identifier_slot is None:
+            return ["dict", self.class_or_type_name(cls.name)]
+
+        # We're dealing with a reference
+        pathname = camelcase(cls.name + " " + self.aliased_slot_name(identifier_slot))
+        if cls.is_a:
+            parent_identifier_slot = self.class_identifier(cls.is_a)
+            if parent_identifier_slot:
+                return self.class_identifier_path(cls.is_a, False) + [pathname]
+        return self.slot_range_path(identifier_slot) + [pathname]
+
+    def slot_range_path(self, slot_or_name: str | SlotDefinition) -> list[str]:
+        """
+        Return an ordered list of slot ranges from distal to proximal
+
+        :param slot_or_name: slot whose range is being typed
+        :return: ordered list of types from base type forward
+        """
+        slot = (
+            slot_or_name
+            if isinstance(slot_or_name, SlotDefinition)
+            else self.schema.slots[cast(SlotDefinitionName, slot_or_name)]
+        )
+        if slot.range in self.schema.types:
+            # Type
+            return self.range_type_path(self.schema.types[cast(TypeDefinitionName, slot.range)])
+        elif slot.range in self.schema.enums:
+            return self.enum_identifier_path(slot.range)
+        else:
+            # Class
+            return self.class_identifier_path(slot.range, bool(slot.inlined))
+
+    def aliased_slot_name(self, slot: SlotDefinitionName | SlotDefinition) -> SlotDefinitionName:
+        """Return the overloaded slot name -- the alias if one exists otherwise the actual name
+
+        @param slot: either a slot name or a definition
+        @return: overloaded name
+        """
+        if isinstance(slot, str):
+            slot = self.schema.slots[cast(SlotDefinitionName, slot)]
+        return slot.alias if slot.alias else slot.name
+
+    def class_or_type_for(self, name: str) -> Element | None:
+        """
+        Return the corresponding class or type for name
+        """
+        if name in self.schema.classes:
+            return self.schema.classes[ClassDefinitionName(name)]
+        elif name in self.schema.types:
+            return self.schema.types[TypeDefinitionName(name)]
+        elif name in self.schema.enums:
+            return self.schema.enums[EnumDefinitionName(name)]
+        return None
+
+    def class_or_type_name(self, name: str) -> str:
+        """
+        Return the camelcase representation of clsname if it is a valid class or type.  Prepend "Unknown"
+        if the name isn't valid
+        """
+        if name in self.schema.classes:
+            return camelcase(name)
+        elif name in self.schema.types:
+            typ = self.schema.types[cast(TypeDefinitionName, name)]
+            if typ.typeof:
+                return camelcase(name)
+            else:
+                return typ.base
+        else:
+            return "Unknown_" + camelcase(name)
+
+    def slot_for(self, name: str) -> Element | None:
+        return self.schema.slots.get(name)
+
+    def slot_name(self, name: str) -> str:
+        """
+        Return the underscored version of the aliased slot name if name is a slot. Prepend ``unknown_`` if the name
+        isn't valid.
+        """
+        slot = self.slot_for(name)
+        return underscore(self.aliased_slot_name(slot) if slot else ("unknown " + name))
+
+    def subset_for(self, name: str) -> Element | None:
+        return self.schema.subsets.get(name)
+
+    def subset_name(self, name: str) -> str:
+        subset = self.subset_for(name)
+        return ("" if subset else "Unknown_") + camelcase(name)
+
+    def formatted_element_name(self, el_or_elname: ElementName | Element, is_range_name: bool = False) -> str | None:
+        """
+        Return the default format for the name or the referenced element.  Slots are under_scored, all others are
+        CamelCased. Slot names are the alias, not the actual name
+
+        :param el_or_elname: element or name to map
+        :param is_range_name: True means that we're looking for a class or type.  False means Slot or Subset. Only
+            applies if el_or_elname is an ElementName (otherwise we know what we've got
+        :return: Formatted name if type can be known else None
+        """
+        if isinstance(el_or_elname, str):
+            if is_range_name:
+                return (
+                    self.class_or_type_name(el_or_elname)
+                    if el_or_elname in self.schema.classes
+                    or el_or_elname in self.schema.types
+                    or el_or_elname == self.schema.default_range
+                    else None
+                )
+            elif el_or_elname in self.schema.slots:
+                return self.slot_name(cast(SlotDefinitionName, el_or_elname))
+            elif el_or_elname in self.schema.subsets:
+                return self.subset_name(el_or_elname)
+            return None
+        elif isinstance(el_or_elname, ClassDefinition | TypeDefinition):
+            return self.class_or_type_name(el_or_elname.name)
+        elif isinstance(el_or_elname, SlotDefinition):
+            return self.slot_name(el_or_elname.name)
+        elif isinstance(el_or_elname, SubsetDefinition):
+            return self.subset_name(el_or_elname.name)
+        else:
+            return None
+
+    def obj_for(self, el_or_elname: str, is_range_name: bool = False) -> Element | None:
+        if is_range_name:
+            return (
+                self.class_or_type_for(el_or_elname)
+                if el_or_elname in self.schema.classes
+                or el_or_elname in self.schema.types
+                or el_or_elname == self.schema.default_range
+                else None
+            )
+        elif el_or_elname in self.schema.slots:
+            return self.slot_for(cast(SlotDefinitionName, el_or_elname))
+        elif el_or_elname in self.schema.subsets:
+            return self.subset_for(el_or_elname)
+        else:
+            return self.class_or_type_for(el_or_elname)
+
+    def default_prefix(self) -> str | None:
+        """Return the default prefix for the schema
+
+        @return: URI or NCNAME of default prefix"""
+        if "://" in self.schema.default_prefix:
+            return self.schema.default_prefix
+        else:
+            # Basic loader tests for valid default prefix
+            return self.schema.prefixes[PrefixPrefixPrefix(self.schema.default_prefix)].prefix_reference
+
+    # TODO: add lru cache once we get identity into the classes
+    def domain_slots(self, cls: ClassDefinition) -> list[SlotDefinition]:
+        """Return all slots in the class definition that are owned by the class"""
+        domain_slots = []
+        for slot_name in cls.slots:
+            slot = self.schema.slots[slot_name]
+
+            # add any mixin ancestors here so that slots will be distributed to descendents correctly via mixin
+            # hierarchy.
+            mixin_ancestors = []
+            if cls.mixins:
+                for mixin in cls.mixins:
+                    for ancestor in self.schemaview.class_ancestors(mixin, mixins=False):
+                        if ancestor not in mixin_ancestors:
+                            mixin_ancestors.append(ancestor)
+
+            for mixin_ancestor in mixin_ancestors:
+                if mixin_ancestor not in cls.mixins:
+                    cls.mixins.append(mixin_ancestor)
+
+            # Check if the class is in the domain of the slot or if any of its mixins are in the domain
+            if cls.name in slot.domain_of or (set(cls.mixins).intersection(slot.domain_of)):
+                domain_slots.append(slot)
+
+        return domain_slots
+
+    def add_mappings(self, defn: Definition) -> None:
+        """
+        Process any mappings in defn, adding all of the mappings prefixes to the namespace map
+        :param defn: Class or Slot Definition
+        """
+        self.add_id_prefixes(defn)
+        mappings = (
+            defn.mappings
+            + defn.related_mappings
+            + defn.close_mappings
+            + defn.narrow_mappings
+            + defn.broad_mappings
+            + defn.exact_mappings
+        )
+        # see https://github.com/linkml/linkml/pull/283
+        if isinstance(defn, ClassDefinition):
+            mappings.append(defn.class_uri)
+        if isinstance(defn, SlotDefinition):
+            mappings.append(defn.slot_uri)
+        for mapping in mappings:
+            if "://" in str(mapping):
+                mcurie = self.namespaces.curie_for(mapping)
+                if mcurie is None:
+                    self.logger.warning(f"No namespace defined for URI: {mapping}")
+                    return  # Absolute path - no prefix/name
+                else:
+                    mapping = mcurie
+            if ":" not in mapping or len(mapping.split(":")) != 2:
+                raise ValueError(f"Definition {defn.name} - unrecognized mapping: {mapping}")
+            ns = mapping.split(":")[0]
+            self.logger.debug(f"Adding {ns} from {mapping} // {defn}")
+            if ns:
+                self.add_prefix(ns)
+
+    def add_id_prefixes(self, element: Element) -> None:
+        for id_prefix in element.id_prefixes:
+            self.add_prefix(id_prefix)
+
+    def add_prefix(self, ncname: str) -> None:
+        """Add a prefix to the list of prefixes to emit
+
+        @param ncname: name to add
+        """
+        if ncname not in self.namespaces:
+            self.logger.warning(f"Unrecognized prefix: {ncname}")
+            self.namespaces[ncname] = f"http://example.org/UNKNOWN/{ncname}/"
+        self.emit_prefixes.add(ncname)
+
+    def get_metamodel_slot_name(self, slot_name: str) -> str:
+        """
+        Allows for localization of some generators, such as markdown generator
+
+        The client can control how metamodel elements are displayed; e.g.
+        mapping the metamodel slot "slot" to "field"
+
+        This method also takes care of pluralization; e.g. if "slot" is mapped to
+        "field", then "slots" will be mapped to "fields"
+
+        :param slot_name:
+        :return:
+        """
+        is_capitalized = slot_name[0].isupper()
+
+        def capitalize(s: str):
+            if is_capitalized:
+                return f"{s[0].upper()}{s[1:]}"
+            else:
+                return s
+
+        slot_name_normalized = underscore(slot_name).lower()
+        slot_name_normalized_singular = re.sub(r"s$", "", slot_name_normalized)
+        if slot_name_normalized == "classes":
+            slot_name_normalized_singular = "class"
+        if self.metamodel_name_map is not None and slot_name_normalized in self.metamodel_name_map:
+            return capitalize(self.metamodel_name_map[slot_name_normalized])
+        elif self.metamodel_name_map is not None and slot_name_normalized_singular in self.metamodel_name_map:
+            return capitalize(f"{self.metamodel_name_map[slot_name_normalized_singular]}s")
+        else:
+            return slot_name
+
+    @staticmethod
+    def is_class_unconstrained(cls: ClassDefinition):
+        """
+        Determine if the class is mapped to typing.Any, i.e the unconstrained class
+
+        :param cls: class definition
+        :return: true if the class is unconstrained
+        """
+        return cls.class_uri == "linkml:Any"
+
+
+def shared_arguments(g: type[Generator], accepts_directory_input: bool = False) -> Callable[[Command], Command]:
+    """Get command-line arguments common to all generators.
+
+    Use this decorator on the Click entry point for a generator to automatically
+    configure the entry point to accept all common options.
+
+    :param g: The generator for which to add options.
+    :param accepts_directory_input: If True, the generator's entry point will
+        accept both a file or a directory as its main input. The default is to
+        accept a file only.
+    """
+
+    def verbosity_callback(ctx, param, verbose):
+        if verbose >= 2:
+            logging.basicConfig(level=logging.DEBUG, force=True)
+        elif verbose == 1:
+            logging.basicConfig(level=logging.INFO, force=True)
+
+    def stacktrace_callback(ctx, param, stacktrace):
+        if not stacktrace:
+            sys.tracebacklimit = 0
+
+    def decorator(f: Command) -> Command:
+        f.params.append(
+            Argument(("yamlfile",), type=click.Path(exists=True, dir_okay=accepts_directory_input, path_type=Path))
+        )
+        f.params.append(
+            Option(
+                ("--format", "-f"),
+                type=click.Choice(g.valid_formats),
+                default=g.valid_formats[0],
+                show_default=True,
+                help="Output format",
+            )
+        )
+        f.params.append(
+            Option(
+                ("--metadata/--no-metadata",),
+                default=True,
+                show_default=True,
+                help="Include metadata in output",
+            )
+        )
+        f.params.append(
+            Option(
+                ("--generation-date/--no-generation-date", "include_generation_date"),
+                default=False,
+                show_default=True,
+                help="Stamp output with the generation_date timestamp. Off by default so output is "
+                "reproducible across runs.",
+            )
+        )
+        f.params.append(
+            Option(
+                ("--useuris/--metauris",),
+                default=True,
+                show_default=True,
+                help="Use class and slot URIs over model uris",
+            )
+        )
+        f.params.append(Option(("--importmap", "-im"), type=click.File(), help="Import mapping file"))
+        log_level_option(f)
+        f.params.append(
+            Option(
+                ("--verbose", "-v"),
+                count=True,
+                help="Verbosity. Takes precedence over --log_level.",
+                callback=verbosity_callback,
+            )
+        )
+        f.params.append(
+            Option(
+                ("--mergeimports/--no-mergeimports",),
+                default=True,
+                help="Merge imports into source file (default=mergeimports)",
+            )
+        )
+        f.params.append(
+            Option(
+                ("--stacktrace/--no-stacktrace",),
+                default=False,
+                show_default=True,
+                help="Print a stack trace when an error occurs",
+                callback=stacktrace_callback,
+            )
+        )
+
+        return f
+
+    return decorator
+
+
+def parse_config_yaml(value: Any, source: str) -> Any:
+    """Parse YAML, naming what was being read if it does not parse.
+
+    Unparsable YAML is a mistake in what was supplied, so it is reported against the
+    option it came from rather than escaping as a traceback. PyYAML reports a scalar it
+    cannot construct (an impossible date such as ``2024-02-30``) as a bare ``ValueError``
+    rather than a ``YAMLError``; that is a parse failure too, and is named the same way.
+
+    :param value: YAML text, or an open file to read it from.
+    :param source: The option it came from, e.g. ``"--config-file"``.
+    :return: Whatever the YAML held.
+    :raises ValueError: if the YAML is malformed.
+    """
+    try:
+        return yaml.safe_load(value)
+    except (yaml.YAMLError, ValueError) as e:
+        raise ValueError(f"{source}: could not parse as YAML: {e}") from e
+
+
+def config_mapping(value: Any, where: str, source: str) -> dict[str, Any]:
+    """Check that one level of a configuration is a mapping, and hand it back.
+
+    An empty value (``java:`` with nothing under it) reads as None saying "nothing
+    configured here", so it returns as empty mapping. Anything else that is not a
+    mapping is a mistake in the configuration, and says so where it was given rather
+    than failing later.
+
+    Shared by every entry point that reads this configuration format, so a given
+    mistake is reported the same way whether it reaches ``gen-project`` or one of the
+    individual generator CLIs. ``ValueError`` rather than :class:`click.UsageError`,
+    so a caller using this as a library gets the same checks without click semantics;
+    command-line callers translate it at their own boundary.
+
+    :param value: Whatever was found at this point in the configuration.
+    :param where: Where that was, for the error message, e.g. ``"'generator_args'"``.
+    :param source: The option it came from, e.g. ``"--config-file"``.
+    :return: The mapping, empty if nothing was configured.
+    :raises ValueError: if the value is neither a mapping nor empty.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(f"{source}: expected a YAML mapping at {where}, found {type(value).__name__}")
+    return value
+
+
+def read_generator_config(config_file: IO[bytes] | None, generator_name: str) -> dict[str, Any]:
+    """Read one generator's settings out of a gen-project-style config file.
+
+    This is the configuration file that ``gen-project --config-file`` reads so a
+    project can keep a single file and each generator can have its own section.
+
+    Reading consumes ``config_file``, so call this once and lookup each setting
+    on the returned dict. Calling it a second time with the same open file finds
+    nothing, because the file has already been read to the end.
+
+    >>> from io import BytesIO
+    >>> config_file = BytesIO(b"generator_args:\\n  java:\\n    package: org.example.model\\n")
+    >>> read_generator_config(config_file, "java").get("package")
+    'org.example.model'
+    >>> read_generator_config(None, "java")
+    {}
+
+    A malformed written section - a scalar where a mapping belongs - is a usage
+    error, so report it. Absent/empty sections are fine (empty dict).
+
+    :param config_file: The open file from ``--config-file``, or None if absent.
+    :param generator_name: Which section to read, e.g. ``"java"`` or ``"golang"``.
+    :return: That generator's settings, empty if the file has none for it.
+    :raises click.UsageError: if the file is not parseable as YAML, or if the file, or
+        the part of it this generator reads, isn't a YAML mapping.
+    """
+    if config_file is None:
+        return {}
+    source = "--config-file"
+    # the shared checks raise ValueError so they can be reused off the command line;
+    # this is a CLI entry point, so a bad file is reported as a usage error here
+    try:
+        config_data = config_mapping(parse_config_yaml(config_file, source), "the top level", source)
+        generator_args = config_mapping(config_data.get("generator_args"), "'generator_args'", source)
+        return config_mapping(generator_args.get(generator_name), f"'generator_args.{generator_name}'", source)
+    except ValueError as e:
+        raise click.UsageError(str(e)) from e
+
+
+# Options whose click callbacks fire at parse time (e.g. configuring logging); a
+# config-file value would be recorded but never trigger the callback, so these are
+# honored only from the command line, never overlaid from a config file.
+_CONFIG_OVERLAY_SKIP = frozenset({"yamlfile", "schema", "verbose", "log_level", "stacktrace", "config_file"})
+
+
+def apply_config_defaults(ctx: click.Context, config: Mapping[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    """Overlay ``--config-file`` values onto CLI args the user did not set.
+
+    Precedence is command line/env over config over option defaults: a value is
+    taken from ``config`` only when its option was left at the default. Values are
+    converted by their option's click type, so a config file and a command line
+    reach the generator identically. Keys that are not options of this command are
+    reported per-key (a typo in the config file) rather than silently dropped.
+
+    :param ctx: The active click context, used to tell which options the user set.
+    :param config: One generator's settings, e.g. from :func:`read_generator_config`.
+    :param args: The keyword args forwarded to the generator; updated in place.
+    :return: ``args``, updated in place.
+    :raises click.BadParameter: If a value is not valid for its option's type.
+    """
+    if not config:
+        return args
+    # expose_value=False params (--version, --help) never reach the callback, so a
+    # config key naming one is a typo, not something to overlay
+    params = {param.name: param for param in ctx.command.params if param.expose_value}
+    for key, value in config.items():
+        param = params.get(key)
+        if param is None:
+            logger.warning(f"--config-file: ignoring unknown key {key!r}")
+            continue
+        if key in _CONFIG_OVERLAY_SKIP:
+            continue
+        # overlay only when the option was left at its default; CLI/env values already win
+        if ctx.get_parameter_source(key) in (ParameterSource.DEFAULT, ParameterSource.DEFAULT_MAP):
+            # a YAML scalar stands in for a one-element list on a repeatable option;
+            # click would otherwise iterate a string per character
+            if param.multiple and not isinstance(value, list | tuple):
+                value = [value]
+            # convert as click would, so e.g. `template_dir: /tmp` arrives as a Path
+            args[key] = param.type_cast_value(ctx, value)
+    return args

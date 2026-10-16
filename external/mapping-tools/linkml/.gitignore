@@ -1,0 +1,131 @@
+metamodel/metamodel.py-PREV
+temp/
+output/
+*.db
+notebooks/tmp/
+
+# sphinx
+docs/_sources
+docs/_modules
+docs/_images
+docs/_build
+
+# Jekyll
+Gemfile.lock
+_site
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*,cover
+.hypothesis/
+
+# Translations
+*.mo
+*.pot
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# pyenv
+.python-version
+
+# mise
+mise.toml
+
+# dotenv
+.env
+
+# virtualenv
+.venv
+venv/
+ENV/
+
+# Editors
+.idea/
+
+# old stuff
+*.old
+
+# Jupyter
+.ipynb_checkpoints
+
+# Eclipse
+.project
+.classpath
+
+# make artifacts
+*-PREV
+
+# Apple stuff
+.DS_Store
+
+# Graphviz out is varied enough it isn't worth carrying this for test cases
+tests/test_biolink_model/source/graphviz/
+
+# Test config
+tests/test_config.ini
+
+# Don't lock
+Pipfile.lock
+
+# Understand databases
+*.und
+
+# User defined
+.vscode/*
+CLAUDE.local.md
+.claude/settings.local.json
+
+http_cache.sqlite
+
+examples/PersonSchema/rust/target
+examples/PersonSchema/rust/Cargo.lock
+
+# temporary ignore
+monorepo-cleanup.sh
+/tests/linkml/test_generators/__snapshots__/figs/class_event_local.svg
+/packages/linkml_runtime/linkml-model-github
+.worktrees/

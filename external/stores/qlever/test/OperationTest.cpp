@@ -1,0 +1,1108 @@
+// Copyright 2023, University of Freiburg,
+// Chair of Algorithms and Data Structures.
+// Author: Johannes Kalmbach (joka921) <kalmbach@cs.uni-freiburg.de>
+
+#include <absl/cleanup/cleanup.h>
+#include <absl/strings/str_cat.h>
+#include <gmock/gmock.h>
+
+#include <optional>
+
+#include "engine/Bind.h"
+#include "engine/IndexScan.h"
+#include "engine/Join.h"
+#include "engine/MaterializedViews.h"
+#include "engine/NamedResultCache.h"
+#include "engine/NeutralElementOperation.h"
+#include "engine/Sort.h"
+#include "engine/ValuesForTesting.h"
+#include "engine/sparqlExpressions/RandomExpression.h"
+#include "engine/sparqlExpressions/SparqlExpressionPimpl.h"
+#include "global/RuntimeParameters.h"
+#include "util/GTestHelpers.h"
+#include "util/IdTableHelpers.h"
+#include "util/IndexTestHelpers.h"
+#include "util/OperationTestHelpers.h"
+#include "util/RuntimeParametersTestHelpers.h"
+
+static constexpr auto executor = &ad_utility::testing::singleThreadExecutor;
+
+using namespace ad_utility::testing;
+using namespace ::testing;
+using ad_utility::CacheStatus;
+using ad_utility::CancellationException;
+using ad_utility::CancellationHandle;
+using ad_utility::CancellationState;
+using Status = RuntimeInformation::Status;
+
+namespace {
+// Helper function to perform actions at various stages of a generator
+template <typename Range, typename T = ql::ranges::range_value_t<Range>>
+auto expectAtEachStageOfGenerator(
+    Range generator, std::vector<std::function<void()>> functions,
+    ad_utility::source_location l = AD_CURRENT_SOURCE_LOC()) {
+  auto locationTrace = generateLocationTrace(l);
+  size_t index = 0;
+  for ([[maybe_unused]] T& _ : generator) {
+    functions.at(index)();
+    ++index;
+  }
+  EXPECT_EQ(index, functions.size());
+}
+
+void expectRtiHasDimensions(
+    RuntimeInformation& rti, uint64_t cols, uint64_t rows,
+    ad_utility::source_location l = AD_CURRENT_SOURCE_LOC()) {
+  auto locationTrace = generateLocationTrace(l);
+  EXPECT_EQ(rti.numCols_, cols);
+  EXPECT_EQ(rti.numRows_, rows);
+}
+}  // namespace
+
+// _____________________________________________________________________________
+TEST(OperationTest, constructorRequiresQueryExecutionContext) {
+  AD_EXPECT_THROW_WITH_MESSAGE(
+      NeutralElementOperation{nullptr},
+      ::testing::HasSubstr(
+          "An `Operation` requires a `QueryExecutionContext`"));
+}
+
+// _____________________________________________________________________________
+TEST(OperationTest, limitIsRepresentedInCacheKey) {
+  LimitOffsetClause l;
+  {
+    NeutralElementOperation n{getQec()};
+    EXPECT_THAT(n.getCacheKey(), testing::Not(testing::HasSubstr("LIMIT 20")));
+    l._limit = 20;
+    n.applyLimitOffset(l);
+    EXPECT_THAT(n.getCacheKey(), testing::HasSubstr("LIMIT 20"));
+    EXPECT_THAT(n.getCacheKey(), testing::Not(testing::HasSubstr("OFFSET 34")));
+  }
+
+  {
+    NeutralElementOperation n{getQec()};
+    l._offset = 34;
+    n.applyLimitOffset(l);
+    EXPECT_THAT(n.getCacheKey(), testing::HasSubstr("OFFSET 34"));
+  }
+}
+
+// ________________________________________________
+TEST(OperationTest, limitAndOffsetAreStacked) {
+  NeutralElementOperation n{getQec()};
+
+  n.applyLimitOffset({std::nullopt, 1});
+  EXPECT_EQ(n.getLimitOffset(), LimitOffsetClause(std::nullopt, 1));
+
+  n.applyLimitOffset({20, 2});
+  EXPECT_EQ(n.getLimitOffset(), LimitOffsetClause(20, 3));
+
+  n.applyLimitOffset({std::nullopt, 4});
+  EXPECT_EQ(n.getLimitOffset(), LimitOffsetClause(16, 7));
+
+  n.applyLimitOffset({6, 7});
+  EXPECT_EQ(n.getLimitOffset(), LimitOffsetClause(6, 14));
+}
+
+// ________________________________________________
+TEST(OperationTest, getResultOnlyCached) {
+  auto qec = getQec();
+  qec->getQueryTreeCache().clearAll();
+  NeutralElementOperation n{qec};
+  // The second `true` means "only read the result if it was cached".
+  // We have just cleared the cache, and so this should return `nullptr`.
+  EXPECT_EQ(n.getResult(true, ComputationMode::ONLY_IF_CACHED), nullptr);
+  EXPECT_EQ(n.runtimeInfo().status_, Status::notStarted);
+  // Nothing has been stored in the cache by this call.
+  EXPECT_EQ(qec->getQueryTreeCache().numNonPinnedEntries(), 0);
+  EXPECT_EQ(qec->getQueryTreeCache().numPinnedEntries(), 0);
+
+  // This "ordinary" call to `getResult` also stores the result in the cache.
+  NeutralElementOperation n2{qec};
+  auto result = n2.getResult();
+  EXPECT_NE(result, nullptr);
+  EXPECT_EQ(n2.runtimeInfo().status_, Status::fullyMaterializedCompleted);
+  EXPECT_EQ(n2.runtimeInfo().cacheStatus_, CacheStatus::computed);
+  EXPECT_EQ(qec->getQueryTreeCache().numNonPinnedEntries(), 1);
+  EXPECT_EQ(qec->getQueryTreeCache().numPinnedEntries(), 0);
+
+  // When we now request to only return the result if it is cached, we should
+  // get exactly the same `shared_ptr` as with the previous call.
+  NeutralElementOperation n3{qec};
+  EXPECT_EQ(n3.getResult(true, ComputationMode::ONLY_IF_CACHED), result);
+  EXPECT_EQ(n3.runtimeInfo().cacheStatus_, CacheStatus::cachedNotPinned);
+
+  // We can even use the `onlyReadFromCache` case to upgrade a non-pinned
+  // cache-entry to a pinned cache entry
+  QueryExecutionContext qecCopy{*qec};
+  qecCopy._pinResult = true;
+  NeutralElementOperation n4{&qecCopy};
+  EXPECT_EQ(n4.getResult(true, ComputationMode::ONLY_IF_CACHED), result);
+
+  // The cache status is `cachedNotPinned` because we found the element cached
+  // but not pinned (it does reflect the status BEFORE the operation).
+  EXPECT_EQ(n4.runtimeInfo().cacheStatus_, CacheStatus::cachedNotPinned);
+  EXPECT_EQ(qec->getQueryTreeCache().numNonPinnedEntries(), 0);
+  EXPECT_EQ(qec->getQueryTreeCache().numPinnedEntries(), 1);
+
+  // We have pinned the result, so requesting it again should return a pinned
+  // result.
+  qecCopy._pinResult = false;
+  EXPECT_EQ(n4.getResult(true, ComputationMode::ONLY_IF_CACHED), result);
+  EXPECT_EQ(n4.runtimeInfo().cacheStatus_, CacheStatus::cachedPinned);
+
+  // Clear the (global) cache again to not possibly interfere with other unit
+  // tests.
+  qec->getQueryTreeCache().clearAll();
+}
+
+// _____________________________________________________________________________
+TEST(OperationTest, getLazyResultIsCachedWhenPinned) {
+  auto qec = getQec();
+  qec->getQueryTreeCache().clearAll();
+  absl::Cleanup restorePinResult{[qec]() { qec->_pinResult = false; }};
+  qec->_pinResult = true;
+  ValuesForTesting operation{qec, makeIdTableFromVector({{1}}), {std::nullopt}};
+
+  {
+    auto result = operation.getResult(true, ComputationMode::LAZY_IF_SUPPORTED);
+    EXPECT_TRUE(result->isFullyMaterialized());
+    EXPECT_EQ(operation.runtimeInfo().cacheStatus_, CacheStatus::computed);
+    EXPECT_EQ(qec->getQueryTreeCache().numNonPinnedEntries(), 0);
+    EXPECT_EQ(qec->getQueryTreeCache().numPinnedEntries(), 1);
+
+    qec->getQueryTreeCache().clearAll();
+  }
+
+  {
+    auto result =
+        operation.getResult(true, ComputationMode::FULLY_MATERIALIZED);
+    EXPECT_TRUE(result->isFullyMaterialized());
+    EXPECT_EQ(operation.runtimeInfo().cacheStatus_, CacheStatus::computed);
+    EXPECT_EQ(qec->getQueryTreeCache().numNonPinnedEntries(), 0);
+    EXPECT_EQ(qec->getQueryTreeCache().numPinnedEntries(), 1);
+
+    qec->getQueryTreeCache().clearAll();
+  }
+}
+
+// _____________________________________________________________________________
+
+/// Fixture to work with a generic operation
+class OperationTestFixture : public testing::Test {
+ protected:
+  std::vector<std::string> jsonHistory;
+
+  std::shared_ptr<Index> index = []() {
+    TestIndexConfig indexConfig{};
+    indexConfig.rowsPerBlock = 4;
+
+    return std::make_shared<Index>(makeTestIndex(std::move(indexConfig)));
+  }();
+  QueryResultCache cache;
+  NamedResultCache namedCache;
+  std::shared_ptr<MaterializedViewsManager> materializedViewsManager =
+      std::make_shared<MaterializedViewsManager>();
+  QueryExecutionContext qec{
+      index,
+      &cache,
+      makeAllocator(),
+      SortPerformanceEstimator{},
+      &namedCache,
+      materializedViewsManager,
+      executor(),
+      [&](std::string json) { jsonHistory.emplace_back(std::move(json)); }};
+  IdTable table = makeIdTableFromVector({{}, {}, {}});
+  ValuesForTesting operation{&qec, std::move(table), {}};
+};
+
+// _____________________________________________________________________________
+
+TEST_F(OperationTestFixture,
+       verifyOperationStatusChangesToInProgressAndComputed) {
+  // Ignore result, we only care about the side effects
+  operation.getResult(true);
+
+  EXPECT_THAT(
+      jsonHistory,
+      ElementsAre(ParsedAsJson(HasKeyMatching("status", Eq("not started"))),
+                  ParsedAsJson(HasKeyMatching(
+                      "status", Eq("fully materialized in progress"))),
+                  // Note: Currently the implementation triggers twice if a
+                  // value is not cached. This is not a requirement, just an
+                  // implementation detail that we account for here.
+                  ParsedAsJson(HasKeyMatching(
+                      "status", Eq("fully materialized completed"))),
+                  ParsedAsJson(HasKeyMatching(
+                      "status", Eq("fully materialized completed")))));
+}
+
+// Test that the updates of the runtime information carry the information about
+// the query planning, once it is set.
+TEST_F(OperationTestFixture, updatesCarryInformationAboutTheQueryPlanning) {
+  // Without that information, an update is just the runtime information of the
+  // operations.
+  operation.getResult(true);
+  ASSERT_FALSE(jsonHistory.empty());
+  EXPECT_FALSE(nlohmann::json::parse(jsonHistory.back()).contains("meta"));
+
+  // With it, every update carries it as the key `meta`, with the same content
+  // as in the `application/qlever-results+json` format.
+  QueryPlanningInfo queryPlanningInfo;
+  queryPlanningInfo.timeQueryPlanning = std::chrono::milliseconds{17};
+  queryPlanningInfo.queryPlanning.push_back(
+      {PlanningAlgorithm::DYNAMIC_PROGRAMMING, 3, 6, 1500, 42});
+  qec.setQueryPlanningInfo(queryPlanningInfo);
+  jsonHistory.clear();
+  qec.clearCacheUnpinnedOnly();
+  operation.getResult(true);
+  ASSERT_FALSE(jsonHistory.empty());
+  for (const auto& json : jsonHistory) {
+    EXPECT_EQ(nlohmann::ordered_json::parse(json)["meta"],
+              nlohmann::ordered_json(queryPlanningInfo));
+  }
+}
+
+// _____________________________________________________________________________
+
+TEST_F(OperationTestFixture, verifyCachePreventsInProgressState) {
+  // Run twice and clear history to get cached values
+  operation.getResult(true);
+  jsonHistory.clear();
+  operation.getResult(true);
+
+  EXPECT_THAT(
+      jsonHistory,
+      ElementsAre(ParsedAsJson(HasKeyMatching("status", Eq("not started"))),
+                  ParsedAsJson(HasKeyMatching(
+                      "status", Eq("fully materialized completed")))));
+}
+
+// _____________________________________________________________________________
+
+TEST_F(OperationTestFixture, getPrecomputedResultBecauseSiblingOfService) {
+  // If a precomputedResult is set, it will be returned by `getResult`
+  auto idTable = makeIdTableFromVector({{1, 6, 0}, {2, 5, 0}, {3, 4, 0}});
+  auto result = std::make_shared<const Result>(
+      idTable.clone(), std::vector<ColumnIndex>{0}, LocalVocab{});
+  operation.precomputedResultBecauseSiblingOfService() =
+      std::make_optional(result);
+  EXPECT_EQ(operation.getResult(), result);
+  EXPECT_FALSE(
+      operation.precomputedResultBecauseSiblingOfService().has_value());
+}
+
+// _____________________________________________________________________________
+
+TEST(OperationTest, verifyExceptionIsThrownOnCancellation) {
+  auto qec = getQec();
+  auto handle = std::make_shared<CancellationHandle<>>();
+  ShallowParentOperation operation =
+      ShallowParentOperation::of<StallForeverOperation>(qec);
+  operation.recursivelySetCancellationHandle(handle);
+
+  ad_utility::JThread thread{[&]() {
+    std::this_thread::sleep_for(5ms);
+    handle->cancel(CancellationState::TIMEOUT);
+  }};
+  AD_EXPECT_THROW_WITH_MESSAGE_AND_TYPE(operation.computeResult(false),
+                                        ::testing::HasSubstr("timed out"),
+                                        ad_utility::CancellationException);
+}
+
+// _____________________________________________________________________________
+
+TEST(OperationTest, verifyRemainingTimeDoesCountDown) {
+  constexpr auto timeout = 5ms;
+  auto qec = getQec();
+  ShallowParentOperation operation =
+      ShallowParentOperation::of<StallForeverOperation>(qec);
+  operation.recursivelySetTimeConstraint(timeout);
+
+  auto childOperation = std::dynamic_pointer_cast<StallForeverOperation>(
+      operation.getChildren().at(0)->getRootOperation());
+
+#ifndef _QLEVER_NO_TIMING_TESTS
+  EXPECT_GT(operation.publicRemainingTime(), 0ms);
+  EXPECT_GT(childOperation->publicRemainingTime(), 0ms);
+#endif
+  std::this_thread::sleep_for(timeout);
+  // Verify that the time is up for the parent and the child.
+  EXPECT_EQ(operation.publicRemainingTime(), 0ms);
+  EXPECT_EQ(childOperation->publicRemainingTime(), 0ms);
+}
+
+// ________________________________________________
+TEST(OperationTest, estimatesForCachedResults) {
+  // Create an operation with manually specified size and cost estimates which
+  // are deliberately wrong, so they can be "corrected" when the operation is
+  // read from the cache.
+  auto makeQet = []() {
+    auto idTable = makeIdTableFromVector({{3, 4}, {7, 8}, {9, 123}});
+    auto qet = ad_utility::makeExecutionTree<ValuesForTesting>(
+        getQec(), std::move(idTable),
+        std::vector<std::optional<Variable>>{Variable{"?x"}, Variable{"?y"}},
+        false);
+    auto& op = dynamic_cast<ValuesForTesting&>(*qet->getRootOperation());
+    // Set those to some arbitrary values so we can test them.
+    op.sizeEstimate() = 24;
+    op.costEstimate() = 210;
+    return qet;
+  };
+  {
+    auto qet = makeQet();
+    EXPECT_EQ(qet->getCacheKey(), qet->getRootOperation()->getCacheKey());
+    EXPECT_EQ(qet->getSizeEstimate(), 24u);
+    EXPECT_EQ(qet->getCostEstimate(), 210u);
+
+    [[maybe_unused]] auto res = qet->getResult();
+  }
+  // The result is now cached inside the static execution context. If we create
+  // the same operation again and `zero-cost-estimate-for-cached-subtrees` is
+  // set to `true`, the cost estimate should be zero. The size estimate does not
+  // change (see the `getCostEstimate` function for details on why).
+  {
+    auto restoreWhenScopeEnds = setRuntimeParameterForTest<
+        &RuntimeParameters::zeroCostEstimateForCachedSubtree_>(true);
+    auto qet = makeQet();
+    EXPECT_EQ(qet->getCacheKey(), qet->getRootOperation()->getCacheKey());
+    EXPECT_EQ(qet->getSizeEstimate(), 24u);
+    EXPECT_EQ(qet->getCostEstimate(), 0u);
+  }
+  {
+    auto restoreWhenScopeEnds = setRuntimeParameterForTest<
+        &RuntimeParameters::zeroCostEstimateForCachedSubtree_>(false);
+    auto qet = makeQet();
+    EXPECT_EQ(qet->getCacheKey(), qet->getRootOperation()->getCacheKey());
+    EXPECT_EQ(qet->getSizeEstimate(), 24u);
+    EXPECT_EQ(qet->getCostEstimate(), 210u);
+  }
+}
+
+// ________________________________________________
+TEST(Operation, createRuntimInfoFromEstimates) {
+  NeutralElementOperation operation{getQec()};
+  operation.applyLimitOffset({12, 3});
+  operation.createRuntimeInfoFromEstimates(nullptr);
+  EXPECT_EQ(operation.runtimeInfo().details_["limit"], 12);
+  EXPECT_EQ(operation.runtimeInfo().details_["offset"], 3);
+}
+
+// _____________________________________________________________________________
+TEST(Operation, lazilyEvaluatedOperationIsNotCached) {
+  using V = Variable;
+  auto qec = getQec();
+  SparqlTripleSimple scanTriple{V{"?x"}, V{"?y"}, V{"?z"}};
+  IndexScan scan{qec, Permutation::Enum::POS, scanTriple};
+
+  qec->getQueryTreeCache().clearAll();
+  auto result = scan.getResult(true, ComputationMode::LAZY_IF_SUPPORTED);
+  ASSERT_NE(result, nullptr);
+  EXPECT_FALSE(result->isFullyMaterialized());
+
+  EXPECT_EQ(qec->getQueryTreeCache().numNonPinnedEntries(), 0);
+  EXPECT_EQ(qec->getQueryTreeCache().numPinnedEntries(), 0);
+}
+
+// _____________________________________________________________________________
+TEST(Operation, updateRuntimeStatsWorksCorrectly) {
+  auto qec = getQec();
+  auto idTable = makeIdTableFromVector({{3, 4}, {7, 8}, {9, 123}});
+  ValuesForTesting valuesForTesting{
+      qec, std::move(idTable), {Variable{"?x"}, Variable{"?y"}}};
+
+  auto& rti = valuesForTesting.runtimeInfo();
+
+  // Test operation with built-in filter
+  valuesForTesting.externalLimitApplied_ = false;
+  valuesForTesting.updateRuntimeStats(false, 11, 13, 17ms);
+
+  EXPECT_EQ(rti.numCols_, 13);
+  EXPECT_EQ(rti.numRows_, 11);
+  EXPECT_EQ(rti.totalTime_, 17ms);
+  EXPECT_EQ(rti.originalTotalTime_, 17ms);
+  EXPECT_EQ(rti.originalOperationTime_, 17ms);
+
+  // Test built-in filter
+  valuesForTesting.externalLimitApplied_ = false;
+  valuesForTesting.updateRuntimeStats(true, 5, 3, 7ms);
+
+  EXPECT_EQ(rti.numCols_, 13);
+  EXPECT_EQ(rti.numRows_, 11);
+  EXPECT_EQ(rti.totalTime_, 17ms + 7ms);
+  EXPECT_EQ(rti.originalTotalTime_, 17ms + 7ms);
+  EXPECT_EQ(rti.originalOperationTime_, 17ms + 7ms);
+
+  rti.children_ = {std::make_shared<RuntimeInformation>()};
+  rti.numCols_ = 0;
+  rti.numRows_ = 0;
+  rti.totalTime_ = 0ms;
+  rti.originalOperationTime_ = 0ms;
+  auto& childRti = *rti.children_.at(0);
+
+  // Test operation with external filter
+  valuesForTesting.externalLimitApplied_ = true;
+  valuesForTesting.updateRuntimeStats(false, 31, 37, 41ms);
+
+  EXPECT_EQ(rti.numCols_, 0);
+  EXPECT_EQ(rti.numRows_, 0);
+  EXPECT_EQ(rti.totalTime_, 41ms);
+  EXPECT_EQ(rti.originalTotalTime_, 41ms);
+  EXPECT_EQ(rti.originalOperationTime_, 0ms);
+
+  EXPECT_EQ(childRti.numCols_, 37);
+  EXPECT_EQ(childRti.numRows_, 31);
+  EXPECT_EQ(childRti.totalTime_, 41ms);
+  EXPECT_EQ(childRti.originalTotalTime_, 41ms);
+  EXPECT_EQ(childRti.originalOperationTime_, 41ms);
+
+  // Test external filter
+  valuesForTesting.externalLimitApplied_ = true;
+  valuesForTesting.updateRuntimeStats(true, 19, 23, 29ms);
+
+  EXPECT_EQ(rti.numCols_, 23);
+  EXPECT_EQ(rti.numRows_, 19);
+  EXPECT_EQ(rti.totalTime_, 41ms + 29ms);
+  EXPECT_EQ(rti.originalTotalTime_, 41ms + 29ms);
+  EXPECT_EQ(rti.originalOperationTime_, 29ms);
+
+  EXPECT_EQ(childRti.numCols_, 37);
+  EXPECT_EQ(childRti.numRows_, 31);
+  EXPECT_EQ(childRti.totalTime_, 41ms);
+  EXPECT_EQ(childRti.originalTotalTime_, 41ms);
+  EXPECT_EQ(childRti.originalOperationTime_, 41ms);
+}
+
+// _____________________________________________________________________________
+TEST(Operation, verifyRuntimeInformationIsUpdatedForLazyOperations) {
+  auto qec = getQec();
+  std::vector<IdTable> idTablesVector{};
+  idTablesVector.push_back(makeIdTableFromVector({{3, 4}}));
+  idTablesVector.push_back(makeIdTableFromVector({{7, 8}}));
+  LocalVocab localVocab{};
+  localVocab.getIndexAndAddIfNotContained(LocalVocabEntry{
+      ad_utility::triple_component::Literal::literalWithoutQuotes("Test"),
+      qec->getLocalVocabContext()});
+  ValuesForTesting valuesForTesting{
+      qec,   std::move(idTablesVector),  {Variable{"?x"}, Variable{"?y"}},
+      false, std::vector<ColumnIndex>{}, std::move(localVocab)};
+
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+  EXPECT_THROW(
+      valuesForTesting.runComputation(timer, ComputationMode::ONLY_IF_CACHED),
+      ad_utility::Exception);
+  auto timeout = 3ms;
+  std::this_thread::sleep_for(timeout);
+
+  auto result = valuesForTesting.runComputation(
+      timer, ComputationMode::LAZY_IF_SUPPORTED);
+
+  auto& rti = valuesForTesting.runtimeInfo();
+
+  EXPECT_EQ(rti.status_, Status::lazilyMaterializedInProgress);
+  EXPECT_GE(rti.totalTime_, timeout);
+  EXPECT_GE(rti.originalTotalTime_, timeout);
+  EXPECT_GE(rti.originalOperationTime_, timeout);
+
+  expectAtEachStageOfGenerator(
+      result.idTables(),
+      {[&]() {
+         EXPECT_EQ(rti.status_, Status::lazilyMaterializedInProgress);
+         expectRtiHasDimensions(rti, 2, 1);
+         ASSERT_TRUE(rti.details_.contains("non-empty-local-vocabs"));
+         EXPECT_EQ(rti.details_["non-empty-local-vocabs"],
+                   "1 / 1, Ø = 1, max = 1");
+       },
+       [&]() {
+         EXPECT_EQ(rti.status_, Status::lazilyMaterializedInProgress);
+         expectRtiHasDimensions(rti, 2, 2);
+         ASSERT_TRUE(rti.details_.contains("non-empty-local-vocabs"));
+         EXPECT_EQ(rti.details_["non-empty-local-vocabs"],
+                   "2 / 2, Ø = 1, max = 1");
+       }});
+
+  EXPECT_EQ(rti.status_, Status::lazilyMaterializedCompleted);
+  expectRtiHasDimensions(rti, 2, 2);
+  ASSERT_TRUE(rti.details_.contains("non-empty-local-vocabs"));
+  EXPECT_EQ(rti.details_["non-empty-local-vocabs"], "2 / 2, Ø = 1, max = 1");
+}
+
+// _____________________________________________________________________________
+TEST(Operation, ensureFailedStatusIsSetWhenGeneratorThrowsException) {
+  bool signaledUpdate = false;
+  auto index = std::make_shared<Index>(
+      makeTestIndex("ensureFailedStatusIsSetWhenGeneratorThrowsException",
+                    TestIndexConfig{}));
+  QueryResultCache cache{};
+  NamedResultCache namedCache{};
+  auto materializedViewsManager = std::make_shared<MaterializedViewsManager>();
+  QueryExecutionContext context{
+      index,
+      &cache,
+      makeAllocator(ad_utility::MemorySize::megabytes(100)),
+      SortPerformanceEstimator{},
+      &namedCache,
+      materializedViewsManager,
+      executor(),
+      [&](std::string) { signaledUpdate = true; }};
+  AlwaysFailOperation operation{&context};
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+  auto result =
+      operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
+
+  EXPECT_EQ(operation.runtimeInfo().status_,
+            Status::lazilyMaterializedInProgress);
+
+  EXPECT_THROW(result.idTables().begin(), std::runtime_error);
+
+  EXPECT_EQ(operation.runtimeInfo().status_, Status::failed);
+  EXPECT_TRUE(signaledUpdate);
+}
+
+// _____________________________________________________________________________
+TEST(Operation, ensureFailedStatusIsSetWhenGeneratorIsCancelled) {
+  bool signaledUpdate = false;
+  auto index = std::make_shared<Index>(makeTestIndex(
+      "ensureFailedStatusIsSetWhenGeneratorIsCancelled", TestIndexConfig{}));
+  QueryResultCache cache{};
+  NamedResultCache namedCache{};
+  auto materializedViewsManager = std::make_shared<MaterializedViewsManager>();
+  QueryExecutionContext context{
+      index,
+      &cache,
+      makeAllocator(ad_utility::MemorySize::megabytes(100)),
+      SortPerformanceEstimator{},
+      &namedCache,
+      materializedViewsManager,
+      executor(),
+      [&](std::string) { signaledUpdate = true; }};
+  CustomGeneratorOperation operation{&context, []() -> Result::Generator {
+                                       throw CancellationException{
+                                           CancellationState::MANUAL,
+                                           "Operation was cancelled"};
+                                       co_return;
+                                     }()};
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+  auto result =
+      operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
+
+  EXPECT_EQ(operation.runtimeInfo().status_,
+            Status::lazilyMaterializedInProgress);
+
+  EXPECT_THROW(result.idTables().begin(), ad_utility::CancellationException);
+
+  EXPECT_EQ(operation.runtimeInfo().status_, Status::cancelled);
+  EXPECT_TRUE(signaledUpdate);
+}
+
+// _____________________________________________________________________________
+TEST(Operation, ensureSignalUpdateIsOnlyCalledEvery50msAndAtTheEnd) {
+  QLEVER_SKIP_TEST_IF_FLAKY_TIMING;
+  uint32_t updateCallCounter = 0;
+  auto idTable = makeIdTableFromVector({{}});
+  auto index = std::make_shared<Index>(makeTestIndex(
+      "ensureSignalUpdateIsOnlyCalledEvery50msAndAtTheEnd", TestIndexConfig{}));
+  QueryResultCache cache{};
+  NamedResultCache namedCache{};
+  auto materializedViewsManager = std::make_shared<MaterializedViewsManager>();
+  QueryExecutionContext context{
+      index,
+      &cache,
+      makeAllocator(ad_utility::MemorySize::megabytes(100)),
+      SortPerformanceEstimator{},
+      &namedCache,
+      materializedViewsManager,
+      executor(),
+      [&](std::string) { ++updateCallCounter; }};
+  CustomGeneratorOperation operation{
+      &context, [](const IdTable& idTable) -> Result::Generator {
+        std::this_thread::sleep_for(50ms);
+        co_yield {idTable.clone(), LocalVocab{}};
+        // This one should not trigger because it's below the 50ms threshold
+        std::this_thread::sleep_for(30ms);
+        co_yield {idTable.clone(), LocalVocab{}};
+        std::this_thread::sleep_for(30ms);
+        co_yield {idTable.clone(), LocalVocab{}};
+        // This one should not trigger directly, but trigger because it's the
+        // last one
+        std::this_thread::sleep_for(30ms);
+        co_yield {idTable.clone(), LocalVocab{}};
+      }(idTable)};
+
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+  auto result =
+      operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
+
+  EXPECT_EQ(updateCallCounter, 1);
+
+  expectAtEachStageOfGenerator(result.idTables(),
+                               {
+                                   [&]() { EXPECT_EQ(updateCallCounter, 2); },
+                                   [&]() { EXPECT_EQ(updateCallCounter, 2); },
+                                   [&]() { EXPECT_EQ(updateCallCounter, 3); },
+                                   [&]() { EXPECT_EQ(updateCallCounter, 3); },
+                               });
+
+  EXPECT_EQ(updateCallCounter, 4);
+}
+
+// _____________________________________________________________________________
+TEST(Operation, verifyTimeAfterLastChunkIsAddedToRuntimeInformation) {
+  auto idTable = makeIdTableFromVector({{}});
+  CustomGeneratorOperation operation{
+      getQec(), [](const IdTable& idTable) -> Result::Generator {
+        co_yield {idTable.clone(), LocalVocab{}};
+        // Work that is done after the last chunk, e.g. a filter that discards
+        // the remaining input, has to be accounted for, too.
+        std::this_thread::sleep_for(5ms);
+      }(idTable)};
+
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+  auto result =
+      operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
+  auto& rti = operation.runtimeInfo();
+  auto totalTimeBefore = rti.totalTime_;
+
+  for ([[maybe_unused]] auto& _ : result.idTables()) {
+  }
+  EXPECT_EQ(rti.status_, Status::lazilyMaterializedCompleted);
+  // Only lower bounds, a high system load can only make the sleep longer.
+  EXPECT_GE(rti.totalTime_, totalTimeBefore + 5ms);
+  EXPECT_GE(rti.originalTotalTime_, totalTimeBefore + 5ms);
+  EXPECT_GE(rti.originalOperationTime_, 5ms);
+}
+
+// _____________________________________________________________________________
+TEST(Operation, ensureSignalUpdateIsCalledAtTheEndOfPartialConsumption) {
+  uint32_t updateCallCounter = 0;
+  auto idTable = makeIdTableFromVector({{}});
+  auto index = std::make_shared<Index>(
+      makeTestIndex("ensureSignalUpdateIsCalledAtTheEndOfPartialConsumption",
+                    TestIndexConfig{}));
+  QueryResultCache cache{};
+  NamedResultCache namedCache{};
+  auto materializedViewsManager = std::make_shared<MaterializedViewsManager>();
+  QueryExecutionContext context{
+      index,
+      &cache,
+      makeAllocator(ad_utility::MemorySize::megabytes(100)),
+      SortPerformanceEstimator{},
+      &namedCache,
+      materializedViewsManager,
+      executor(),
+      [&](std::string) { ++updateCallCounter; }};
+  CustomGeneratorOperation operation{
+      &context, [](const IdTable& idTable) -> Result::Generator {
+        co_yield {idTable.clone(), LocalVocab{}};
+        co_yield {idTable.clone(), LocalVocab{}};
+      }(idTable)};
+
+  {
+    ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+    auto result =
+        operation.runComputation(timer, ComputationMode::LAZY_IF_SUPPORTED);
+
+    EXPECT_EQ(updateCallCounter, 1);
+    auto idTables = result.idTables();
+    // Only consume partially
+    auto iterator = idTables.begin();
+    ASSERT_NE(iterator, idTables.end());
+    EXPECT_EQ(updateCallCounter, 1);
+  }
+
+  // Destructor of result should call this function
+  EXPECT_EQ(updateCallCounter, 2);
+}
+
+// _____________________________________________________________________________
+TEST(Operation, verifyLimitIsProperlyAppliedAndUpdatesRuntimeInfoCorrectly) {
+  auto qec = getQec();
+  std::vector<IdTable> idTablesVector{};
+  idTablesVector.push_back(makeIdTableFromVector({{3, 4}}));
+  idTablesVector.push_back(makeIdTableFromVector({{7, 8}, {9, 123}}));
+  ValuesForTesting valuesForTesting{
+      qec, std::move(idTablesVector), {Variable{"?x"}, Variable{"?y"}}};
+
+  valuesForTesting.applyLimitOffset({._limit = 1, ._offset = 1});
+
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+
+  auto result = valuesForTesting.runComputation(
+      timer, ComputationMode::LAZY_IF_SUPPORTED);
+
+  auto& rti = valuesForTesting.runtimeInfo();
+  auto& childRti = *rti.children_.at(0);
+
+  expectRtiHasDimensions(rti, 0, 0);
+  expectRtiHasDimensions(childRti, 0, 0);
+
+  expectAtEachStageOfGenerator(result.idTables(),
+                               {[&]() {
+                                  expectRtiHasDimensions(rti, 2, 0);
+                                  expectRtiHasDimensions(childRti, 2, 1);
+                                },
+                                [&]() {
+                                  expectRtiHasDimensions(rti, 2, 1);
+                                  expectRtiHasDimensions(childRti, 2, 3);
+                                }});
+
+  expectRtiHasDimensions(rti, 2, 1);
+  expectRtiHasDimensions(childRti, 2, 3);
+}
+
+namespace {
+QueryCacheKey makeQueryCacheKey(std::string s) {
+  return {std::move(s), 102394857};
+}
+}  // namespace
+
+// _____________________________________________________________________________
+TEST(Operation, ensureLazyOperationIsCachedIfSmallEnough) {
+  auto qec = getQec();
+  qec->getQueryTreeCache().clearAll();
+  std::vector<IdTable> idTablesVector{};
+  idTablesVector.push_back(makeIdTableFromVector({{3, 4}}));
+  idTablesVector.push_back(makeIdTableFromVector({{7, 8}, {9, 123}}));
+  ValuesForTesting valuesForTesting{
+      qec, std::move(idTablesVector), {Variable{"?x"}, Variable{"?y"}}};
+
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+
+  auto cacheValue = valuesForTesting.runComputationAndPrepareForCache(
+      timer, ComputationMode::LAZY_IF_SUPPORTED, makeQueryCacheKey("test"),
+      false, false);
+  EXPECT_FALSE(
+      qec->getQueryTreeCache().cacheContains(makeQueryCacheKey("test")));
+
+  for ([[maybe_unused]] Result::IdTableVocabPair& _ :
+       cacheValue.resultTable().idTables()) {
+  }
+
+  auto aggregatedValue =
+      qec->getQueryTreeCache().getIfContained(makeQueryCacheKey("test"));
+  ASSERT_TRUE(aggregatedValue.has_value());
+
+  ASSERT_TRUE(aggregatedValue.value()._resultPointer);
+
+  auto newRti = aggregatedValue.value()._resultPointer->runtimeInfo();
+  auto& oldRti = valuesForTesting.runtimeInfo();
+
+  EXPECT_EQ(newRti.descriptor_, oldRti.descriptor_);
+  EXPECT_EQ(newRti.numCols_, oldRti.numCols_);
+  EXPECT_EQ(newRti.numRows_, oldRti.numRows_);
+  EXPECT_EQ(newRti.totalTime_, oldRti.totalTime_);
+  EXPECT_EQ(newRti.originalTotalTime_, oldRti.originalTotalTime_);
+  EXPECT_EQ(newRti.originalOperationTime_, oldRti.originalOperationTime_);
+  EXPECT_EQ(newRti.status_, Status::fullyMaterializedCompleted);
+
+  const auto& aggregatedResult =
+      aggregatedValue.value()._resultPointer->resultTable();
+  ASSERT_TRUE(aggregatedResult.isFullyMaterialized());
+
+  const auto& idTable = aggregatedResult.idTableView();
+  ASSERT_EQ(idTable.numColumns(), 2);
+  ASSERT_EQ(idTable.numRows(), 3);
+
+  EXPECT_EQ(idTable, makeIdTableFromVector({{3, 4}, {7, 8}, {9, 123}}));
+}
+
+// _____________________________________________________________________________
+TEST(Operation, checkLazyOperationIsNotCachedIfTooLarge) {
+  auto qec = getQec();
+  qec->getQueryTreeCache().clearAll();
+  std::vector<IdTable> idTablesVector{};
+  idTablesVector.push_back(makeIdTableFromVector({{3, 4}}));
+  idTablesVector.push_back(makeIdTableFromVector({{7, 8}, {9, 123}}));
+  ValuesForTesting valuesForTesting{
+      qec, std::move(idTablesVector), {Variable{"?x"}, Variable{"?y"}}};
+
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+
+  std::optional<CacheValue> cacheValue = std::nullopt;
+  {
+    // Too small for storage, make sure to change back before consuming
+    // generator to additionally assert sure it is not re-read on every
+    // iteration.
+    auto cleanup =
+        setRuntimeParameterForTest<&RuntimeParameters::cacheMaxSizeLazyResult_>(
+            1_B);
+
+    cacheValue = valuesForTesting.runComputationAndPrepareForCache(
+        timer, ComputationMode::LAZY_IF_SUPPORTED, makeQueryCacheKey("test"),
+        false, false);
+    EXPECT_FALSE(
+        qec->getQueryTreeCache().cacheContains(makeQueryCacheKey("test")));
+  }
+
+  for ([[maybe_unused]] Result::IdTableVocabPair& _ :
+       cacheValue->resultTable().idTables()) {
+  }
+
+  EXPECT_FALSE(
+      qec->getQueryTreeCache().cacheContains(makeQueryCacheKey("test")));
+}
+
+// _____________________________________________________________________________
+TEST(Operation, checkLazyOperationIsNotCachedIfUnlikelyToFitInCache) {
+  auto qec = getQec();
+  qec->getQueryTreeCache().clearAll();
+  std::vector<IdTable> idTablesVector{};
+  idTablesVector.push_back(makeIdTableFromVector({{3, 4}}));
+  idTablesVector.push_back(makeIdTableFromVector({{7, 8}, {9, 123}}));
+  ValuesForTesting valuesForTesting{
+      qec, std::move(idTablesVector), {Variable{"?x"}, Variable{"?y"}}, true};
+
+  ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+
+  auto cacheValue = valuesForTesting.runComputationAndPrepareForCache(
+      timer, ComputationMode::LAZY_IF_SUPPORTED, makeQueryCacheKey("test"),
+      false, false);
+  EXPECT_FALSE(
+      qec->getQueryTreeCache().cacheContains(makeQueryCacheKey("test")));
+
+  for ([[maybe_unused]] Result::IdTableVocabPair& _ :
+       cacheValue.resultTable().idTables()) {
+  }
+
+  EXPECT_FALSE(
+      qec->getQueryTreeCache().cacheContains(makeQueryCacheKey("test")));
+}
+
+// _____________________________________________________________________________
+TEST(Operation, checkMaxCacheSizeIsComputedCorrectly) {
+  auto runTest = [](ad_utility::MemorySize cacheLimit,
+                    ad_utility::MemorySize runtimeParameterLimit, bool isRoot,
+                    ad_utility::MemorySize expectedSize,
+                    ad_utility::source_location sourceLocation =
+                        AD_CURRENT_SOURCE_LOC()) {
+    auto loc = generateLocationTrace(sourceLocation);
+    auto qec = getQec();
+    qec->getQueryTreeCache().clearAll();
+    std::vector<IdTable> idTablesVector{};
+    idTablesVector.push_back(makeIdTableFromVector({{3, 4}}));
+    ValuesForTesting valuesForTesting{
+        qec, std::move(idTablesVector), {Variable{"?x"}, Variable{"?y"}}, true};
+
+    ad_utility::MemorySize actualCacheSize;
+    valuesForTesting.setCacheSizeStorage(&actualCacheSize);
+
+    absl::Cleanup restoreOriginalSize{
+        [qec, original = qec->getQueryTreeCache().getMaxSizeSingleEntry()]() {
+          qec->getQueryTreeCache().setMaxSizeSingleEntry(original);
+        }};
+    qec->getQueryTreeCache().setMaxSizeSingleEntry(cacheLimit);
+
+    auto cleanup =
+        setRuntimeParameterForTest<&RuntimeParameters::cacheMaxSizeLazyResult_>(
+            runtimeParameterLimit);
+
+    ad_utility::Timer timer{ad_utility::Timer::InitialStatus::Started};
+
+    auto cacheValue = valuesForTesting.runComputationAndPrepareForCache(
+        timer, ComputationMode::LAZY_IF_SUPPORTED, makeQueryCacheKey("test"),
+        false, isRoot);
+
+    EXPECT_EQ(actualCacheSize, expectedSize);
+  };
+
+  runTest(10_B, 10_B, true, 10_B);
+  runTest(10_B, 10_B, false, 10_B);
+  runTest(10_B, 1_B, false, 1_B);
+  runTest(1_B, 10_B, false, 1_B);
+  runTest(10_B, 1_B, true, 10_B);
+  runTest(1_B, 10_B, true, 1_B);
+}
+
+// _____________________________________________________________________________
+TEST(OperationTest, disableCachingForOperation) {
+  auto qec = getQec();
+  qec->getQueryTreeCache().clearAll();
+  std::vector<IdTable> idTablesVector{};
+  idTablesVector.push_back(makeIdTableFromVector({{3, 4}}));
+  idTablesVector.push_back(makeIdTableFromVector({{7, 8}, {9, 123}}));
+  ValuesForTesting valuesForTesting{
+      qec, std::move(idTablesVector), {Variable{"?x"}, Variable{"?y"}}, true};
+
+  QueryCacheKey cacheKey{valuesForTesting.getCacheKey(),
+                         qec->locatedTriplesState().index_};
+
+  // By default, the result of `valuesForTesting` is cached because it is
+  // sufficiently small, no matter if it was computed lazily or fully
+  // materialized.
+  EXPECT_FALSE(qec->getQueryTreeCache().cacheContains(cacheKey));
+  valuesForTesting.getResult(true);
+  EXPECT_TRUE(qec->getQueryTreeCache().cacheContains(cacheKey));
+  qec->getQueryTreeCache().clearAll();
+  EXPECT_FALSE(qec->getQueryTreeCache().cacheContains(cacheKey));
+  valuesForTesting.getResult(false);
+  EXPECT_TRUE(qec->getQueryTreeCache().cacheContains(cacheKey));
+
+  // We now disable caching for the `valuesForTesting`. Then the result is never
+  // cached, no matter if it is computed lazily or fully materialized.
+  valuesForTesting.disableStoringInCache();
+  qec->getQueryTreeCache().clearAll();
+
+  EXPECT_FALSE(qec->getQueryTreeCache().cacheContains(cacheKey));
+  valuesForTesting.getResult(true);
+  EXPECT_FALSE(qec->getQueryTreeCache().cacheContains(cacheKey));
+  qec->getQueryTreeCache().clearAll();
+  EXPECT_FALSE(qec->getQueryTreeCache().cacheContains(cacheKey));
+  valuesForTesting.getResult(false);
+  EXPECT_FALSE(qec->getQueryTreeCache().cacheContains(cacheKey));
+}
+
+// _____________________________________________________________________________
+TEST(OperationTest, disableCachingGlobally) {
+  auto qecPtr = getQec();
+  auto qecCopy = *qecPtr;
+  qecCopy.setDisableCachingOnlyForTesting(true);
+  auto* qec = &qecCopy;
+  qec->getQueryTreeCache().clearAll();
+  std::vector<IdTable> idTablesVector{};
+  idTablesVector.push_back(makeIdTableFromVector({{3, 4}}));
+  idTablesVector.push_back(makeIdTableFromVector({{7, 8}, {9, 123}}));
+  ValuesForTesting valuesForTesting{
+      qec, std::move(idTablesVector), {Variable{"?x"}, Variable{"?y"}}, true};
+
+  EXPECT_THAT(valuesForTesting.getCacheKey(), ::testing::IsEmpty());
+
+  QueryCacheKey cacheKey{valuesForTesting.getCacheKey(),
+                         qec->locatedTriplesState().index_};
+
+  // Initially not contained in the cache (because we cleared the cache).
+  EXPECT_FALSE(qec->getQueryTreeCache().cacheContains(cacheKey));
+  valuesForTesting.getResult(true);
+  // Still not stored in the cache, because caching was disabled.
+  EXPECT_FALSE(qec->getQueryTreeCache().cacheContains(cacheKey));
+
+  // ONLY_IF_CACHED returns nullptr when caching is disabled.
+  EXPECT_EQ(valuesForTesting.getResult(false, ComputationMode::ONLY_IF_CACHED),
+            nullptr);
+}
+
+// _____________________________________________________________________________
+TEST(OperationTest, isDeterministicAlwaysTrueOperations) {
+  using namespace ad_utility::testing;
+  auto* qec = getQec();
+
+  ValuesForTesting values{qec, IdTable{1, qec->getAllocator()},
+                          std::vector<std::optional<Variable>>{Variable{"?x"}}};
+  EXPECT_TRUE(values.isDeterministic());
+
+  NeutralElementOperation neutral{qec};
+  EXPECT_TRUE(neutral.isDeterministic());
+
+  SparqlTripleSimple scanTriple{Variable{"?s"}, Variable{"?p"}, Variable{"?o"}};
+  IndexScan scan{qec, Permutation::Enum::POS, scanTriple};
+  EXPECT_TRUE(scan.isDeterministic());
+}
+
+// _____________________________________________________________________________
+TEST(OperationTest, isDeterministicPropagatesFromChildren) {
+  using namespace ad_utility::testing;
+  using namespace sparqlExpression;
+  auto* qec = getQec();
+
+  // A BIND(RAND()) node is non-deterministic.
+  auto randBindTree = ad_utility::makeExecutionTree<Bind>(
+      qec,
+      ad_utility::makeExecutionTree<ValuesForTesting>(
+          qec, IdTable{1, qec->getAllocator()},
+          std::vector<std::optional<Variable>>{Variable{"?x"}}),
+      parsedQuery::Bind{
+          SparqlExpressionPimpl{std::make_unique<RandomExpression>(), "RAND()"},
+          Variable{"?r"}});
+
+  EXPECT_FALSE(randBindTree->getRootOperation()->isDeterministic());
+
+  // Wrapping it in a Sort still yields non-deterministic.
+  auto sortedTree = ad_utility::makeExecutionTree<Sort>(
+      qec, randBindTree, std::vector<ColumnIndex>{});
+  EXPECT_FALSE(sortedTree->getRootOperation()->isDeterministic());
+}
+
+// _____________________________________________________________________________
+TEST(OperationTest, isDeterministicOfNestedJoins) {
+  using namespace ad_utility::testing;
+  auto* qec = getQec();
+  Variable x{"?x"};
+
+  std::vector<std::shared_ptr<const ValuesForTestingCountingDeterminismChecks>>
+      leaves;
+  auto makeLeaf = [&]() {
+    auto leaf = ad_utility::makeExecutionTree<
+        ValuesForTestingCountingDeterminismChecks>(
+        qec, makeIdTableFromVector({{1, 2}}),
+        std::vector<std::optional<Variable>>{
+            x, Variable{absl::StrCat("?o", leaves.size())}},
+        false, std::vector<ColumnIndex>{0});
+    leaves.push_back(std::dynamic_pointer_cast<
+                     const ValuesForTestingCountingDeterminismChecks>(
+        leaf->getRootOperation()));
+    AD_CORRECTNESS_CHECK(leaves.back() != nullptr);
+    return leaf;
+  };
+
+  // Each leaf of a left-deep chain of nested joins must be visited exactly
+  // once. Previously, `Join::isDeterministicImpl()` recursed into the subtree
+  // in addition to `Operation::isDeterministic()`, which made this exponential
+  // in the nesting depth, see
+  // https://github.com/ad-freiburg/qlever/issues/3557.
+  auto tree = makeLeaf();
+  for (size_t i = 0; i < 40; ++i) {
+    auto leftCol = tree->getVariableColumn(x);
+    tree = ad_utility::makeExecutionTree<Join>(qec, std::move(tree), makeLeaf(),
+                                               leftCol, 0);
+  }
+  EXPECT_TRUE(tree->getRootOperation()->isDeterministic());
+  for (const auto& leaf : leaves) {
+    EXPECT_EQ(leaf->numDeterminismChecks(), 1);
+  }
+}
+
+// _____________________________________________________________________________
+TEST(Operation, isDistinctByRecognizesLimitOne) {
+  using Vars = std::vector<std::optional<Variable>>;
+  using SC = std::vector<ColumnIndex>;
+  auto* qec = getQec();
+
+  auto values = ad_utility::makeExecutionTree<ValuesForTesting>(
+      qec, makeIdTableFromVector({{0, 1}, {0, 1}}),
+      Vars{Variable{"?x"}, Variable{"?y"}});
+
+  // Without a limit, `ValuesForTesting` is not known to be distinct.
+  EXPECT_FALSE(values->getRootOperation()->isDistinctBy(SC{0}));
+
+  // A limit greater than one doesn't help, as the result may still contain
+  // duplicates.
+  values->applyLimitOffset(LimitOffsetClause{._limit = 2});
+  EXPECT_FALSE(values->getRootOperation()->isDistinctBy(SC{0}));
+
+  // With `LIMIT 1` the result has at most one row, so it is trivially distinct
+  // wrt any set of columns.
+  values->applyLimitOffset(LimitOffsetClause{._limit = 1});
+  EXPECT_TRUE(values->getRootOperation()->isDistinctBy(SC{0}));
+  EXPECT_TRUE(values->getRootOperation()->isDistinctBy(SC{}));
+}
+
+// _____________________________________________________________________________
+TEST(Operation, makeDistinctTreeDefaultRequiresNotAlreadyDistinct) {
+  using TC = TripleComponent;
+  using SC = std::vector<ColumnIndex>;
+  auto* qec = getQec();
+
+  // `IndexScan` overrides `isDistinctByImpl` but uses the default
+  // `makeDistinctTree` (which returns `nullopt`). The default implementation
+  // asserts that it is only called on operations that are not already distinct.
+  auto scan = ad_utility::makeExecutionTree<IndexScan>(
+      qec, Permutation::Enum::PSO,
+      SparqlTripleSimple{TC{Variable{"?s"}}, TC{Variable{"?p"}},
+                         TC{Variable{"?o"}}});
+  const auto& scanOp = *scan->getRootOperation();
+
+  ASSERT_TRUE(scanOp.isDistinctBy(SC{0, 1, 2}));
+  EXPECT_THROW(scanOp.makeDistinctTree(SC{0, 1, 2}), ad_utility::Exception);
+
+  ASSERT_FALSE(scanOp.isDistinctBy(SC{0}));
+  EXPECT_EQ(scanOp.makeDistinctTree(SC{0}), std::nullopt);
+}

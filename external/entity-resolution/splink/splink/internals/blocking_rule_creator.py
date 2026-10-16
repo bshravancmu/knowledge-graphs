@@ -1,0 +1,45 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Union, final
+
+from splink.internals.blocking import (
+    BlockingRule,
+    BlockingRuleDict,
+    blocking_rule_to_obj,
+)
+from splink.internals.dialects import SplinkDialect
+
+
+class BlockingRuleCreator(ABC):
+    def __init__(
+        self,
+        arrays_to_explode: list[str] | None = None,
+    ):
+        self._arrays_to_explode = arrays_to_explode
+
+    @property
+    def arrays_to_explode(self):
+        return self._arrays_to_explode
+
+    @abstractmethod
+    def create_sql(self, sql_dialect: SplinkDialect) -> str:
+        pass
+
+    @final
+    def create_blocking_rule_dict(self, sql_dialect_str: str) -> BlockingRuleDict:
+        sql_dialect = SplinkDialect.from_string(sql_dialect_str)
+        level_dict: BlockingRuleDict = {
+            "blocking_rule": self.create_sql(sql_dialect),
+            "sql_dialect": sql_dialect_str,
+            "arrays_to_explode": self.arrays_to_explode,
+        }
+
+        return level_dict
+
+    @final
+    def get_blocking_rule(self, sql_dialect_str: str) -> BlockingRule:
+        return blocking_rule_to_obj(self.create_blocking_rule_dict(sql_dialect_str))
+
+
+acceptable_br_creator_types = Union[BlockingRuleCreator, str, Dict[str, Any]]

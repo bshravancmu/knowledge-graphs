@@ -1,0 +1,10 @@
+*
+!src
+!test
+!e2e
+!benchmark
+!.git
+!CMakeLists.txt
+!CompilationInfo.cmake
+!GitVersion.cmake
+!docker-entrypoint.sh

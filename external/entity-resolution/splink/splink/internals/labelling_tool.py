@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import logging
+import os
+from typing import TYPE_CHECKING, Any
+
+from splink.internals.html_utils import json_for_html, render_html_template
+from splink.internals.misc import EverythingEncoder, read_resource
+from splink.internals.pipeline import CTEPipeline
+from splink.internals.splink_dataframe import SplinkDataFrame
+from splink.internals.vertically_concatenate import enqueue_df_concat_with_tf
+
+# https://stackoverflow.com/questions/39740632/python-type-hinting-without-cyclic-imports
+if TYPE_CHECKING:
+    from splink.internals.linker import Linker
+
+logger = logging.getLogger(__name__)
+
+_PREDICTION_CONTROL = (
+    '<div id="observablehq-show_splink_predictions_in_interface"></div>'
+)
+_LABELS_TEXTAREA = '<div id="observablehq-labels_in_textarea"></div>'
+_PREDICTION_INSPECTOR = (
+    'if (name === "viewof show_splink_predictions_in_interface") '
+    "return new slt.Inspector(document.querySelector("
+    '"#observablehq-show_splink_predictions_in_interface"));'
+)
+_LABELS_INSPECTOR = (
+    'if (name === "labels_in_textarea") '
+    "return new slt.Inspector(document.querySelector("
+    '"#observablehq-labels_in_textarea"));'
+)
+
+
+def _labelling_template_fragments(
+    view_in_jupyter: bool,
+    show_splink_predictions_in_interface: bool,
+) -> dict[str, str]:
+    """Return the paired DOM and Observable fragments for optional controls."""
+    return {
+        "prediction_control": (
+            _PREDICTION_CONTROL if show_splink_predictions_in_interface else ""
+        ),
+        "labels_textarea": _LABELS_TEXTAREA if view_in_jupyter else "",
+        "prediction_inspector": (
+            _PREDICTION_INSPECTOR if show_splink_predictions_in_interface else ""
+        ),
+        "labels_inspector": _LABELS_INSPECTOR if view_in_jupyter else "",
+    }
+
+
+def generate_labelling_tool_comparisons(
+    linker: "Linker",
+    unique_id: str,
+    source_dataset: str | None,
+    match_weight_threshold: float = -4,
+) -> SplinkDataFrame:
+    settings = linker._settings_obj
+
+    # Materialise all input records (with term frequency columns) so that the
+    # record of interest can be compared against them using a full block.
+    pipeline = CTEPipeline()
+    enqueue_df_concat_with_tf(linker, pipeline)
+    all_records = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+    # Extract the single record of interest
+    source_dataset_condition = ""
+    if source_dataset is not None:
+        sds_col = settings.column_info_settings.source_dataset_column_name
+        source_dataset_condition = f"""
+          and {sds_col} = '{source_dataset}'
+        """
+
+    pipeline = CTEPipeline()
+    sql = f"""
+    select *
+    from {all_records.physical_name}
+    where {settings.column_info_settings.unique_id_column_name} = '{unique_id}'
+    {source_dataset_condition}
+    """
+    pipeline.enqueue_sql(sql, "__splink__df_labelling_tool_record")
+    record = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+    # Compare every input record against the record of interest (full block).
+    # The input records are passed first so they appear on the "_l" side of the
+    # comparison, which is the side the labelling tool renders as the source data.
+    comparisons = linker.inference.score_pairs(all_records, record)
+
+    # Keep only matches scoring above the threshold
+    pipeline = CTEPipeline()
+    sql = f"""
+    select *
+    from {comparisons.physical_name}
+    where match_weight > {match_weight_threshold}
+    """
+    pipeline.enqueue_sql(sql, "__splink__df_labelling_tool_comparisons")
+    matches = linker._db_api.sql_pipeline_to_splink_dataframe(pipeline)
+
+    record.drop_table_from_database_and_remove_from_cache()
+    comparisons.drop_table_from_database_and_remove_from_cache()
+
+    return matches
+
+
+def render_labelling_tool_html(
+    linker: "Linker",
+    df_comparisons: SplinkDataFrame,
+    out_path: str = "labelling_tool.html",
+    view_in_jupyter: bool = False,
+    show_splink_predictions_in_interface: bool = True,
+    overwrite: bool = True,
+) -> str:
+    import numpy as np
+    import pandas as pd
+
+    settings: dict[str, Any] = linker._settings_obj.as_dict()
+
+    logger.warning(
+        "\nWARNING:\n"
+        "The Splink labelling tool is still in development, which means some "
+        "features may change and there may be bugs.\nYour feedback will help us "
+        "improve it. Go to\n"
+        "github.com/moj-analytical-services/splink/discussions/new?category=general"
+        "\nto give us feedback."
+    )
+
+    comparisons_recs = df_comparisons.as_pandas_dataframe()
+
+    comparisons_recs = comparisons_recs.replace(r"^\s*$", "", regex=True)
+
+    comparisons_recs = comparisons_recs.fillna(np.nan).replace(
+        [np.nan, pd.NA], ["", ""]
+    )
+
+    comparisons_recs = comparisons_recs.to_dict(orient="records")
+    # Render template with cluster, nodes and edges
+    template_path = "internals/files/labelling_tool/template.html"
+
+    template_data = {
+        "slt": read_resource("internals/files/labelling_tool/slt.js"),
+        "d3": read_resource("internals/files/external_js/d3@7.8.5"),
+        "stdlib": read_resource("internals/files/external_js/stdlib.js@5.8.3"),
+        "pairwise_comparison_data": json_for_html(
+            comparisons_recs, cls=EverythingEncoder
+        ),
+        "splink_settings_data": json_for_html(settings, cls=EverythingEncoder),
+        "show_predictions": json_for_html(show_splink_predictions_in_interface),
+    }
+    template_data.update(
+        _labelling_template_fragments(
+            view_in_jupyter, show_splink_predictions_in_interface
+        )
+    )
+
+    rendered = render_html_template(template_path, template_data)
+
+    if os.path.isfile(out_path) and not overwrite:
+        raise ValueError(
+            f"The path {out_path} already exists. Please provide a different path."
+        )
+    else:
+        with open(out_path, "w", encoding="utf-8") as html_file:
+            html_file.write(rendered)
+        # return the rendered dashboard html for inline viewing in the notebook
+        return rendered

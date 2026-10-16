@@ -1,0 +1,44 @@
+{
+  "relations": [
+    {
+      "uniqueConstraints": [
+        {
+          "name": "COMPANY_DATA_PKEY",
+          "determinants": [
+            "ID"
+          ],
+          "isPrimaryKey": true
+        }
+      ],
+      "otherFunctionalDependencies": [],
+      "foreignKeys": [],
+      "columns": [
+        {
+          "name": "ID",
+          "datatype": "NUMBER(38,0)",
+          "isNullable": false
+        },
+        {
+          "name": "WORKERS",
+          "datatype": "VARIANT",
+          "isNullable": true
+        },
+        {
+          "name": "DOC",
+          "datatype": "VARIANT",
+          "isNullable": true
+        }
+      ],
+      "name": [
+        "ONTOP_TEST",
+        "NESTED",
+        "COMPANY_DATA_VARIANT"
+      ]
+    }
+  ],
+  "metadata": {
+    "dbmsProductName": "Snowflake",
+    "quotationString": "\"",
+    "extractionTime": "2026-09-16T00:00:00.000+00:00"
+  }
+}

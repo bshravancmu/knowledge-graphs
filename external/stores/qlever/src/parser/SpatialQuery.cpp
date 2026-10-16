@@ -1,0 +1,321 @@
+// Copyright 2024, University of Freiburg
+// Chair of Algorithms and Data Structures
+// Authors: Christoph Ullinger <ullingec@cs.uni-freiburg.de>
+//          Patrick Brosi <brosi@cs.uni-freiburg.de>
+
+#include "parser/SpatialQuery.h"
+
+#include <absl/strings/str_join.h>
+
+#include "engine/SpatialJoinConfig.h"
+#include "parser/MagicServiceIriConstants.h"
+#include "parser/NormalizedString.h"
+#include "parser/PayloadVariables.h"
+#include "parser/SparqlTriple.h"
+#include "rdfTypes/GeoSparqlHelpers.h"
+
+namespace parsedQuery {
+
+namespace detail {
+// CTRE named capture group identifiers for C++17 compatibility
+constexpr ctll::fixed_string distCaptureGroup = "dist";
+constexpr ctll::fixed_string resultsCaptureGroup = "results";
+}  // namespace detail
+
+// ____________________________________________________________________________
+void SpatialQuery::addParameter(const SparqlTriple& triple) {
+  auto simpleTriple = triple.getSimple();
+  TripleComponent predicate = simpleTriple.p_;
+  TripleComponent object = simpleTriple.o_;
+
+  auto predString = extractParameterName(predicate, SPATIAL_SEARCH_IRI);
+
+  if (predString == "left") {
+    setVariable("left", object, left_);
+  } else if (predString == "right") {
+    setVariable("right", object, right_);
+  } else if (predString == "numNearestNeighbors") {
+    throwIf(!object.isInt(),
+            "The parameter `<numNearestNeighbors>` expects an integer (the "
+            "maximum "
+            "number of nearest neighbors)");
+    maxResults_ = object.getInt();
+  } else if (predString == "maxDistance") {
+    if (object.isInt()) {
+      maxDist_ = static_cast<double>(object.getInt());
+    } else if (object.isDouble()) {
+      maxDist_ = object.getDouble();
+    } else {
+      throw SpatialSearchException(
+          "The parameter `<maxDistance>` expects an integer or decimal (the "
+          "maximum distance in meters)");
+    }
+  } else if (predString == "bindDistance") {
+    setVariable("bindDistance", object, distanceVariable_);
+  } else if (predString == "joinType") {
+    // This case is already covered by `SpatialJoinType::fromString` below,
+    // but we want to throw a more precise error if the object isn't even an
+    // IRI.
+    throwIf(!object.isIri(),
+            absl::StrCat("The parameter `<joinType>` needs an IRI that "
+                         "selects the join type to use. Currently supported "
+                         "are: ",
+                         SpatialJoinType::getListOfSupportedValues()));
+    auto type = extractParameterName(object, SPATIAL_SEARCH_IRI);
+    try {
+      joinType_ = SpatialJoinType::fromString(type);
+    } catch (const std::runtime_error&) {
+      throw SpatialSearchException{absl::StrCat(
+          "The IRI given for the parameter `<joinType>` does not refer to a "
+          "supported join type. Currently supported are: ",
+          SpatialJoinType::getListOfSupportedValues())};
+    }
+  } else if (predString == "de9imFilter") {
+    throwIf(!object.isLiteral(),
+            "The parameter `<de9imFilter>` expects a string literal with "
+            "exactly 9 characters, each of which must be one of `0`-`2`, "
+            "`T`/`F` (or lowercase), or `*`.");
+    auto parsed = parseDe9imFilterString(
+        asStringViewUnsafe(object.getLiteral().getContent()));
+    throwIf(!parsed.has_value(),
+            "The parameter `<de9imFilter>` expects a string literal with "
+            "exactly 9 characters, each of which must be one of `0`-`2`, "
+            "`T`/`F` (or lowercase), or `*`.");
+    throwIf(de9imFilterCanMatchDisjoint(parsed.value()),
+            "The parameter `<de9imFilter>` must not match disjoint "
+            "geometries (i.e. not all of the `II`, `IB`, `BI`, and `BB` "
+            "positions, at indices 0, 1, 3, and 4, may be `F`/`f`/`*`), "
+            "since disjoint pairs are never reported by the underlying "
+            "spatial join algorithm.");
+    de9imFilter_ = parsed;
+  } else if (predString == "algorithm") {
+    // This case is already covered in `extractParameterName` below, but we
+    // want to throw a more precise error description
+    throwIf(!object.isIri(),
+            absl::StrCat("The parameter `<algorithm>` needs an IRI that "
+                         "selects the algorithm to employ. Currently "
+                         "supported are: ",
+                         SpatialJoinAlgorithm::getListOfSupportedValues()));
+    try {
+      algo_ = SpatialJoinAlgorithm::fromString(
+          extractParameterName(object, SPATIAL_SEARCH_IRI));
+    } catch (const std::runtime_error&) {
+      throw SpatialSearchException{absl::StrCat(
+          "The IRI given for the parameter `<algorithm>` does not refer to a "
+          "supported spatial search algorithm. Currently supported are: ",
+          SpatialJoinAlgorithm::getListOfSupportedValues())};
+    }
+  } else if (predString == "payload") {
+    if (object.isVariable()) {
+      // Single selected variable
+
+      // If we have already selected all payload variables, we can ignore
+      // another explicitly selected variable.
+      payloadVariables_.addVariable(getVariable("payload", object));
+    } else if (object.isIri() &&
+               extractParameterName(object, SPATIAL_SEARCH_IRI) == "all") {
+      // All variables selected
+      payloadVariables_.setToAll();
+    } else {
+      throw SpatialSearchException(
+          "The argument to the `<payload>` parameter must be either a variable "
+          "to be selected or `<all>`");
+    }
+
+  } else if (predString == "experimentalRightCacheName") {
+    throwIf(!object.isLiteral(),
+            "The argument to the `<experimentalRightCacheName>` parameter must "
+            "be the name of a pinned cache entry as a string literal.");
+    rightCacheName_ = asStringViewUnsafe(object.getLiteral().getContent());
+  } else {
+    throw SpatialSearchException(absl::StrCat(
+        "Unsupported argument ", predString,
+        " in spatial search; supported arguments are: `<left>`, `<right>`, "
+        "`<numNearestNeighbors>`, `<maxDistance>`, `<bindDistance>`, "
+        "`<joinType>`, `<de9imFilter>`, `<payload>`, and `<algorithm>`"));
+  }
+}
+
+// ____________________________________________________________________________
+SpatialJoinConfiguration SpatialQuery::toSpatialJoinConfiguration() const {
+  throwIf(!algo_.has_value(),
+          absl::StrCat("Missing parameter `<algorithm>` in spatial search. "
+                       "Please explicitly select an algorithm: ",
+                       SpatialJoinAlgorithm::getListOfSupportedValues(),
+                       ". See the QLever Docs "
+                       "(https://docs.qlever.dev/geosparql/) for details."));
+  SpatialJoinAlgorithm algo = algo_.value();
+
+  throwIf(!left_.has_value(), "Missing parameter `<left>` in spatial search.");
+
+  throwIf(
+      algo != SpatialJoinAlgorithm::LIBSPATIALJOIN && !maxDist_.has_value() &&
+          !maxResults_.has_value(),
+      "Neither `<numNearestNeighbors>` nor `<maxDistance>` were provided but "
+      "at least one of them is required for the selected algorithm");
+
+  throwIf(
+      algo == SpatialJoinAlgorithm::LIBSPATIALJOIN && maxResults_.has_value(),
+      "The algorithm `<libspatialjoin>` does not support the option "
+      "`<numNearestNeighbors>`");
+
+  throwIf(algo == SpatialJoinAlgorithm::LIBSPATIALJOIN &&
+              joinType_ != SpatialJoinType::WITHIN_DIST && maxDist_.has_value(),
+          "The algorithm `<libspatialjoin>` supports the "
+          "`<maxDistance>` option only if `<joinType>` is set to "
+          "`<within-dist>`.");
+
+  throwIf(joinType_ == SpatialJoinType::WITHIN_DIST && !maxDist_.has_value(),
+          "The join type `<within-dist>` requires the `<maxDistance>` "
+          "parameter to be set.");
+
+  throwIf(joinType_ == SpatialJoinType::DE9IM && !de9imFilter_.has_value(),
+          "The join type `<de9im>` requires the `<de9imFilter>` parameter to "
+          "be set.");
+
+  throwIf(de9imFilter_.has_value() && joinType_ != SpatialJoinType::DE9IM,
+          "The parameter `<de9imFilter>` may only be set if `<joinType>` is "
+          "set to `<de9im>`.");
+
+  throwIf(
+      joinType_.has_value() && algo != SpatialJoinAlgorithm::LIBSPATIALJOIN,
+      "The selected algorithm does not support the `<joinType>` option. Only "
+      "the `<libspatialjoin>` algorithm is suitable for this option.");
+
+  throwIf(!right_.has_value(),
+          "Missing parameter `<right>` in spatial search.");
+
+  throwIf(
+      rightCacheName_.has_value() &&
+          algo != SpatialJoinAlgorithm::S2_POINT_POLYLINE,
+      "The parameter `<experimentalRightCacheName>` is only supported by the "
+      "`<experimentalPointPolyline>` algorithm.");
+
+  if (algo == SpatialJoinAlgorithm::S2_POINT_POLYLINE) {
+    throwIf(!rightCacheName_.has_value(),
+            "The parameter `<experimentalRightCacheName>` is mandatory for the "
+            "`<experimentalPointPolyline>` algorithm.");
+    throwIf(
+        childGraphPattern_.has_value(),
+        "The parameter `<experimentalPointPolyline>` algorithm uses a cached "
+        "query result as its right child. Therefore a group graph pattern "
+        "for the right side may not be specified in the `SERVICE`.");
+  }
+
+  // Only if the number of results is limited, it is mandatory that the right
+  // variable must be selected inside the service. If only the distance is
+  // limited, it may be declared inside or outside of the service.
+  throwIf(
+      !ignoreMissingRightChild_ && maxResults_.has_value() &&
+          !childGraphPattern_.has_value(),
+      "A spatial search with a maximum number of results must have its right "
+      "variable declared inside the service using a graph pattern: SERVICE "
+      "spatialSearch: { [Config Triples] { <Something> <ThatSelects> ?right "
+      "} }.");
+  throwIf(
+      !ignoreMissingRightChild_ && !childGraphPattern_.has_value() &&
+          !payloadVariables_.isAll() && !payloadVariables_.empty() &&
+          algo != SpatialJoinAlgorithm::S2_POINT_POLYLINE,
+      "The right variable for the spatial search is declared outside the "
+      "SERVICE, but the <payload> parameter was set. Please move the "
+      "declaration of the right variable into the SERVICE if you wish to use "
+      "`<payload>`");
+
+  std::optional<SpatialJoinType> joinType = std::nullopt;
+  if (algo == SpatialJoinAlgorithm::LIBSPATIALJOIN) {
+    // Default join type if `libspatialjoin` is selected as algorithm
+    joinType = SpatialJoinType::INTERSECTS;
+    if (joinType_.has_value()) {
+      joinType = joinType_.value();
+    }
+  }
+
+  // Payload variables
+  PayloadVariables pv;
+  if (!childGraphPattern_.has_value()) {
+    pv = PayloadVariables::all();
+  } else {
+    pv = payloadVariables_;
+  }
+
+  // Task specification
+  SpatialJoinTask task;
+  if (algo == SpatialJoinAlgorithm::LIBSPATIALJOIN) {
+    task = LibSpatialJoinConfig{joinType.value_or(SpatialJoinType::INTERSECTS),
+                                maxDist_, de9imFilter_};
+  } else if (maxResults_.has_value()) {
+    task = NearestNeighborsConfig{maxResults_.value(), maxDist_};
+  } else {
+    task = MaxDistanceConfig{maxDist_.value()};
+  }
+
+  return SpatialJoinConfiguration{
+      task, left_.value(), right_.value(), distanceVariable_,
+      pv,   algo,          rightCacheName_};
+}
+
+// ____________________________________________________________________________
+SpatialQuery::SpatialQuery(const SparqlTriple& triple) {
+  auto predicate = triple.getSimplePredicate();
+  AD_CONTRACT_CHECK(predicate.has_value(),
+                    "The config triple for SpatialJoin must have a special IRI "
+                    "as predicate");
+  std::string_view input = predicate.value();
+
+  // Add variables to configuration object
+  AD_CONTRACT_CHECK(triple.s_.isVariable() && triple.o_.isVariable(),
+                    "Currently, both the subject and the object of the triple "
+                    "that specifies a spatial join have to be variables.");
+  setVariable("left", triple.s_, left_);
+  setVariable("right", triple.o_, right_);
+
+  // This legacy predicate syntax has no way to specify an algorithm, so we
+  // pick the same algorithm that used to be the implicit default.
+  algo_ = SPATIAL_JOIN_DEFAULT_ALGORITHM;
+
+  // Helper to convert a ctre match to an integer
+  auto matchToInt = [](std::string_view match) -> std::optional<size_t> {
+    if (match.size() == 0) {
+      // We need to accept empty matches because the maximum distance argument
+      // to a <nearest-neighbors:...> predicate is optional.
+      return std::nullopt;
+    }
+    size_t res = 0;
+    std::from_chars(match.data(), match.data() + match.size(), res);
+    return res;
+  };
+
+  // Check if one of the regexes matches
+  if (auto match = ctre::match<MAX_DIST_IN_METERS_REGEX>(input)) {
+    maxDist_ = matchToInt(match.get<detail::distCaptureGroup>());
+    AD_CORRECTNESS_CHECK(maxDist_.has_value());
+  } else if (auto match = ctre::search<NEAREST_NEIGHBORS_REGEX>(input)) {
+    maxResults_ = matchToInt(match.get<detail::resultsCaptureGroup>());
+    maxDist_ = matchToInt(match.get<detail::distCaptureGroup>());
+    ignoreMissingRightChild_ = true;
+    AD_CORRECTNESS_CHECK(maxResults_.has_value());
+  } else {
+    AD_THROW(absl::StrCat("Tried to perform spatial join with unknown triple ",
+                          input,
+                          ". This must be a valid spatial condition like ",
+                          "`<max-distance-in-meters:50>`"));
+  }
+}
+
+// _____________________________________________________________________________
+void SpatialQuery::throwIf(bool throwCondition,
+                           std::string_view message) const {
+  if (throwCondition) {
+    throw SpatialSearchException{std::string(message)};
+  }
+}
+
+// _____________________________________________________________________________
+void SpatialQuery::validate() const {
+  // We convert the spatial query to a spatial join configuration and discard
+  // its result here to detect errors early and report them to the user with
+  // highlighting. It's only a small struct so not much is wasted.
+  [[maybe_unused]] auto&& _ = toSpatialJoinConfiguration();
+}
+
+}  // namespace parsedQuery

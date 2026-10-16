@@ -1,0 +1,1111 @@
+"""
+Tests the generic generator framework
+"""
+
+import logging
+import os
+import re
+from dataclasses import dataclass, field
+from io import BytesIO, StringIO
+from pathlib import Path
+from typing import cast
+
+import click
+import pytest
+
+from linkml import LOCAL_METAMODEL_YAML_FILE
+from linkml.generators.shaclgen import ShaclGenerator
+from linkml.utils.generator import (
+    Generator,
+    apply_config_defaults,
+    config_mapping,
+    parse_config_yaml,
+    read_generator_config,
+)
+from linkml_runtime import SchemaView
+from linkml_runtime.linkml_model.meta import (
+    ClassDefinition,
+    ClassDefinitionName,
+    Element,
+    ElementName,
+    SlotDefinition,
+    SlotDefinitionName,
+    SubsetDefinition,
+    TypeDefinition,
+)
+
+
+@dataclass
+class GeneratorTest(Generator):
+    generatorname = os.path.basename(__file__)
+    generatorversion = "0.0.1"
+    valid_formats = ["txt"]
+
+    visit_all_class_slots = True
+    visits_are_sorted = False
+    sort_class_slots = False
+
+    logstream: StringIO = field(default_factory=lambda: StringIO())
+
+    def __post_init__(self) -> None:
+        self.visited = []
+        self.visit_class_return = True
+        self.logstream = StringIO()
+        logging.basicConfig()
+        logger = logging.getLogger(self.__class__.__name__)
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+        logger.addHandler(logging.StreamHandler(self.logstream))
+        logger.setLevel(logging.INFO)
+        self.logger = logger
+        super().__post_init__()
+
+    def visit_schema(self, **kwargs) -> None:
+        self.visited = ["init"]
+        self.visited.append(f"schema: {self.schema.name}")
+
+    def end_schema(self, **kwargs) -> None:
+        self.visited.append(f"end_schema: {self.schema.name}")
+
+    def visit_class(self, cls: ClassDefinition) -> bool:
+        self.visited.append(f"class: {cls.name}")
+        return self.visit_class_return
+
+    def end_class(self, cls: ClassDefinition) -> None:
+        self.visited.append(f"end_class: {cls.name}")
+
+    def visit_class_slot(self, cls: ClassDefinition, aliased_slot_name: str, slot: SlotDefinition) -> None:
+        self.visited.append(
+            f"  slot: {slot.name}" + (f" ({aliased_slot_name})" if slot.name != aliased_slot_name else "")
+        )
+
+    def visit_slot(self, aliased_slot_name: str, slot: SlotDefinition) -> None:
+        self.visited.append(
+            f"slot: {slot.name}" + (f" ({aliased_slot_name})" if slot.name != aliased_slot_name else "")
+        )
+
+    def visit_type(self, typ: TypeDefinition) -> None:
+        self.visited.append(f"type: {typ.name}")
+
+    def visit_subset(self, subset: SubsetDefinition) -> None:
+        self.visited.append(f"subset: {subset.name}")
+
+
+@dataclass
+class SchemaViewGeneratorTest(GeneratorTest):
+    uses_schemaloader = False
+
+
+# visit_all_class_slots = True, visits_are_sorted = False, sort_class_slots = False
+expected1 = [
+    "init",
+    "schema: generator1",
+    "subset: ss2",
+    "subset: ss1",
+    "type: t2",
+    "type: t1",
+    "slot: slot1",
+    "slot: slot2",
+    "slot: mixin slot 1",
+    "slot: mixin slot 2",
+    "slot: mixin slot 3",
+    "slot: applyto slot 1",
+    "slot: applyto slot 2",
+    "slot: c2_slot1 (slot1)",
+    "slot: c3_applyto slot 2 (applyto slot 2)",
+    "slot: c3_slot1 (slot1)",
+    "class: c1",
+    "  slot: slot1",
+    "  slot: slot2",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "end_class: c1",
+    "class: c2",
+    "  slot: slot2",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "  slot: c2_slot1 (slot1)",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: c2",
+    "class: c3",
+    "  slot: slot2",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "  slot: applyto slot 1",
+    "  slot: c3_applyto slot 2 (applyto slot 2)",
+    "  slot: c3_slot1 (slot1)",
+    "end_class: c3",
+    "class: c4",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: c4",
+    "class: mixin1",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "end_class: mixin1",
+    "class: mixin2",
+    "  slot: mixin slot 3",
+    "end_class: mixin2",
+    "class: applyto1",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: applyto1",
+    "end_schema: generator1",
+]
+
+# visit_all_class_slots = False, visits_are_sorted = False, sort_class_slots = False
+expected2 = [
+    "init",
+    "schema: generator1",
+    "subset: ss2",
+    "subset: ss1",
+    "type: t2",
+    "type: t1",
+    "slot: slot1",
+    "slot: slot2",
+    "slot: mixin slot 1",
+    "slot: mixin slot 2",
+    "slot: mixin slot 3",
+    "slot: applyto slot 1",
+    "slot: applyto slot 2",
+    "slot: c2_slot1 (slot1)",
+    "slot: c3_applyto slot 2 (applyto slot 2)",
+    "slot: c3_slot1 (slot1)",
+    "class: c1",
+    "  slot: slot1",
+    "  slot: slot2",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "end_class: c1",
+    "class: c2",
+    "  slot: c2_slot1 (slot1)",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: c2",
+    "class: c3",
+    "  slot: c3_applyto slot 2 (applyto slot 2)",
+    "  slot: c3_slot1 (slot1)",
+    "end_class: c3",
+    "class: c4",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: c4",
+    "class: mixin1",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "end_class: mixin1",
+    "class: mixin2",
+    "  slot: mixin slot 3",
+    "end_class: mixin2",
+    "class: applyto1",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: applyto1",
+    "end_schema: generator1",
+]
+
+# visit_all_class_slots = True, visits_are_sorted = True, sort_class_slots = False
+expected3 = [
+    "init",
+    "schema: generator1",
+    "subset: ss1",
+    "subset: ss2",
+    "type: t1",
+    "type: t2",
+    "slot: applyto slot 1",
+    "slot: applyto slot 2",
+    "slot: c2_slot1 (slot1)",
+    "slot: c3_applyto slot 2 (applyto slot 2)",
+    "slot: c3_slot1 (slot1)",
+    "slot: mixin slot 1",
+    "slot: mixin slot 2",
+    "slot: mixin slot 3",
+    "slot: slot1",
+    "slot: slot2",
+    "class: applyto1",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: applyto1",
+    "class: c1",
+    "  slot: slot1",
+    "  slot: slot2",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "end_class: c1",
+    "class: c2",
+    "  slot: slot2",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "  slot: c2_slot1 (slot1)",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: c2",
+    "class: c3",
+    "  slot: slot2",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "  slot: applyto slot 1",
+    "  slot: c3_applyto slot 2 (applyto slot 2)",
+    "  slot: c3_slot1 (slot1)",
+    "end_class: c3",
+    "class: c4",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: c4",
+    "class: mixin1",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "end_class: mixin1",
+    "class: mixin2",
+    "  slot: mixin slot 3",
+    "end_class: mixin2",
+    "end_schema: generator1",
+]
+
+# visit_all_class_slots = True, visits_are_sorted = False, sort_class_slots = True
+expected4 = [
+    "init",
+    "schema: generator1",
+    "subset: ss2",
+    "subset: ss1",
+    "type: t2",
+    "type: t1",
+    "slot: slot1",
+    "slot: slot2",
+    "slot: mixin slot 1",
+    "slot: mixin slot 2",
+    "slot: mixin slot 3",
+    "slot: applyto slot 1",
+    "slot: applyto slot 2",
+    "slot: c2_slot1 (slot1)",
+    "slot: c3_applyto slot 2 (applyto slot 2)",
+    "slot: c3_slot1 (slot1)",
+    "class: c1",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "  slot: slot1",
+    "  slot: slot2",
+    "end_class: c1",
+    "class: c2",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "  slot: c2_slot1 (slot1)",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "  slot: slot2",
+    "end_class: c2",
+    "class: c3",
+    "  slot: applyto slot 1",
+    "  slot: c3_applyto slot 2 (applyto slot 2)",
+    "  slot: c3_slot1 (slot1)",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "  slot: mixin slot 3",
+    "  slot: slot2",
+    "end_class: c3",
+    "class: c4",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: c4",
+    "class: mixin1",
+    "  slot: mixin slot 1",
+    "  slot: mixin slot 2",
+    "end_class: mixin1",
+    "class: mixin2",
+    "  slot: mixin slot 3",
+    "end_class: mixin2",
+    "class: applyto1",
+    "  slot: applyto slot 1",
+    "  slot: applyto slot 2",
+    "end_class: applyto1",
+    "end_schema: generator1",
+]
+
+expected5 = [
+    "init",
+    "schema: generator1",
+    "subset: ss2",
+    "subset: ss1",
+    "type: t2",
+    "type: t1",
+    "slot: slot1",
+    "slot: slot2",
+    "slot: mixin slot 1",
+    "slot: mixin slot 2",
+    "slot: mixin slot 3",
+    "slot: applyto slot 1",
+    "slot: applyto slot 2",
+    "slot: c2_slot1 (slot1)",
+    "slot: c3_applyto slot 2 (applyto slot 2)",
+    "slot: c3_slot1 (slot1)",
+    "class: c1",
+    "class: c2",
+    "class: c3",
+    "class: c4",
+    "class: mixin1",
+    "class: mixin2",
+    "class: applyto1",
+    "end_schema: generator1",
+]
+
+
+def test_visitors(input_path):
+    """Test the generator visitor functions"""
+    gen = GeneratorTest(str(input_path("generator1.yaml")))
+    gen.serialize()
+    assert expected1 == gen.visited
+    gen.visit_all_class_slots = False
+    gen.serialize()
+    assert expected2 == gen.visited
+    gen.visit_all_class_slots = True
+    gen.visits_are_sorted = True
+    gen.serialize()
+    assert expected3 == gen.visited
+    gen.visits_are_sorted = False
+    gen.sort_class_slots = True
+    gen.serialize()
+    assert expected4 == gen.visited
+    gen.sort_class_slots = False
+    gen.visit_class_return = False
+    gen.serialize()
+    assert expected5 == gen.visited
+
+
+def test_default_prefix():
+    """Test default prefix utility"""
+    model = """
+id: http://example.org/test/t1
+name: t1
+
+default_range: string
+types:
+    string:
+        base: str
+        uri: xsd:string
+
+prefixes:
+    xsd: http://www.w3.org/2001/XMLSchema#
+    AAA: http://example.org/test/aaa/
+    BBB: http://example.org/test/bbb/
+"""
+    gen = GeneratorTest(model + "\n\ndefault_prefix: AAA")
+    assert "http://example.org/test/aaa/" == gen.default_prefix()
+
+    gen = GeneratorTest(model + "\n\ndefault_prefix: http://example.org/test/default/")
+    assert "http://example.org/test/default/" == gen.default_prefix()
+
+    with pytest.raises(ValueError):
+        GeneratorTest(model + "\n\ndefault_prefix: CCCC")
+
+
+def test_schema_view_prefix_namespaces(tmp_path):
+    """SchemaView prefix objects are unwrapped when namespaces are initialized."""
+    schema_path = tmp_path / "schema.yaml"
+    schema_path.write_text(
+        """id: https://example.org/test
+name: test
+prefixes:
+  ex: https://example.org/test/
+default_prefix: ex
+classes:
+  Foo:
+"""
+    )
+
+    generator = SchemaViewGeneratorTest(schema_path)
+
+    assert str(generator.namespaces["ex"]) == "https://example.org/test/"
+
+
+def test_namespaces_constructor_kwarg():
+    """The ``namespaces=`` constructor kwarg is accepted for backward compat.
+
+    ``namespaces`` is exposed as a property backed by ``_namespaces``.  Renaming
+    the backing field must not drop the public ``namespaces=`` kwarg that worked
+    before the SchemaLoader/SchemaView split.
+
+    - On the SchemaLoader path the kwarg is accepted (no ``TypeError``) and the
+      map is (re)populated from the resolved schema, as on ``main``.
+    - On the SchemaView path an injected map is honored verbatim.
+    """
+    from linkml_runtime.utils.namespaces import Namespaces
+
+    model = """
+id: http://example.org/test/t1
+name: t1
+default_range: string
+prefixes:
+    xsd: http://www.w3.org/2001/XMLSchema#
+default_prefix: xsd
+"""
+
+    # SchemaLoader path: kwarg must be accepted (previously raised TypeError).
+    injected = Namespaces()
+    injected["ex"] = "http://example.org/injected/"
+    gen = GeneratorTest(model, namespaces=injected)
+    assert gen.namespaces is not None
+    assert "xsd" in gen.namespaces
+
+    # Omitting the kwarg still yields a populated map on the SchemaLoader path.
+    gen_default = GeneratorTest(model)
+    assert gen_default.namespaces is not None
+    assert "xsd" in gen_default.namespaces
+
+
+def test_namespaces_constructor_kwarg_injection_schemaview(tmp_path):
+    """On the SchemaView path an injected ``namespaces=`` map is honored."""
+    from linkml_runtime.utils.namespaces import Namespaces
+
+    schema_path = tmp_path / "schema.yaml"
+    schema_path.write_text(
+        """id: https://example.org/test
+name: test
+prefixes:
+  ex: https://example.org/test/
+default_prefix: ex
+classes:
+  Foo:
+"""
+    )
+
+    injected = Namespaces()
+    injected["custom"] = "http://example.org/custom/"
+    generator = SchemaViewGeneratorTest(schema_path, namespaces=injected)
+
+    with pytest.warns(UserWarning, match="self.namespaces.*SchemaLoader-era"):
+        namespaces = generator.namespaces
+    assert namespaces["custom"] == "http://example.org/custom/"
+
+
+def test_duplicate_names():
+    """Test duplicate name for slot and type detection"""
+    model = """
+id: http://example.org/test/t1
+name: t1
+default_range: string
+
+types:
+    string:
+        base: str
+
+    dup name:
+        base: int
+
+    dn2:
+
+
+classes:
+    dn2:
+
+    dup name:
+"""
+    with pytest.raises(ValueError):
+        GeneratorTest(model)
+
+
+def test_element_name():
+    """Test formatted_element_name"""
+    model = """
+id: http://example.org/test/t1
+name: t1
+
+prefixes:
+    xsd: http://www.w3.org/2001/XMLSchema#
+
+subsets:
+    dup name:
+    subset ss1:
+
+default_range: dup name
+
+types:
+    str:
+        base: str
+        uri: xsd:string
+    dup name:
+        base: int
+        uri: xsd:integer
+    type t1:
+        base: int
+        uri: xsd:integer
+
+
+slots:
+    dup name:
+        domain: class c1
+
+classes:
+    class c1:
+"""
+    gen = GeneratorTest(model)
+    gentext = gen.logstream.getvalue().strip()
+
+    assert "Overlapping type and slot names: dup name" in gentext
+    assert "Overlapping subset and slot names: dup name" in gentext
+    assert "Overlapping subset and type names: dup name" in gentext
+
+    assert "dup_name" == gen.formatted_element_name(cast(ElementName, "dup name"), False)
+    assert "int" == gen.formatted_element_name(cast(ElementName, "dup name"), True)
+    assert "str" == gen.formatted_element_name(cast(ElementName, "str"), True)
+    assert gen.formatted_element_name(cast(ElementName, "class c1"), False) is None
+    assert "ClassC1" == gen.formatted_element_name(cast(ElementName, "class c1"), True)
+    assert "SubsetSs1" == gen.formatted_element_name(cast(ElementName, "subset ss1"), False)
+    assert "Unknown_ClassC2" == gen.class_or_type_name(cast(ElementName, "class c2"))
+    assert "int" == gen.class_or_type_name(cast(ElementName, "dup name"))
+    assert "int" == gen.class_or_type_name(cast(ElementName, "type t1"))
+    assert "unknown_slot_s2" == gen.slot_name(cast(SlotDefinitionName, "slot s2"))
+    assert "Unknown_SS" == gen.subset_name(cast(ElementName, "s s"))
+
+    assert "dup_name" == gen.formatted_element_name(gen.schema.slots[cast(ElementName, "dup name")])
+    assert "int" == gen.formatted_element_name(gen.schema.types[cast(ElementName, "dup name")])
+    assert "DupName" == gen.formatted_element_name(gen.schema.subsets[cast(ElementName, "dup name")])
+    assert "ClassC1" == gen.formatted_element_name(gen.schema.classes[cast(ElementName, "class c1")])
+    assert gen.formatted_element_name(cast(Element, gen)) is None
+
+
+def test_own_slots(input_path):
+    """Test the generator own_slots and all_slots helper functions"""
+    gen = GeneratorTest(str(input_path("ownalltest.yaml")))
+    gen.sort_class_slots = True
+
+    assert ["s6"] == [s.name for s in gen.own_slots(cast(ClassDefinitionName, "at1"))]
+    assert ["s6"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "at1"))]
+    assert ["s6"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "at1"), cls_slots_first=True)]
+
+    assert ["s5", "s6"] == [s.name for s in gen.own_slots(cast(ClassDefinitionName, "m2"))]
+    assert ["s5", "s6"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "m2"))]
+    assert ["s5", "s6"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "m2"), cls_slots_first=True)]
+
+    assert ["s4"] == [s.name for s in gen.own_slots(cast(ClassDefinitionName, "m1"))]
+    assert ["s4"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "m1"))]
+    assert ["s4"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "m1"), cls_slots_first=True)]
+
+    assert ["s1", "s3"] == [s.name for s in gen.own_slots(cast(ClassDefinitionName, "c1"))]
+    assert ["s1", "s3"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "c1"))]
+    assert ["s1", "s3"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "c1"), cls_slots_first=True)]
+
+    assert ["s2", "s4"] == [s.name for s in gen.own_slots(cast(ClassDefinitionName, "c2"))]
+    assert ["s1", "s2", "s3", "s4"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "c2"))]
+    assert ["s2", "s4", "s1", "s3"] == [
+        s.name for s in gen.all_slots(cast(ClassDefinitionName, "c2"), cls_slots_first=True)
+    ]
+
+    assert ["s5", "s6"] == [s.name for s in gen.own_slots(cast(ClassDefinitionName, "c3"))]
+    assert ["s1", "s2", "s3", "s4", "s5", "s6"] == [s.name for s in gen.all_slots(cast(ClassDefinitionName, "c3"))]
+    assert ["s5", "s6", "s2", "s4", "s1", "s3"] == [
+        s.name for s in gen.all_slots(cast(ClassDefinitionName, "c3"), cls_slots_first=True)
+    ]
+
+    assert ["c4_s1", "c4_s5", "c4_s6"] == [s.name for s in gen.own_slots(cast(ClassDefinitionName, "c4"))]
+    assert ["c4_s1", "c4_s5", "c4_s6", "s2", "s3", "s4"] == [
+        s.name for s in gen.all_slots(cast(ClassDefinitionName, "c4"))
+    ]
+    assert ["c4_s1", "c4_s5", "c4_s6", "s2", "s4", "s3"] == [
+        s.name for s in gen.all_slots(cast(ClassDefinitionName, "c4"), cls_slots_first=True)
+    ]
+
+    assert ["c5_s1", "c5_s6"] == [s.name for s in gen.own_slots(cast(ClassDefinitionName, "c5"))]
+    assert ["c4_s5", "c5_s1", "c5_s6", "s2", "s3", "s4"] == [
+        s.name for s in gen.all_slots(cast(ClassDefinitionName, "c5"))
+    ]
+    assert ["c5_s1", "c5_s6", "c4_s5", "s2", "s4", "s3"] == [
+        s.name for s in gen.all_slots(cast(ClassDefinitionName, "c5"), cls_slots_first=True)
+    ]
+
+
+def test_slot_class_paths(input_path):
+    """Test for aliased slot name, class identifier path and slot type path"""
+    gen = GeneratorTest(str(input_path("ownalltest.yaml")))
+    gen.sort_class_slots = True
+    assert ["s1", "s5", "s6", "s2", "s3", "s4"] == [
+        gen.aliased_slot_name(s.name) for s in gen.all_slots(cast(ClassDefinitionName, "c4"))
+    ]
+    assert ["s5", "s1", "s6", "s2", "s3", "s4"] == [
+        gen.aliased_slot_name(s) for s in gen.all_slots(cast(ClassDefinitionName, "c5"))
+    ]
+    assert {
+        "c4_s1": ["int"],
+        "c4_s5": ["Bool", "T5"],
+        "c4_s6": ["int", "C1S1", "C2S1", "C3S1", "C4S1"],
+        "s2": ["int", "C1S1"],
+        "s3": ["int", "T2", "T3"],
+        "s4": ["Bool"],
+    } == {s.name: gen.slot_range_path(s) for s in gen.all_slots(cast(ClassDefinitionName, "c4"))}
+    assert {
+        "c4_s5": ["Bool", "T5"],
+        "c5_s1": ["int"],
+        "c5_s6": ["str"],
+        "s2": ["int", "C1S1"],
+        "s3": ["int", "T2", "T3"],
+        "s4": ["Bool"],
+    } == {s.name: gen.slot_range_path(s) for s in gen.all_slots(cast(ClassDefinitionName, "c5"))}
+    assert {"s1": ["int"], "s3": ["int", "T2", "T3"]} == {
+        s.name: gen.slot_range_path(s) for s in gen.all_slots(cast(ClassDefinitionName, "c1"))
+    }
+
+
+def test_ancestors():
+    """Test ancestors function and duplicate name detection"""
+    model = """
+id: http://example.org/test/t1
+name: t1
+
+prefixes:
+  xsd: http://www.w3.org/2001/XMLSchema#
+
+default_range: string
+
+types:
+    string:
+        base: str
+        uri: xsd:string
+
+slots:
+    slot s1:
+        domain: class c2
+
+    slot s2:
+        is_a: slot s1
+
+    slot s3:
+        is_a: slot s2
+
+    slot s4:
+        is_a: slot s2
+
+classes:
+    slot s1:
+
+    class c2:
+        is_a: slot s1
+"""
+
+    gen = GeneratorTest(model)
+    assert "Overlapping slot and class names: slot s1" in gen.logstream.getvalue().strip()
+    gen.logstream.truncate(0)
+    gen.logstream.seek(0)
+
+    assert ["slot s1"] == gen.ancestors(gen.schema.slots["slot s1"])
+    assert ["slot s2", "slot s1"] == gen.ancestors(gen.schema.slots[cast(ElementName, "slot s2")])
+    assert ["slot s3", "slot s2", "slot s1"] == gen.ancestors(gen.schema.slots["slot s3"])
+    assert ["slot s4", "slot s2", "slot s1"] == gen.ancestors(gen.schema.slots["slot s4"])
+    assert ["slot s1"] == gen.ancestors(gen.schema.classes["slot s1"])
+    assert ["class c2", "slot s1"] == gen.ancestors(gen.schema.classes["class c2"])
+
+
+def test_range_type_path():
+    model = """
+id: http://example.org/test/t1
+name: t1
+
+prefixes:
+  xsd: http://www.w3.org/2001/XMLSchema#
+
+default_range: type 1
+types:
+    type 1:
+        base: int
+        uri: xsd:integer
+
+    type 2:
+        typeof: type 1
+
+    type 3:
+        typeof: type 2
+"""
+    gen = GeneratorTest(model)
+    assert ["int"] == gen.range_type_path(gen.schema.types["type 1"])
+    assert ["int", "Type2"] == gen.range_type_path(gen.schema.types["type 2"])
+    assert ["int", "Type2", "Type3"] == gen.range_type_path(gen.schema.types["type 3"])
+
+
+def test_identifier_path():
+    """Test the case of an implicitly inlined class"""
+    model = """
+id: http://example.org/test/t1
+name: t1
+
+prefixes:
+    xsd: http://www.w3.org/2001/XMLSchema#
+
+types:
+    string:
+        base: str
+        uri: xsd:string
+
+slots:
+    s1:
+        domain: c1
+        range: c2
+
+    s2:
+        domain: c2
+        range: string
+
+classes:
+    c1:
+    c2:
+
+"""
+    gen = GeneratorTest(model)
+    assert {"s1": ["dict", "C2"], "s2": ["str"]} == {s.name: gen.slot_range_path(s) for s in gen.schema.slots.values()}
+
+
+# TODO: rewrite to be less rigid. See https://github.com/linkml/linkml/issues/562
+def test_meta_neighborhood():
+    """Test the neighborhood function in the metamodel"""
+    gen = GeneratorTest(LOCAL_METAMODEL_YAML_FILE)
+    gen.neighborhood([cast(ElementName, "Definition")])
+    assert "neighborhood(Definition) - Definition is undefined" == gen.logstream.getvalue().strip()
+    gen.logstream.truncate(0)
+    gen.logstream.seek(0)
+
+    neighbor_refs = gen.neighborhood("definition")
+    # see see https://github.com/linkml/linkml/issues/562
+    # in 1.2 series of the data model, 'integer' becomes a neighbor of 'definition'
+    if "integer" in neighbor_refs.typerefs:
+        neighbor_refs.typerefs.remove("integer")
+    assert "class_definition" in neighbor_refs.classrefs
+    assert "is_a" in neighbor_refs.slotrefs
+    assert "string" in neighbor_refs.typerefs
+
+    # skipping this test as it is too rigid: it needs modified every time the metamodel changes
+    # self.assertEqual(References(classrefs={'element', 'subset_definition', 'slot_definition', 'local_name',
+    #                                       'extension', 'example', 'class_definition', 'definition',
+    #                                       'alt_description', 'annotation'},
+    #                            slotrefs={'is_a', 'apply_to', 'mixins', 'owner'},
+    #                            typerefs={'boolean', 'datetime', 'uri', 'string', 'uriorcurie', 'ncname'},
+    #                            subsetrefs=set()), neighbor_refs)
+
+
+CONFIG_YAML = b"""
+generator_args:
+  java:
+    package: org.example.model
+    mergeimports: true
+  golang:
+    package: mypackage
+"""
+
+
+@pytest.mark.parametrize(
+    ("generator_name", "expected"),
+    [
+        ("java", {"package": "org.example.model", "mergeimports": True}),
+        ("golang", {"package": "mypackage"}),
+    ],
+)
+def test_read_generator_config_returns_whole_section(generator_name, expected):
+    """Each generator gets its own section out of one shared config file, and gets all of
+    it in a single read - the file is a stream, so a second read would find nothing."""
+    assert read_generator_config(BytesIO(CONFIG_YAML), generator_name) == expected
+
+
+@pytest.mark.parametrize(
+    ("config_yaml", "generator_name"),
+    [
+        pytest.param(None, "java", id="no-config-file"),
+        pytest.param(b"", "java", id="empty-file"),
+        pytest.param(CONFIG_YAML, "rust", id="generator-absent"),
+        pytest.param(b"generator_args:\n  java:\n", "java", id="empty-section"),
+        pytest.param(b"generator_args:\n", "java", id="empty-generator-args"),
+        pytest.param(b"excludes:\n  - markdown\n", "java", id="no-generator-args"),
+    ],
+)
+def test_read_generator_config_absent_section_is_empty(config_yaml, generator_name):
+    """A section that is absent, or written but left empty, gives an empty dict."""
+    config_file = None if config_yaml is None else BytesIO(config_yaml)
+
+    assert read_generator_config(config_file, generator_name) == {}
+
+
+@pytest.mark.parametrize(
+    ("config_yaml", "where"),
+    [
+        pytest.param(b"- 1\n- 2\n", "the top level", id="top-level-list"),
+        pytest.param(b"justastring\n", "the top level", id="top-level-scalar"),
+        pytest.param(b"generator_args: notamapping\n", "'generator_args'", id="scalar-generator-args"),
+        pytest.param(b"generator_args:\n  java: notamapping\n", "'generator_args.java'", id="scalar-section"),
+    ],
+)
+def test_read_generator_config_rejects_malformed_section(config_yaml, where):
+    """A scalar where a mapping belongs is a usage error naming the offending key -
+    never silently ignored, which would leave the generator on its default."""
+    with pytest.raises(click.UsageError, match=f"expected a YAML mapping at {re.escape(where)}"):
+        read_generator_config(BytesIO(config_yaml), "java")
+
+
+@pytest.mark.parametrize(
+    "config_yaml",
+    [
+        pytest.param(b"generator_args:\n  java:\n   package: [unclosed\n", id="unclosed-bracket"),
+        pytest.param(b"generator_args:\n\tjava:\n\t\tpackage: x\n", id="tab-indent"),
+        # PyYAML raises a bare ValueError for this, not a YAMLError
+        pytest.param(b"generator_args:\n  java:\n    package: 2024-02-30\n", id="impossible-date"),
+    ],
+)
+def test_read_generator_config_rejects_unparsable_yaml(config_yaml):
+    """A file that isn't valid YAML at all is reported as a usage error, like a misshapen
+    one, rather than escaping as a raw parser traceback."""
+    with pytest.raises(click.UsageError, match="--config-file: could not parse as YAML"):
+        read_generator_config(BytesIO(config_yaml), "java")
+
+
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        pytest.param(
+            lambda: parse_config_yaml("{unclosed", "--generator-arguments"),
+            "--generator-arguments: could not parse as YAML",
+            id="unparsable-yaml",
+        ),
+        pytest.param(
+            lambda: config_mapping("notamapping", "'generator_args'", "--config-file"),
+            "--config-file: expected a YAML mapping at 'generator_args', found str",
+            id="misshapen-mapping",
+        ),
+    ],
+)
+def test_shared_config_checks_raise_value_error_naming_their_source(call, expected):
+    """The shared checks raise ValueError, not click.UsageError, so a caller using them as
+    a library (ProjectGenerator.generate) gets the same checking without click semantics;
+    command-line callers translate at their own boundary. The source is carried through, so
+    the same check can report against --config-file or -A."""
+    with pytest.raises(ValueError) as exc_info:
+        call()
+
+    assert str(exc_info.value).startswith(expected)
+
+
+@pytest.mark.parametrize(
+    ("config_yaml", "expected"),
+    [
+        pytest.param(
+            b"generator_args:\n  java: notamapping\n",
+            "--config-file: expected a YAML mapping at 'generator_args.java', found str",
+            id="misshapen-section",
+        ),
+        pytest.param(
+            b"generator_args:\n  java:\n   package: [unclosed\n",
+            "--config-file: could not parse as YAML",
+            id="unparsable-yaml",
+        ),
+        pytest.param(
+            # the exact wording of the underlying ValueError (from datetime, via PyYAML's
+            # timestamp resolver) differs across Python versions -- only the prefix this
+            # codebase controls is checked
+            b"generator_args:\n  java:\n    package: 2024-02-30\n",
+            "--config-file: could not parse as YAML",
+            id="impossible-date",
+        ),
+    ],
+)
+def test_same_config_mistake_reports_the_same_way_through_every_entry_point(tmp_path, config_yaml, expected):
+    """gen-project and the individual generator CLIs read the same config file format, so
+    one mistake in it must produce one message -- they share the checks rather than each
+    carrying its own copy that can drift."""
+    from click.testing import CliRunner
+
+    from linkml.generators.javagen import cli as javagen_cli
+    from linkml.generators.projectgen import cli as projectgen_cli
+
+    schema_path = tmp_path / "schema.yaml"
+    schema_path.write_text(
+        "id: https://example.org/test\nname: test\nprefixes:\n  linkml: https://w3id.org/linkml/\n"
+        "imports:\n  - linkml:types\ndefault_range: string\nclasses:\n  Thing:\n    slots:\n      - name\n"
+        "slots:\n  name:\n"
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_bytes(config_yaml)
+    common = ["--config-file", str(config_path)]
+
+    project = CliRunner().invoke(projectgen_cli, [*common, "-I", "java", "-d", str(tmp_path / "p"), str(schema_path)])
+    java = CliRunner().invoke(javagen_cli, [*common, "--output-directory", str(tmp_path / "j"), str(schema_path)])
+
+    assert project.exit_code != 0, project.output
+    assert java.exit_code != 0, java.output
+    assert expected in project.output
+    assert expected in java.output
+
+
+def test_validate_generator_args_default_is_a_noop():
+    """The base implementation accepts anything -- generators that have no config value
+    worth checking up front (which is most of them) need not override it."""
+    Generator.validate_generator_args({})
+    Generator.validate_generator_args({"anything": "goes", "even": None})
+
+
+_GENERATION_DATE_SCHEMA = """
+id: https://example.org/mut
+name: mut
+prefixes:
+  linkml: https://w3id.org/linkml/
+imports:
+  - linkml:types
+default_range: string
+classes:
+  Thing:
+    attributes:
+      id:
+        identifier: true
+"""
+
+
+def test_generation_date_suppression_does_not_mutate_callers_schema():
+    """Constructing a generator must not clear generation_date on the caller's schema.
+
+    ``SchemaView`` keeps a reference to a ``SchemaDefinition`` it is handed, so on the
+    ``uses_schemaloader = False`` path the default generation_date suppression must
+    operate on a generator-owned copy, not reach back into the caller's object.
+    """
+    schema = SchemaView(_GENERATION_DATE_SCHEMA).schema
+    schema.generation_date = "2020-01-01T00:00:00"
+
+    gen = ShaclGenerator(schema)
+
+    assert schema.generation_date == "2020-01-01T00:00:00"
+    assert gen.schema is not schema
+    assert gen.schema.generation_date is None
+
+
+# ------------------------------------------------------------------------------
+# apply_config_defaults: the overlay a CLI runs after read_generator_config so a
+# config file fills only options the user did not set on the command line.
+# Uses a minimal throwaway click command so the tests exercise the real click
+# ParameterSource machinery, not a mock of it.
+# ------------------------------------------------------------------------------
+
+
+def _run_with_config(config, cli_args=()):
+    """Invoke a throwaway click command, returning its resolved kwargs and the click result."""
+    from click.testing import CliRunner
+
+    captured: dict = {}
+
+    @click.command()
+    @click.option("--foo")
+    @click.option("--bar/--no-bar", default=False)
+    @click.option("--baz", multiple=True)
+    @click.option("--path-opt", type=click.Path(path_type=Path))
+    @click.option("--fmt", type=click.Choice(["a", "b"]))
+    @click.option("--verbose", "-v", count=True)
+    @click.version_option("1.0")
+    @click.pass_context
+    def runner_cmd(ctx, **kwargs):
+        apply_config_defaults(ctx, config, kwargs)
+        captured.update(kwargs)
+
+    return captured, CliRunner().invoke(runner_cmd, list(cli_args), standalone_mode=False)
+
+
+def _invoke_with_config(config, cli_args=()):
+    """Invoke the throwaway command, asserting it succeeded, and return its resolved kwargs."""
+    captured, result = _run_with_config(config, cli_args)
+    assert result.exception is None, result.output
+    return captured
+
+
+def test_apply_config_defaults_overlays_when_option_is_at_default():
+    """Config value wins when the user did not pass the option -- the CLI/env/default
+    precedence chain, without which config-file support would do nothing."""
+    kwargs = _invoke_with_config({"foo": "from-config"})
+    assert kwargs["foo"] == "from-config"
+
+
+def test_apply_config_defaults_command_line_beats_config():
+    """A value explicitly passed on the command line is never overwritten by the
+    config; this is the precedence guarantee documented in --config-file's help."""
+    kwargs = _invoke_with_config({"foo": "from-config"}, cli_args=["--foo", "from-cli"])
+    assert kwargs["foo"] == "from-cli"
+
+
+def test_apply_config_defaults_unknown_key_warns_per_key(caplog):
+    """Each unknown key gets its own warning so a config-file typo is individually
+    obvious, rather than being silently dropped or collapsed into a single message."""
+    with caplog.at_level(logging.WARNING, logger="linkml.utils.generator"):
+        kwargs = _invoke_with_config({"typo_one": 1, "typo_two": 2, "foo": "ok"})
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("typo_one" in m for m in messages)
+    assert any("typo_two" in m for m in messages)
+    assert kwargs["foo"] == "ok"
+
+
+def test_apply_config_defaults_skips_parse_time_callback_options():
+    """--verbose etc. run click callbacks at parse time; a config value would be
+    stored but never trigger the callback, so those options are honored only from
+    the command line to avoid a silently-ineffective config setting."""
+    kwargs = _invoke_with_config({"verbose": 3})
+    assert kwargs["verbose"] == 0
+
+
+def test_apply_config_defaults_empty_config_is_noop():
+    """An empty (or missing) generator section leaves args untouched -- the common
+    case for a shared config file that only names some generators. ``ctx`` is never
+    dereferenced on this path, so passing ``None`` would crash if it were."""
+    args = {"foo": None, "bar": False}
+    assert apply_config_defaults(None, {}, args) is args
+    assert args == {"foo": None, "bar": False}
+
+
+def test_apply_config_defaults_converts_values_with_the_option_type():
+    """A config value is cast by its option's click type, so `path_opt: /tmp` reaches the
+    generator as a Path -- the same object the command line yields, not a raw str that
+    blows up later on the first Path method call."""
+    kwargs = _invoke_with_config({"path_opt": "/tmp"})
+    assert kwargs["path_opt"] == Path("/tmp")
+
+
+def test_apply_config_defaults_rejects_a_value_the_option_type_refuses():
+    """An invalid config value fails as a click usage error, exactly as it would on the
+    command line, instead of reaching the generator and crashing there."""
+    _, result = _run_with_config({"fmt": "nope"})
+    assert isinstance(result.exception, click.BadParameter)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("one", ("one",)), (["one", "two"], ("one", "two"))],
+)
+def test_apply_config_defaults_wraps_scalars_for_repeatable_options(value, expected):
+    """A repeatable option gets a tuple whether the YAML supplied a scalar or a list.
+    Without the scalar wrap, click iterates the string per character and the generator
+    silently acts on 'o', 'n', 'e' instead of 'one'."""
+    kwargs = _invoke_with_config({"baz": value})
+    assert kwargs["baz"] == expected
+
+
+def test_apply_config_defaults_ignores_options_click_never_passes(caplog):
+    """`--version` is expose_value=False, so click never hands it to the callback; naming
+    it in a config file is a typo like any other, and overlaying it would inject a kwarg
+    the generator's __init__ cannot accept."""
+    with caplog.at_level(logging.WARNING, logger="linkml.utils.generator"):
+        kwargs = _invoke_with_config({"version": "1.2"})
+    assert "version" not in kwargs
+    assert any("version" in rec.getMessage() for rec in caplog.records)
+
+
+def test_apply_config_defaults_returns_the_same_dict():
+    """The helper mutates and returns the same dict, so callers can chain or ignore
+    the return value; the type contract mirrors ``dict.update``."""
+    from click.testing import CliRunner
+
+    @click.command()
+    @click.option("--foo")
+    @click.pass_context
+    def cmd(ctx, **kwargs):
+        args = {}
+        result = apply_config_defaults(ctx, {"foo": "x"}, args)
+        assert result is args
+        assert args == {"foo": "x"}
+
+    assert CliRunner().invoke(cmd, [], standalone_mode=False).exception is None

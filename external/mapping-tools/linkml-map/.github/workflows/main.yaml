@@ -1,0 +1,100 @@
+# Built from:
+# https://docs.github.com/en/actions/guides/building-and-testing-python
+
+name: Build and test
+
+on:
+  push:
+    branches: [ main ]
+
+  pull_request:
+      types:
+          - opened
+          - reopened
+          - synchronize
+          - ready_for_review
+
+jobs:
+  quality-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          prune-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run pre-commit checks
+        uses: pre-commit/action@v3.0.1
+        with:
+          extra_args: --all-files
+
+  test:
+    needs: [quality-checks]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ '3.10', '3.11', '3.12', '3.13', '3.14' ]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ts-graphviz/setup-graphviz@v2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          prune-cache: true
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Regenerate datamodel and check for drift
+        if: github.event_name == 'pull_request'
+        run: |
+          rm -f src/linkml_map/datamodel/transformer_model.py
+          make src/linkml_map/datamodel/transformer_model.py
+          if ! git diff --quiet src/linkml_map/datamodel/; then
+            echo "::error::Generated files in src/linkml_map/datamodel/ are out of date."
+            echo "Run 'make src/linkml_map/datamodel/transformer_model.py' and commit the result."
+            git diff --stat src/linkml_map/datamodel/
+            exit 1
+          fi
+
+      - name: Regenerate schema docs and check for drift
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
+        run: |
+          make gendoc
+          if ! git diff --quiet docs/schema/ || [ -n "$(git ls-files --others --exclude-standard docs/schema/)" ]; then
+            echo "::error::Generated files in docs/schema/ are out of date."
+            echo "Run 'make gendoc' and commit the result."
+            git status --short docs/schema/
+            git diff --stat docs/schema/
+            exit 1
+          fi
+
+      - name: Regenerate compliance doc and check for drift
+        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
+        run: |
+          make -B specification
+          if ! git diff --quiet docs/specification/; then
+            echo "::error::docs/specification/compliance.md is out of date."
+            echo "Run 'make -B specification' and commit the result."
+            git diff --stat docs/specification/
+            exit 1
+          fi
+
+      - name: Run tests
+        run: make test

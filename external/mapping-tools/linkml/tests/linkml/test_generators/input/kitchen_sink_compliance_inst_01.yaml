@@ -1,0 +1,211 @@
+# By default these cases are expected to *not* validate. Use valid: true
+# for cases that are expected to validate successfully.
+
+- description: name fails regex
+  dataset:
+    persons:
+      - id: P:001
+        name: prince ## our schema is deliberately ultra-restrictive
+- description: missing ID
+  dataset:
+    persons:
+      - name: prince charming
+- description: wrong datatype for age
+  dataset:
+    persons:
+      - id: P
+        name: prince charming
+        age: "33"
+- description: wrong datatype for name
+  dataset:
+    companies:
+      - id: ROR:1
+        name: 5
+- description: missing required type field
+  dataset:
+    persons:
+      - id: P:001
+        name: jane smith
+        has_familial_relationships:
+          - related_to: P:002
+- description: wrong enum
+  dataset:
+    persons:
+      - id: P:001
+        name: jane smith
+        has_familial_relationships:
+          - related_to: P:002
+            type: NON_EXISTENT_RELATION
+            cordialness: indifferent
+- description: age lower than threshold
+  dataset:
+    persons:
+      - id: P
+        name: benjamin button
+        age_in_years: -5
+- description: age higher than threshold
+  dataset:
+    persons:
+      - id: P
+        name: dr who
+        age_in_years: 5000
+- description: additional properties is closed
+  dataset:
+    persons:
+      - id: P
+        name: john smith
+        made_up_property: "abc"
+- description: optional open properties
+  skip: not_closed value does not propagate to nested objects. By design?
+  valid: true
+  closed: false
+  dataset:
+    persons:
+      - id: P
+        name: john smith
+        made_up_property: "abc"
+- description: additional properties is closed on enclosing object
+  issue: https://github.com/linkml/linkml/issues/106
+  dataset:
+    persons:
+      - id: P
+        name: john smith
+    made_up_property: "abc"
+- description: non-multivalued address
+  dataset:
+    persons:
+      - id: P
+        name: john smith
+        addresses:
+          street: 1 foo street
+          city: foo city
+- description: valid cardinality
+  valid: true
+  dataset:
+    persons:
+      - id: P
+        name: john smith
+        has_medical_history:
+          - in_location: GEO:1234
+            diagnosis:
+              id: CODE:D0001
+              name: headache
+- description: multivalued value for singlevalued list
+  dataset:
+    persons:
+      - id: P
+        name: john smith
+        has_medical_history:
+          - in_location: GEO:1234
+            diagnosis:
+              -
+                id: CODE:D0001
+                name: headache
+- description: multivalued value for singlevalued list
+  dataset:
+    persons:
+      - id: P
+        name: john smith
+        has_medical_history:
+          - in_location: GEO:1234
+            diagnosis:
+              id: CODE:D0001
+              name:
+                - headache
+                - cough
+- description: string used in place of object
+  dataset:
+    persons:
+      - id: P
+        name: john smith
+        addresses:
+          - "1 foo street, foo city"
+- description: inline used where reference expected
+  dataset:
+    activities:
+      - id: A1
+        was_associated_with:
+          id: Agent:987
+- description: inline used with reference
+  valid: true
+  dataset:
+    activities:
+      - id: A1
+        was_associated_with: Agent:987
+- description: inline as list used correctly
+  valid: true
+  dataset:
+    code_systems:
+      - id: "CODE:1"
+        name: one
+      - id: "CODE:2"
+        name: two
+- description: inline as dictionary used where inlined as list expected
+  dataset:
+    code_systems:
+      "CODE:1":
+        name: one
+      "CODE:2":
+        name: two
+- description: inline as dictionary used where inline as list expected
+  dataset:
+    persons:
+      "PERSON:1":
+        name: person one
+      "PERSON:2":
+        name: person two
+- description: inline as list used correctly
+  valid: true
+  dataset:
+    persons:
+      - id: "PERSON:1"
+        name: person one
+      - id: "PERSON:2"
+        name: person two
+- description: date format
+  dataset:
+    activities:
+      - id: A1
+        started_at_time: "not a real date"
+- description: date format incomplete date
+  dataset:
+    activities:
+      - id: A1
+        started_at_time: "2022"
+- description: date format datetime used instead
+  dataset:
+    activities:
+      - id: A1
+        started_at_time: "2010-08-03T03:00:00.000000"
+- description: correct date format
+  valid: true
+  dataset:
+    activities:
+      - id: A1
+        started_at_time: "2022-01-01"
+- description: unquoted dates are not allowed for json compatibility
+  dataset:
+    activities:
+      - id: A1
+        started_at_time: 2022-01-01
+- description: instance of linkml:Any class can have additional properties
+  valid: true
+  dataset:
+    metadata:
+      something: 1
+      anything: fine
+- description: value does not match slot pattern
+  dataset:
+    persons:
+      - id: P1
+        name: Toomany    Spaces
+- description: value does not match equals_string specification
+  dataset:
+    persons:
+      - id: P2
+        species_name: cat
+- description: value does not match equals_number specification
+  dataset:
+    persons:
+      - id: P3
+        stomach_count: 2

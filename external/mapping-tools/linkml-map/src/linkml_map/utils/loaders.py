@@ -1,0 +1,15 @@
+from pathlib import Path
+
+import yaml
+
+from linkml_map.datamodel.transformer_model import TransformationSpecification
+from linkml_map.spec_normalizer import normalize_spec
+
+
+def load_specification(path: Path | str) -> TransformationSpecification:
+    if isinstance(path, Path):
+        path = str(path)
+    with open(path) as f:
+        obj = yaml.safe_load(f)
+        normalize_spec(obj)
+        return TransformationSpecification(**obj)

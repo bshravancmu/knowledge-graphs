@@ -1,0 +1,6 @@
+ignore:
+  - fuzz
+  - js
+  - lib/sparql-smith
+  - python
+  - testsuite
