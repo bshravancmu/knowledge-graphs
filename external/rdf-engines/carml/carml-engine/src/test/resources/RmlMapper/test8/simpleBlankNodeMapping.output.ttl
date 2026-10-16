@@ -1,0 +1,8 @@
+
+# NOTE: algorithm for generating blank node ids will change
+
+_:Amarise a <http://example.com/Child> ;
+<http://example.com/BSN> "25"^^<http://www.w3.org/2001/XMLSchema#int> .
+
+_:Kelsey a <http://example.com/Child> ;
+<http://example.com/BSN> "25"^^<http://www.w3.org/2001/XMLSchema#int> .

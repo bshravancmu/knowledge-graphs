@@ -1,0 +1,89 @@
+@prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix : 		<http://fishdelish.cs.man.ac.uk/rdf/vocab/resource/> .
+@prefix rdfs:	<http://www.w3.org/2000/01/rdf-schema#> .
+@prefix mf:     <http://obda.org/quest/tests/test-manifest#> .
+@prefix qt:     <http://obda.org/quest/tests/test-query#> .
+@prefix obdat:  <http://obda.org/quest/tests/test-scenario#> .
+
+<>  rdf:type mf:Manifest ;
+    rdfs:label "Date-Time Type Tests" ;
+    mf:entries
+    ( 
+      :date :date-bgp
+      #:date-str2-oracle # Strange test, aim not clear
+      :timestamp
+	  :timestamp-str
+	  :timestamptz
+
+    ) .
+
+:date rdf:type mf:DatatypeEvaluationTest ;
+    mf:name    "Type: DATE" ;
+    mf:comment	"Oracle JDBC returns java.sql.TIMESTAMP instead of java.sql.DATE, therefore, Quest may fail parsing the data input" ;
+    obdat:approval obdat:Approved ;
+    obdat:approvedBy <-ontop-Team> ;
+    mf:action
+            [ qt:query <date.rq> ] ;
+    mf:result <date.ttl> ;
+    mf:knowledgebase <datatypes.owl> ;
+    mf:mappings <datatypes-oracle.obda> ;
+    mf:parameters <datatypes-oracle.properties> .
+
+:date-bgp rdf:type mf:DatatypeEvaluationTest ;
+    mf:name    "Type: DATE - using basic graph pattern" ;
+    mf:comment	"Oracle JDBC returns java.sql.TIMESTAMP instead of java.sql.DATE, therefore, Quest may fail parsing the data input" ;
+    obdat:approval obdat:Approved ;
+    obdat:approvedBy <-ontop-Team> ;
+    mf:action
+            [ qt:query <date-bgp.rq> ] ;
+    mf:result <date.ttl> ;
+    mf:knowledgebase <datatypes.owl> ;
+    mf:mappings <datatypes-oracle.obda> ;
+    mf:parameters <datatypes-oracle.properties> .
+
+:date-str2-oracle rdf:type mf:DatatypeEvaluationTest ;
+    mf:name    "Type: DATE - cast to xsd:dateTime" ;
+    obdat:approval obdat:Approved ;
+    obdat:approvedBy <-ontop-Team> ;
+    mf:action
+            [ qt:query <date-datetime-oracle.rq> ] ;
+    mf:result <date-datetime-oracle.ttl> ;
+    mf:knowledgebase <datatypes.owl> ;
+    mf:mappings <datatypes-oracle.obda> ;
+	mf:parameters <datatypes-oracle.properties> .
+    
+:timestamp rdf:type mf:DatatypeEvaluationTest ;
+    mf:name    "Type: TIMESTAMP" ;
+    obdat:approval obdat:Approved ;
+    obdat:approvedBy <-ontop-Team> ;
+    mf:action
+            [ qt:query <timestamp.rq> ] ;
+    mf:result <timestamp.ttl> ;
+    mf:knowledgebase <datatypes.owl> ;
+    mf:mappings <datatypes-oracle.obda> ;
+    mf:parameters <datatypes-oracle.properties> .
+    
+:timestamp-str rdf:type mf:DatatypeEvaluationTest ;
+    mf:name    "Type: TIMESTAMP -  cast to xsd:string" ;
+    obdat:approval obdat:Approved ;
+    obdat:approvedBy <-ontop-Team> ;
+    mf:action
+            [ qt:query <timestamp-str-oracle.rq> ] ;
+    mf:result <timestamp.ttl> ;
+    mf:knowledgebase <datatypes.owl> ;
+    mf:mappings <datatypes-oracle.obda> ;
+    mf:parameters <datatypes-oracle.properties> .
+
+:timestamptz rdf:type mf:DatatypeEvaluationTest ;
+    mf:name    "Type: TIMESTAMP WITH TIMEZONE" ;
+    obdat:approval obdat:Approved ;
+    obdat:approvedBy <-ontop-Team> ;
+    mf:action
+            [ qt:query <timestamptz.rq> ] ;
+    mf:result <timestamp_tz.ttl> ;
+    mf:knowledgebase <datatypes.owl> ;
+    mf:mappings <datatypes-oracle.obda> ;
+    mf:parameters <datatypes-oracle.properties> .
+
+
+

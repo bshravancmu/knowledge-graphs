@@ -1,0 +1,27 @@
+# This workflow builds the package and uploads it to PyPI with uv when a release is created
+# For more information see: https://docs.astral.sh/uv/guides/package/
+
+name: Publish to PyPi
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v7
+    - name: Build
+      run: |
+        uv build --sdist --wheel
+    - name: Publish
+      env:
+        UV_PUBLISH_USERNAME: ${{ secrets.PYPI_USERNAME }}
+        UV_PUBLISH_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+      run: |
+        uv publish

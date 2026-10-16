@@ -1,0 +1,16 @@
+PREFIX fx:   <http://sparql.xyz/facade-x/ns/>
+PREFIX xyz:  <http://sparql.xyz/facade-x/data/>
+PREFIX rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl:  <http://www.w3.org/2002/07/owl#>
+PREFIX xsd:  <http://www.w3.org/2001/XMLSchema#>
+
+select ?X ?Y ?Z
+where {
+  service <x-sparql-anything:> {
+    BIND ( CONCAT ( "%%fileName%%", ".csv" ) AS ?location ) .
+    fx:properties fx:location ?location ; fx:csv.headers "true" ; fx:slice "true".
+    [] xyz:A ?X ; xyz:B ?Y ; xyz:C ?Z
+
+  }
+} order by ?x ?y ?z

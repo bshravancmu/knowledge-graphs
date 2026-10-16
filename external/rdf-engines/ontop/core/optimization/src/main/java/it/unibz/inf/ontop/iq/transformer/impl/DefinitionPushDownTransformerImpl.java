@@ -1,0 +1,197 @@
+package it.unibz.inf.ontop.iq.transformer.impl;
+
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Sets;
+import com.google.inject.Inject;
+import it.unibz.inf.ontop.exception.MinorOntopInternalBugException;
+import it.unibz.inf.ontop.injection.IntermediateQueryFactory;
+import it.unibz.inf.ontop.iq.*;
+import it.unibz.inf.ontop.iq.impl.IQTreeTools;
+import it.unibz.inf.ontop.iq.impl.NaryIQTreeTools;
+import it.unibz.inf.ontop.iq.node.*;
+import it.unibz.inf.ontop.iq.request.DefinitionPushDownRequest;
+import it.unibz.inf.ontop.iq.transform.impl.DefaultRecursiveIQTreeVisitingTransformer;
+import it.unibz.inf.ontop.iq.transformer.DefinitionPushDownTransformer;
+import it.unibz.inf.ontop.model.term.*;
+import it.unibz.inf.ontop.substitution.Substitution;
+import it.unibz.inf.ontop.substitution.SubstitutionFactory;
+
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.stream.IntStream;
+
+public class DefinitionPushDownTransformerImpl implements DefinitionPushDownTransformer {
+
+    private final IntermediateQueryFactory iqFactory;
+    private final SubstitutionFactory substitutionFactory;
+    private final TermFactory termFactory;
+    private final IQTreeTools iqTreeTools;
+
+    @Inject
+    protected DefinitionPushDownTransformerImpl(IntermediateQueryFactory iqFactory,
+                                                SubstitutionFactory substitutionFactory,
+                                                TermFactory termFactory,
+                                                IQTreeTools iqTreeTools) {
+        this.iqFactory = iqFactory;
+        this.substitutionFactory = substitutionFactory;
+        this.termFactory = termFactory;
+        this.iqTreeTools = iqTreeTools;
+    }
+
+    @Override
+    public IQTree transform(IQTree tree, DefinitionPushDownRequest request) {
+        return getTransformer(request).transform(tree);
+    }
+
+    private Transformer getTransformer(DefinitionPushDownRequest request) {
+        return new Transformer(request);
+    }
+
+    private class Transformer extends DefaultRecursiveIQTreeVisitingTransformer {
+
+        private final DefinitionPushDownRequest request;
+
+        Transformer(DefinitionPushDownRequest request) {
+            super(DefinitionPushDownTransformerImpl.this.iqFactory);
+            this.request = request;
+        }
+
+        @Override
+        public IQTree transformConstruction(UnaryIQTree tree, ConstructionNode rootNode, IQTree child) {
+            Substitution<ImmutableTerm> initialSubstitution = rootNode.getSubstitution();
+
+            Variable newVariable = request.getNewVariable();
+            ImmutableSet<Variable> newProjectedVariables = Sets.union(tree.getVariables(), ImmutableSet.of(newVariable)).immutableCopy();
+
+            DefinitionPushDownRequest newRequest = request.newRequest(rootNode.getSubstitution());
+            if (newRequest.equals(request))
+                return iqFactory.createUnaryIQTree(
+                        iqFactory.createConstructionNode(newProjectedVariables, initialSubstitution),
+                        transform(child));
+
+            ImmutableExpression newCondition = newRequest.getCondition();
+            Optional<ImmutableTerm> optionalLocalDefinition = newCondition.evaluate2VL(termFactory.createDummyVariableNullability(newCondition))
+                    .getValue()
+                    .map(v -> {
+                        switch (v) {
+                            case TRUE:
+                                return newRequest.getDefinitionWhenConditionSatisfied();
+                            case FALSE:
+                            case NULL:
+                            default:
+                                return termFactory.getNullConstant();
+                        }
+                    });
+
+            return optionalLocalDefinition
+                    // Stops the definition to the new construction node
+                    .map(d -> iqFactory.createUnaryIQTree(
+                            iqFactory.createConstructionNode(newProjectedVariables,
+                                    substitutionFactory.union(initialSubstitution, substitutionFactory.getSubstitution(newRequest.getNewVariable(), d))),
+                            child))
+                    // Otherwise, continues
+                    .orElseGet(() -> iqFactory.createUnaryIQTree(
+                            iqFactory.createConstructionNode(newProjectedVariables, initialSubstitution),
+                            // "Recursive"
+                            getTransformer(newRequest).transform(child)));
+        }
+
+        /**
+         * TODO: understand when the definition does not have to be blocked
+         */
+        @Override
+        public IQTree transformAggregation(UnaryIQTree tree, AggregationNode rootNode, IQTree child) {
+            return blockDefinition(tree);
+        }
+
+        /**
+         * TODO: stop blocking systematically
+         */
+        @Override
+        public IQTree transformDistinct(UnaryIQTree tree, DistinctNode rootNode, IQTree child) {
+            return blockDefinition(tree);
+        }
+
+        @Override
+        public IQTree transformLeftJoin(BinaryNonCommutativeIQTree tree, LeftJoinNode rootNode, IQTree leftChild, IQTree rightChild) {
+            ImmutableSet<Variable> requestVariables = request.getDefinitionAndConditionVariables();
+            if (leftChild.getVariables().containsAll(requestVariables))
+                return iqFactory.createBinaryNonCommutativeIQTree(
+                        rootNode,
+                        transform(leftChild),
+                        rightChild);
+            else if (rightChild.getVariables().containsAll(requestVariables))
+                return iqFactory.createBinaryNonCommutativeIQTree(
+                        rootNode,
+                        leftChild,
+                        transform(rightChild));
+            else
+                return blockDefinition(tree);
+        }
+
+        @Override
+        public IQTree transformInnerJoin(NaryIQTree tree, InnerJoinNode rootNode, ImmutableList<IQTree> children) {
+            ImmutableSet<Variable> requestVariables = request.getDefinitionAndConditionVariables();
+
+            OptionalInt selectedChild = IntStream.range(0, children.size())
+                    .filter(i -> children.get(i).getVariables().containsAll(requestVariables))
+                    .findAny();
+
+            if (selectedChild.isEmpty())
+                return blockDefinition(tree);
+
+            int i = selectedChild.getAsInt();
+            // Pushes down the definition to selected child
+            var newChildren = NaryIQTreeTools.replaceChild(children, i, transform(children.get(i)));
+            return iqFactory.createNaryIQTree(rootNode, newChildren);
+        }
+
+        @Override
+        public IQTree transformUnion(NaryIQTree tree, UnionNode rootNode, ImmutableList<IQTree> children) {
+            ImmutableList<IQTree> newChildren = NaryIQTreeTools.transformChildren(children, this::transform);
+
+            ImmutableSet<Variable> newRootNodeVariables = newChildren.stream()
+                    .findAny()
+                    .map(IQTree::getVariables)
+                    .orElseThrow(() -> new MinorOntopInternalBugException("A union must always have multiple children"));
+
+            return iqTreeTools.createUnionTree(newRootNodeVariables, newChildren);
+        }
+
+        @Override
+        public IQTree transformTrue(TrueNode leaf) {
+            return blockDefinition(leaf);
+        }
+
+        @Override
+        public IQTree transformExtensionalData(ExtensionalDataNode leaf) {
+            return blockDefinition(leaf);
+        }
+
+        @Override
+        public IQTree transformIntensionalData(IntensionalDataNode leaf) {
+            return blockDefinition(leaf);
+        }
+
+        @Override
+        public IQTree transformEmpty(EmptyNode leaf) {
+            return blockDefinition(leaf);
+        }
+
+        @Override
+        public IQTree transformValues(ValuesNode leaf) {
+            return blockDefinition(leaf);
+        }
+
+        private IQTree blockDefinition(IQTree tree) {
+            ConstructionNode constructionNode = iqTreeTools.createExtendingConstructionNode(
+                    tree.getVariables(),
+                    substitutionFactory.getSubstitution(request.getNewVariable(),
+                            termFactory.getIfElseNull(
+                                    request.getCondition(),
+                                    request.getDefinitionWhenConditionSatisfied())));
+            return iqFactory.createUnaryIQTree(constructionNode, tree);
+        }
+    }
+}

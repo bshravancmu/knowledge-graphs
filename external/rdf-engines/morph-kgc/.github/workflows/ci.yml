@@ -1,0 +1,25 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.12', '3.13']
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up uv with Python ${{ matrix.python-version }}
+      uses: astral-sh/setup-uv@v7
+      with:
+        python-version: ${{ matrix.python-version }}
+        activate-environment: true
+    - name: Build Morph-KGC
+      run: |
+        uv pip install .[test]
+    - name: Test with pytest
+      run: |
+        pytest #python -X dev -Werror -m pytest

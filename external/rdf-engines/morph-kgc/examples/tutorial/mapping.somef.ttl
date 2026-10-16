@@ -1,0 +1,233 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SoMEF software metadata → RDF 1.2, with RML 1.2
+#
+# SoMEF (https://github.com/KnowledgeCaptureAndDiscovery/somef) extracts
+# metadata from a software repository. Every value it reports comes with the
+# technique that produced it and a confidence score, so the interesting part of
+# this dataset is not only *what* it says but *how sure* it is.
+#
+# RDF 1.2 expresses that with a reifier: a term that identifies one particular
+# occurrence of a triple, which further triples can then describe. RML 1.2
+# builds such reifiers with `rml:reifyingMap`:
+#
+#     <SomethingTM>            asserts   software sd:description "..."
+#     <SomethingProvenanceTM>  says      <reifier> rdf:reifies <<( that triple )>> ;
+#                                        <reifier> em:confidence 1.0 ;
+#                                        <reifier> em:technique "GitHub API"
+#
+# Run it with any of:
+#     morph-kgc config.ini
+#     morph_kgc.materialize_set(config)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@prefix rml:  <http://w3id.org/rml/> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix sd:   <https://w3id.org/okn/o/sd#> .
+@prefix em:   <https://www.w3id.org/okn/o/em#> .
+
+@base <http://example.org/somef/> .
+
+
+# ── The data ─────────────────────────────────────────────────────────────────
+# One JSON document, iterated as a single record: `$` is the whole document,
+# and references such as "license.excerpt.url" walk into it from there.
+
+<Source> a rml:LogicalSource ;
+  rml:source "https://raw.githubusercontent.com/morph-kgc/morph-kgc/main/examples/tutorial/oeg-upm_morph-kgc.json" ;
+  rml:referenceFormulation rml:JSONPath ;
+  rml:iterator "$" .
+
+
+# ── The subjects ─────────────────────────────────────────────────────────────
+# Two entities are described: the software and its source code. Naming the
+# subject maps once lets every triples map below reuse them.
+
+<SoftwareSM> a rml:SubjectMap ;
+  rml:template "https://www.w3id.org/okn/i/Software/{owner.excerpt}/{name.excerpt}" .
+
+<SourceCodeSM> a rml:SubjectMap ;
+  rml:template "https://www.w3id.org/okn/i/SourceCode/{owner.excerpt}/{name.excerpt}" .
+
+
+# ── Plain facts, without provenance ──────────────────────────────────────────
+
+<SoftwareTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap <SoftwareSM> ;
+  rml:predicateObjectMap [
+    rml:predicate rdf:type ;
+    rml:object sd:Software
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate sd:name ;
+    rml:objectMap [ rml:reference "name.excerpt" ]
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate sd:dateCreated ;
+    rml:objectMap [ rml:reference "dateCreated.excerpt" ; rml:datatype xsd:dateTime ]
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate sd:dateModified ;
+    rml:objectMap [ rml:reference "dateModified.excerpt" ; rml:datatype xsd:dateTime ]
+  ] ;
+  # term maps are reusable: building the object with the very map that mints
+  # source-code subjects is what links the two entities together
+  rml:predicateObjectMap [
+    rml:predicate sd:hasSourceCode ;
+    rml:objectMap <SourceCodeSM>
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate sd:owner ;
+    rml:objectMap [ rml:template "https://www.w3id.org/okn/i/Agent/{owner.excerpt}" ]
+  ] .
+
+<SourceCodeTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap <SourceCodeSM> ;
+  rml:predicateObjectMap [
+    rml:predicate rdf:type ;
+    rml:object sd:SourceCode
+  ] .
+
+<OwnerTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap [ rml:template "https://www.w3id.org/okn/i/Agent/{owner.excerpt}" ] ;
+  rml:predicateObjectMap [
+    rml:predicate rdfs:label ;
+    rml:objectMap [ rml:reference "owner.excerpt" ]
+  ] .
+
+
+# ── Facts whose provenance is recorded ───────────────────────────────────────
+# Each pair below is the same shape: a triples map that asserts the fact, and a
+# triples map that reifies it and hangs the SoMEF confidence and technique off
+# the reifier.
+#
+# The reifier IRI has to identify *one* triple. For single-valued properties the
+# property name is enough; where SoMEF reports a list (topics, languages) the
+# value goes into the template as well, so that each triple gets its own reifier.
+
+<DescriptionTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap <SoftwareSM> ;
+  rml:predicateObjectMap [
+    rml:predicate sd:description ;
+    rml:objectMap [ rml:reference "description.excerpt" ]
+  ] .
+
+<DescriptionProvenanceTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap [
+    rml:template "https://www.w3id.org/okn/i/Extraction/{owner.excerpt}/{name.excerpt}/description"
+  ] ;
+  rml:reifyingMap <DescriptionTM> ;
+  rml:predicateObjectMap [
+    rml:predicate em:confidence ;
+    rml:objectMap [ rml:reference "description.confidence" ; rml:datatype xsd:decimal ]
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate em:technique ;
+    rml:objectMap [ rml:reference "description.technique" ]
+  ] .
+
+
+<LicenseTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap <SoftwareSM> ;
+  rml:predicateObjectMap [
+    rml:predicate sd:license ;
+    rml:objectMap [ rml:reference "license.excerpt.url" ; rml:datatype xsd:anyURI ]
+  ] .
+
+<LicenseProvenanceTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap [
+    rml:template "https://www.w3id.org/okn/i/Extraction/{owner.excerpt}/{name.excerpt}/license"
+  ] ;
+  rml:reifyingMap <LicenseTM> ;
+  rml:predicateObjectMap [
+    rml:predicate em:confidence ;
+    rml:objectMap [ rml:reference "license.confidence" ; rml:datatype xsd:decimal ]
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate em:technique ;
+    rml:objectMap [ rml:reference "license.technique" ]
+  ] .
+
+
+<RepositoryTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap <SourceCodeSM> ;
+  rml:predicateObjectMap [
+    rml:predicate sd:codeRepository ;
+    rml:objectMap [ rml:reference "codeRepository.excerpt" ; rml:datatype xsd:anyURI ]
+  ] .
+
+<RepositoryProvenanceTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap [
+    rml:template "https://www.w3id.org/okn/i/Extraction/{owner.excerpt}/{name.excerpt}/codeRepository"
+  ] ;
+  rml:reifyingMap <RepositoryTM> ;
+  rml:predicateObjectMap [
+    rml:predicate em:confidence ;
+    rml:objectMap [ rml:reference "codeRepository.confidence" ; rml:datatype xsd:decimal ]
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate em:technique ;
+    rml:objectMap [ rml:reference "codeRepository.technique" ]
+  ] .
+
+
+# "languages.excerpt" is a list: one triple, and one reifier, per language.
+
+<LanguageTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap <SourceCodeSM> ;
+  rml:predicateObjectMap [
+    rml:predicate sd:programmingLanguage ;
+    rml:objectMap [ rml:reference "languages.excerpt" ]
+  ] .
+
+<LanguageProvenanceTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap [
+    rml:template "https://www.w3id.org/okn/i/Extraction/{owner.excerpt}/{name.excerpt}/language/{languages.excerpt}"
+  ] ;
+  rml:reifyingMap <LanguageTM> ;
+  rml:predicateObjectMap [
+    rml:predicate em:confidence ;
+    rml:objectMap [ rml:reference "languages.confidence" ; rml:datatype xsd:decimal ]
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate em:technique ;
+    rml:objectMap [ rml:reference "languages.technique" ]
+  ] .
+
+
+# "topics.excerpt" is a list too.
+
+<KeywordTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap <SoftwareSM> ;
+  rml:predicateObjectMap [
+    rml:predicate sd:keywords ;
+    rml:objectMap [ rml:reference "topics.excerpt" ]
+  ] .
+
+<KeywordProvenanceTM> a rml:TriplesMap ;
+  rml:logicalSource <Source> ;
+  rml:subjectMap [
+    rml:template "https://www.w3id.org/okn/i/Extraction/{owner.excerpt}/{name.excerpt}/keyword/{topics.excerpt}"
+  ] ;
+  rml:reifyingMap <KeywordTM> ;
+  rml:predicateObjectMap [
+    rml:predicate em:confidence ;
+    rml:objectMap [ rml:reference "topics.confidence" ; rml:datatype xsd:decimal ]
+  ] ;
+  rml:predicateObjectMap [
+    rml:predicate em:technique ;
+    rml:objectMap [ rml:reference "topics.technique" ]
+  ] .

@@ -1,0 +1,97 @@
+[PrefixDeclaration]
+obda:		https://w3id.org/obda/vocabulary#
+xsd:		http://www.w3.org/2001/XMLSchema#
+owl:		http://www.w3.org/2002/07/owl#
+rdf:		http://www.w3.org/1999/02/22-rdf-syntax-ns#
+rdfs:		http://www.w3.org/2000/01/rdf-schema#
+
+[MappingDeclaration] @collection [[
+mappingId	MAPPING-ID1
+target		<http://db2-bootstrap-test/address/id={id}> a <http://db2-bootstrap-test/address> ; <http://db2-bootstrap-test/address#id> {id}^^xsd:integer ; <http://db2-bootstrap-test/address#street> {street}^^xsd:string ; <http://db2-bootstrap-test/address#number> {number}^^xsd:integer ; <http://db2-bootstrap-test/address#city> {city}^^xsd:string ; <http://db2-bootstrap-test/address#state> {state}^^xsd:string ; <http://db2-bootstrap-test/address#country> {country}^^xsd:string . 
+source		SELECT * FROM "address"
+
+mappingId	MAPPING-ID2
+target		<http://db2-bootstrap-test/stockinformation/id={id}> a <http://db2-bootstrap-test/stockinformation> ; <http://db2-bootstrap-test/stockinformation#id> {id}^^xsd:integer ; <http://db2-bootstrap-test/stockinformation#numberofshares> {numberofshares}^^xsd:integer ; <http://db2-bootstrap-test/stockinformation#sharetype> {sharetype}^^xsd:integer ; <http://db2-bootstrap-test/stockinformation#companyid> {companyid}^^xsd:integer ; <http://db2-bootstrap-test/stockinformation#description> {description}^^xsd:string . 
+source		SELECT * FROM "stockinformation"
+
+mappingId	MAPPING-ID3
+target		<http://db2-bootstrap-test/stockinformation/id={stockinformation_id}> <http://db2-bootstrap-test/stockinformation#ref-companyid> <http://db2-bootstrap-test/company/id={company_id}> . 
+source		SELECT "stockinformation"."id" AS stockinformation_id, "company"."id" AS company_id FROM "stockinformation", "company" WHERE "stockinformation"."companyid" = "company"."id"
+
+mappingId	MAPPING-ID4
+target		<http://db2-bootstrap-test/broker/id={id}> a <http://db2-bootstrap-test/broker> ; <http://db2-bootstrap-test/broker#id> {id}^^xsd:integer . 
+source		SELECT * FROM "broker"
+
+mappingId	MAPPING-ID5
+target		<http://db2-bootstrap-test/broker/id={broker_id}> <http://db2-bootstrap-test/broker#ref-id> <http://db2-bootstrap-test/person/id={person_id}> . 
+source		SELECT "broker"."id" AS broker_id, "person"."id" AS person_id FROM "broker", "person" WHERE "broker"."id" = "person"."id"
+
+mappingId	MAPPING-ID6
+target		<http://db2-bootstrap-test/stockbooklist/date={date}> a <http://db2-bootstrap-test/stockbooklist> ; <http://db2-bootstrap-test/stockbooklist#date> {date}^^xsd:date ; <http://db2-bootstrap-test/stockbooklist#stockid> {stockid}^^xsd:integer . 
+source		SELECT * FROM "stockbooklist"
+
+mappingId	MAPPING-ID7
+target		<http://db2-bootstrap-test/stockbooklist/date={stockbooklist_date}> <http://db2-bootstrap-test/stockbooklist#ref-stockid> <http://db2-bootstrap-test/stockinformation/id={stockinformation_id}> . 
+source		SELECT "stockbooklist"."date" AS stockbooklist_date, "stockinformation"."id" AS stockinformation_id FROM "stockbooklist", "stockinformation" WHERE "stockbooklist"."stockid" = "stockinformation"."id"
+
+mappingId	MAPPING-ID8
+target		_:ontop-bnode-1/{brokerid}/{companyid}/{clientid} a <http://db2-bootstrap-test/brokerworksfor> ; <http://db2-bootstrap-test/brokerworksfor#brokerid> {brokerid}^^xsd:integer ; <http://db2-bootstrap-test/brokerworksfor#companyid> {companyid}^^xsd:integer ; <http://db2-bootstrap-test/brokerworksfor#clientid> {clientid}^^xsd:integer . 
+source		SELECT * FROM "brokerworksfor"
+
+mappingId	MAPPING-ID9
+target		_:ontop-bnode-1/{brokerworksfor_brokerid}/{brokerworksfor_companyid}/{brokerworksfor_clientid} <http://db2-bootstrap-test/brokerworksfor#ref-brokerid> <http://db2-bootstrap-test/broker/id={broker_id}> . 
+source		SELECT "brokerworksfor"."brokerid" AS brokerworksfor_brokerid, "brokerworksfor"."companyid" AS brokerworksfor_companyid, "brokerworksfor"."clientid" AS brokerworksfor_clientid, "broker"."id" AS broker_id FROM "brokerworksfor", "broker" WHERE "brokerworksfor"."brokerid" = "broker"."id"
+
+mappingId	MAPPING-ID10
+target		_:ontop-bnode-1/{brokerworksfor_brokerid}/{brokerworksfor_companyid}/{brokerworksfor_clientid} <http://db2-bootstrap-test/brokerworksfor#ref-clientid> <http://db2-bootstrap-test/client/id={client_id}> . 
+source		SELECT "brokerworksfor"."brokerid" AS brokerworksfor_brokerid, "brokerworksfor"."companyid" AS brokerworksfor_companyid, "brokerworksfor"."clientid" AS brokerworksfor_clientid, "client"."id" AS client_id FROM "brokerworksfor", "client" WHERE "brokerworksfor"."clientid" = "client"."id"
+
+mappingId	MAPPING-ID11
+target		_:ontop-bnode-1/{brokerworksfor_brokerid}/{brokerworksfor_companyid}/{brokerworksfor_clientid} <http://db2-bootstrap-test/brokerworksfor#ref-companyid> <http://db2-bootstrap-test/company/id={company_id}> . 
+source		SELECT "brokerworksfor"."brokerid" AS brokerworksfor_brokerid, "brokerworksfor"."companyid" AS brokerworksfor_companyid, "brokerworksfor"."clientid" AS brokerworksfor_clientid, "company"."id" AS company_id FROM "brokerworksfor", "company" WHERE "brokerworksfor"."companyid" = "company"."id"
+
+mappingId	MAPPING-ID12
+target		<http://db2-bootstrap-test/person/id={id}> a <http://db2-bootstrap-test/person> ; <http://db2-bootstrap-test/person#id> {id}^^xsd:integer ; <http://db2-bootstrap-test/person#name> {name}^^xsd:string ; <http://db2-bootstrap-test/person#lastname> {lastname}^^xsd:string ; <http://db2-bootstrap-test/person#dateofbirth> {dateofbirth}^^xsd:date ; <http://db2-bootstrap-test/person#ssn> {ssn}^^xsd:string ; <http://db2-bootstrap-test/person#addressid> {addressid}^^xsd:integer . 
+source		SELECT * FROM "person"
+
+mappingId	MAPPING-ID13
+target		<http://db2-bootstrap-test/person/id={person_id}> <http://db2-bootstrap-test/person#ref-addressid> <http://db2-bootstrap-test/address/id={address_id}> . 
+source		SELECT "person"."id" AS person_id, "address"."id" AS address_id FROM "person", "address" WHERE "person"."addressid" = "address"."id"
+
+mappingId	MAPPING-ID14
+target		<http://db2-bootstrap-test/client/id={id}> a <http://db2-bootstrap-test/client> ; <http://db2-bootstrap-test/client#id> {id}^^xsd:integer . 
+source		SELECT * FROM "client"
+
+mappingId	MAPPING-ID15
+target		<http://db2-bootstrap-test/client/id={client_id}> <http://db2-bootstrap-test/client#ref-id> <http://db2-bootstrap-test/person/id={person_id}> . 
+source		SELECT "client"."id" AS client_id, "person"."id" AS person_id FROM "client", "person" WHERE "client"."id" = "person"."id"
+
+mappingId	MAPPING-ID16
+target		<http://db2-bootstrap-test/company/id={id}> a <http://db2-bootstrap-test/company> ; <http://db2-bootstrap-test/company#id> {id}^^xsd:integer ; <http://db2-bootstrap-test/company#name> {name}^^xsd:string ; <http://db2-bootstrap-test/company#marketshares> {marketshares}^^xsd:integer ; <http://db2-bootstrap-test/company#networth> {networth}^^xsd:double ; <http://db2-bootstrap-test/company#addressid> {addressid}^^xsd:integer . 
+source		SELECT * FROM "company"
+
+mappingId	MAPPING-ID17
+target		<http://db2-bootstrap-test/company/id={company_id}> <http://db2-bootstrap-test/company#ref-addressid> <http://db2-bootstrap-test/address/id={address_id}> . 
+source		SELECT "company"."id" AS company_id, "address"."id" AS address_id FROM "company", "address" WHERE "company"."addressid" = "address"."id"
+
+mappingId	MAPPING-ID18
+target		<http://db2-bootstrap-test/transaction/id={id}> a <http://db2-bootstrap-test/transaction> ; <http://db2-bootstrap-test/transaction#id> {id}^^xsd:integer ; <http://db2-bootstrap-test/transaction#date> {date}^^xsd:dateTime ; <http://db2-bootstrap-test/transaction#stockid> {stockid}^^xsd:integer ; <http://db2-bootstrap-test/transaction#type> {type}^^xsd:integer ; <http://db2-bootstrap-test/transaction#brokerid> {brokerid}^^xsd:integer ; <http://db2-bootstrap-test/transaction#forclientid> {forclientid}^^xsd:integer ; <http://db2-bootstrap-test/transaction#forcompanyid> {forcompanyid}^^xsd:integer ; <http://db2-bootstrap-test/transaction#amount> {amount}^^xsd:decimal . 
+source		SELECT * FROM "transaction"
+
+mappingId	MAPPING-ID19
+target		<http://db2-bootstrap-test/transaction/id={transaction_id}> <http://db2-bootstrap-test/transaction#ref-brokerid> <http://db2-bootstrap-test/broker/id={broker_id}> . 
+source		SELECT "transaction"."id" AS transaction_id, "broker"."id" AS broker_id FROM "transaction", "broker" WHERE "transaction"."brokerid" = "broker"."id"
+
+mappingId	MAPPING-ID20
+target		<http://db2-bootstrap-test/transaction/id={transaction_id}> <http://db2-bootstrap-test/transaction#ref-forclientid> <http://db2-bootstrap-test/client/id={client_id}> . 
+source		SELECT "transaction"."id" AS transaction_id, "client"."id" AS client_id FROM "transaction", "client" WHERE "transaction"."forclientid" = "client"."id"
+
+mappingId	MAPPING-ID21
+target		<http://db2-bootstrap-test/transaction/id={transaction_id}> <http://db2-bootstrap-test/transaction#ref-forcompanyid> <http://db2-bootstrap-test/company/id={company_id}> . 
+source		SELECT "transaction"."id" AS transaction_id, "company"."id" AS company_id FROM "transaction", "company" WHERE "transaction"."forcompanyid" = "company"."id"
+
+mappingId	MAPPING-ID22
+target		<http://db2-bootstrap-test/transaction/id={transaction_id}> <http://db2-bootstrap-test/transaction#ref-stockid> <http://db2-bootstrap-test/stockinformation/id={stockinformation_id}> . 
+source		SELECT "transaction"."id" AS transaction_id, "stockinformation"."id" AS stockinformation_id FROM "transaction", "stockinformation" WHERE "transaction"."stockid" = "stockinformation"."id"
+]]
+

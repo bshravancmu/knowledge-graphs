@@ -1,0 +1,154 @@
+package it.unibz.inf.ontop.cli;
+
+import com.github.rvesse.airline.annotations.Command;
+import com.github.rvesse.airline.annotations.Option;
+import com.github.rvesse.airline.annotations.OptionType;
+import com.github.rvesse.airline.annotations.help.bash.BashCompletion;
+import com.github.rvesse.airline.annotations.restrictions.RequiredOnlyIf;
+import com.github.rvesse.airline.help.cli.bash.CompletionBehaviour;
+import com.google.common.collect.Lists;
+import it.unibz.inf.ontop.cli.utils.Env;
+import it.unibz.inf.ontop.endpoint.OntopEndpointApplication;
+
+import java.util.ArrayList;
+
+
+@Command(name = "endpoint",
+        description = "Start a SPARQL endpoint powered by Ontop")
+public class OntopEndpoint extends OntopMappingOntologyRelatedCommand {
+
+    @Option(type = OptionType.COMMAND, name = {"--portal"}, title = "endpoint portal file",
+            description = "endpoint portal file (including title and queries)")
+    @Env("ONTOP_PORTAL_FILE")
+    @BashCompletion(behaviour = CompletionBehaviour.FILENAMES)
+    String portalFile;
+
+    @Option(type = OptionType.COMMAND, name = {"--port"}, title = "port",
+            description = "port of the SPARQL endpoint")
+    private int port = 8080;
+
+    @Option(type = OptionType.COMMAND, name = {"--cors-allowed-origins"}, title = "origins",
+            description = "CORS allowed origins")
+    @Env("ONTOP_CORS_ALLOWED_ORIGINS")
+    private String corsAllowedOrigins;
+
+    @Option(type = OptionType.COMMAND, name = {"--lazy"}, title = "lazy",
+            description = "lazy initialization")
+    @Env("ONTOP_LAZY_INIT")
+    private boolean lazy = false;
+
+    @Option(type = OptionType.COMMAND, name = {"--dev"}, title = "dev",
+            description = "development mode")
+    @Env("ONTOP_DEV_MODE")
+    private boolean dev = false;
+
+    @Option(type = OptionType.COMMAND, name = {"--predefined-config"}, title = "predefined query JSON config file",
+            description = "predefined query config file")
+    @Env("ONTOP_PREDEFINED_CONFIG")
+    @RequiredOnlyIf(names = {"--predefined-queries"})
+    @BashCompletion(behaviour = CompletionBehaviour.FILENAMES)
+    String predefinedConfig;
+
+    @Option(type = OptionType.COMMAND, name = {"--predefined-queries"}, title = "predefined query TOML file",
+            description = "predefined SPARQL queries file")
+    @Env("ONTOP_PREDEFINED_QUERIES")
+    @RequiredOnlyIf(names = {"--predefined-config"})
+    @BashCompletion(behaviour = CompletionBehaviour.FILENAMES)
+    String predefinedQueries;
+
+    @Option(type = OptionType.COMMAND, name = {"--contexts"}, title = "JSON-LD context file for predefined queries",
+            description = "File containing JSON-LD contexts for predefined queries")
+    @Env("ONTOP_CONTEXTS")
+    @BashCompletion(behaviour = CompletionBehaviour.FILENAMES)
+    String contexts;
+
+    @Option(type = OptionType.COMMAND, name = {"--disable-portal-page"}, title = "disable the portal page",
+            description = "Disable the portal page (/index.html) of the SPARQL endpoint. ")
+    @Env("ONTOP_DISABLE_PORTAL_PAGE")
+    private boolean disablePortalPage = false;
+
+    @Option(type = OptionType.COMMAND, name = {"--enable-download-ontology"}, title = "allow to download the ontology",
+            description = "Allow to download the ontology as a plain text file (/ontology). Default: false")
+    @Env("ONTOP_ENABLE_DOWNLOAD_ONTOLOGY")
+    private boolean enableDownloadOntology = false;
+    
+    @Override
+    public void run() {
+
+        ArrayList<String> argList = Lists.newArrayList(
+                "--mapping=" + this.mappingFile,
+                //"--properties=" + this.propertiesFile,
+                "--port=" + this.port,
+                "--lazy=" + this.lazy,
+                "--dev=" + this.dev,
+                "--disable-portal-page=" + this.disablePortalPage,
+                "--enable-download-ontology=" + this.enableDownloadOntology
+                );
+
+        if (this.propertiesFile != null)
+            argList.add("--properties=" + this.propertiesFile);
+
+        if (this.corsAllowedOrigins != null)
+            argList.add("--cors-allowed-origins=" + this.corsAllowedOrigins);
+
+        if (this.owlFile != null)
+            argList.add("--ontology=" + this.owlFile);
+
+        if (this.factFile != null)
+            argList.add("--facts=" + this.factFile);
+
+        if (this.factFormat != null)
+            argList.add("--facts-format=" + this.factFormat.getExtension());
+
+        if (this.factsBaseIRI != null)
+            argList.add("--facts-base-iri=" + this.factsBaseIRI);
+
+        if (this.xmlCatalogFile != null)
+            argList.add("--xml-catalog=" + this.xmlCatalogFile);
+
+        if (this.constraintFile != null)
+            argList.add("--constraint=" + this.constraintFile);
+
+        if (this.dbMetadataFile != null)
+            argList.add("--db-metadata=" + this.dbMetadataFile);
+
+        if (this.ontopLensesFile != null)
+            argList.add("--lenses=" + this.ontopLensesFile);
+
+        if (this.sparqlRulesFile != null)
+            argList.add("--sparql-rules=" + this.sparqlRulesFile);
+
+        if (this.portalFile != null)
+            argList.add("--portal=" + this.portalFile);
+
+        if (this.predefinedConfig != null)
+            argList.add("--predefined-config=" + this.predefinedConfig);
+
+        if (this.predefinedQueries != null)
+            argList.add("--predefined-queries=" + this.predefinedQueries);
+
+        if (this.contexts != null)
+            argList.add("--contexts=" + this.contexts);
+
+        if (dbUser != null)
+            argList.add("--db-user=" + this.dbUser);
+
+        if (this.dbPassword != null)
+            argList.add("--db-password=" + this.dbPassword);
+
+        if (dbUrl != null)
+            argList.add("--db-url=" + this.dbUrl);
+
+        if (dbDriver != null)
+            argList.add("--db-driver=" + this.dbDriver);
+
+        String[] args = new String[argList.size()];
+        argList.toArray(args);
+
+        // Spring boot gives warns when the logback.configurationFile property is set
+        System.clearProperty("logback.configurationFile");
+        // System.setProperty("logback.configurationFile", "");
+
+        OntopEndpointApplication.main(args);
+    }
+}

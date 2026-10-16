@@ -1,0 +1,41 @@
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix ex: <http://example.com/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rml: <http://w3id.org/rml/> .
+@base <http://example.com/base/> .
+@prefix sd: <https://w3id.org/okn/o/sd#>.
+@prefix kg4di: <https://w3id.org/kg4di/definedBy>.
+
+<TriplesMap1> a rml:TriplesMap;
+
+  rml:logicalSource [
+    rml:source [
+			a sd:DatasetSpecification;
+			sd:name "variable1";
+			sd:hasDataTransformation [
+				sd:hasSoftwareRequirements "pandas>=1.1.0";
+				sd:hasSourceCode [
+					sd:programmingLanguage "Python3.9";
+				];
+			];
+		];
+    rml:referenceFormulation rml:DataFrame;
+  ];
+
+  rml:subjectMap [
+    rml:template "http://example.com/Student/{ID}/{FirstName}";
+    rml:class foaf:Person, ex:Student
+  ];
+
+  rml:predicateObjectMap [
+    rml:predicate ex:id ;
+    rml:objectMap [ rml:reference "ID";  ]
+  ];
+
+  rml:predicateObjectMap [
+    rml:predicate foaf:name;
+    rml:objectMap [ rml:reference "FirstName" ]
+  ].
+
+rml:DataFrame a rml:ReferenceFormulation;
+	kg4di:definedBy "Pandas".

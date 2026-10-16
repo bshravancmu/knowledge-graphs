@@ -1,0 +1,70 @@
+package it.unibz.inf.ontop.iq.optimizer.impl;
+
+import com.google.common.collect.ImmutableList;
+import it.unibz.inf.ontop.evaluator.QueryContext;
+import it.unibz.inf.ontop.injection.CoreSingletons;
+import it.unibz.inf.ontop.iq.IQ;
+import it.unibz.inf.ontop.iq.IQTree;
+import it.unibz.inf.ontop.iq.optimizer.QueryContextEvaluator;
+import it.unibz.inf.ontop.iq.type.impl.AbstractTermTransformer;
+import it.unibz.inf.ontop.model.term.ImmutableFunctionalTerm;
+import it.unibz.inf.ontop.model.term.ImmutableTerm;
+import it.unibz.inf.ontop.model.term.functionsymbol.FunctionSymbol;
+import it.unibz.inf.ontop.model.term.functionsymbol.db.QueryContextSimplifiableFunctionSymbol;
+
+import javax.annotation.Nonnull;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.function.Predicate;
+
+public class AbstractQueryContextEvaluator implements QueryContextEvaluator {
+
+    private final CoreSingletons coreSingletons;
+    private final Predicate<FunctionSymbol> functionSymbolPredicate;
+
+    protected AbstractQueryContextEvaluator(CoreSingletons coreSingletons,
+                                            Predicate<FunctionSymbol> functionSymbolPredicate) {
+        this.coreSingletons = coreSingletons;
+        this.functionSymbolPredicate = functionSymbolPredicate;
+    }
+
+    @Override
+    public IQ optimize(IQ iq, @Nonnull QueryContext queryContext) {
+        Objects.requireNonNull(queryContext, "The query context must not be null");
+
+        var transformer = new TermTransformer(queryContext).treeTransformer();
+
+        var initialTree = iq.getTree();
+        var newTree = transformer.transform(initialTree);
+        return newTree.equals(initialTree)
+                ? iq
+                : coreSingletons.getIQFactory().createIQ(iq.getProjectionAtom(), newTree);
+    }
+
+
+    private class TermTransformer extends AbstractTermTransformer {
+
+        private final QueryContext queryContext;
+
+        TermTransformer(QueryContext queryContext) {
+            super(coreSingletons.getIQFactory(), coreSingletons.getTermFactory());
+            this.queryContext = queryContext;
+        }
+
+        @Override
+        protected Optional<ImmutableFunctionalTerm> replaceFunctionSymbol(FunctionSymbol functionSymbol,
+                                                                          ImmutableList<ImmutableTerm> newTerms, IQTree tree) {
+
+            if (functionSymbol instanceof QueryContextSimplifiableFunctionSymbol
+                    && functionSymbolPredicate.test(functionSymbol)) {
+
+                ImmutableTerm newTerm = ((QueryContextSimplifiableFunctionSymbol) functionSymbol).simplifyWithContext(newTerms,
+                        queryContext, termFactory);
+                if (newTerm instanceof ImmutableFunctionalTerm)
+                    return Optional.of((ImmutableFunctionalTerm) newTerm);
+                return Optional.of(termFactory.getIdentityFunctionalTerm(newTerm));
+            }
+            return Optional.empty();
+        }
+    }
+}

@@ -1,0 +1,239 @@
+/*
+ * Copyright (c) 2026 SPARQL Anything Contributors @ http://github.com/sparql-anything
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *       http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+
+package io.github.sparqlanything.engine;
+
+import io.github.sparqlanything.engine.functions.IsFacadeXExtension;
+import io.github.sparqlanything.model.IRIArgument;
+import io.github.sparqlanything.model.Triplifier;
+import io.github.sparqlanything.model.TriplifierRegister;
+import io.github.sparqlanything.zip.FolderTriplifier;
+import org.apache.commons.io.FilenameUtils;
+import org.apache.jena.graph.Triple;
+import org.apache.jena.sparql.algebra.op.OpBGP;
+import org.apache.jena.sparql.engine.ExecutionContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.File;
+import java.lang.reflect.InvocationTargetException;
+import java.util.Properties;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+
+class PropertyExtractor {
+
+	private static final Logger logger = LoggerFactory.getLogger(PropertyExtractor.class);
+
+	static int detectStrategy(Properties p, ExecutionContext execCxt) {
+		Integer strategy = null;
+		// Local value for strategy?
+		String localStrategy = p.getProperty(IRIArgument.STRATEGY.toString());
+		// Global value for strategy?
+		Integer globalStrategy = execCxt.getContext().get(FacadeXOpExecutor.strategy);
+		if (localStrategy != null) {
+			if (globalStrategy != null) {
+				logger.warn("Local strategy {} overriding global strategy {}", localStrategy, globalStrategy);
+			}
+			strategy = Integer.parseInt(localStrategy);
+		} else if (globalStrategy != null) {
+			strategy = globalStrategy;
+		} else {
+			// Defaul strategy
+			strategy = 1;
+		}
+		return strategy;
+	}
+
+
+	static Triplifier getTriplifier(Properties p, TriplifierRegister triplifierRegister) throws InstantiationException, IllegalAccessException, InvocationTargetException, NoSuchMethodException, ClassNotFoundException {
+		Triplifier t;
+
+		if (!p.containsKey(IRIArgument.LOCATION.toString()) && !p.containsKey(IRIArgument.CONTENT.toString()) && !p.containsKey(IRIArgument.COMMAND.toString()) && !p.containsKey(IRIArgument.S3_ENDPOINT_NAME)) {
+			logger.error("Neither location nor content provided");
+			return null;
+		}
+
+		if (p.containsKey(IRIArgument.TRIPLIFIER.toString())) {
+			logger.trace("Triplifier enforced");
+			t = (Triplifier) Class.forName(p.getProperty(IRIArgument.TRIPLIFIER.toString())).getConstructor().newInstance();
+		} else if (p.containsKey(IRIArgument.MEDIA_TYPE.toString())) {
+			logger.trace("MimeType enforced");
+			t = (Triplifier) Class.forName(triplifierRegister.getTriplifierForMimeType(p.getProperty(IRIArgument.MEDIA_TYPE.toString()))).getConstructor().newInstance();
+		} else if (p.containsKey(IRIArgument.LOCATION.toString())) {
+			String urlLocation = p.getProperty(IRIArgument.LOCATION.toString());
+			File f = new File(p.get(IRIArgument.LOCATION.toString()).toString().replace("file://", ""));
+
+			logger.trace("Use location {}, exists on local FS? {}, is directory? {}", f.getAbsolutePath(), f.exists(), f.isDirectory());
+
+			if (f.exists() && f.isDirectory()) {
+				logger.trace("Return folder triplifier");
+				t = new FolderTriplifier();
+			} else if (IsFacadeXExtension.isFacadeXExtension(p.get(IRIArgument.LOCATION.toString()).toString())) {
+				logger.trace("Guessing triplifier using file extension ");
+				String tt = triplifierRegister.getTriplifierForExtension(FilenameUtils.getExtension(urlLocation));
+				logger.trace("Guessed extension: {} :: {} ", FilenameUtils.getExtension(urlLocation), tt);
+				t = (Triplifier) Class.forName(tt).getConstructor().newInstance();
+			} else {
+				return null;
+			}
+
+		} else {
+			logger.trace("No location provided, using the Text triplifier");
+			t = (Triplifier) Class.forName("io.github.sparqlanything.text.TextTriplifier").getConstructor().newInstance();
+		}
+		return t;
+	}
+
+//	static void extractPropertiesFromBGP(Properties properties, OpBGP bgp) throws UnboundVariableException {
+//		for (Triple t : bgp.getPattern().getList()) {
+//			if (t.getSubject().isURI() && t.getSubject().getURI().equals(Triplifier.FACADE_X_TYPE_PROPERTIES)) {
+//				if (t.getObject().isURI()) {
+//					properties.put(t.getPredicate().getURI().replace(Triplifier.FACADE_X_CONST_NAMESPACE_IRI, ""), t.getObject().getURI());
+//				} else if (t.getObject().isLiteral()) {
+//					properties.put(t.getPredicate().getURI().replace(Triplifier.FACADE_X_CONST_NAMESPACE_IRI, ""), t.getObject().getLiteral().getValue().toString());
+//				} else if (t.getObject().isVariable()) {
+//					throw new UnboundVariableException(t.getObject().getName(), bgp);
+//				}
+//			}
+//		}
+//	}
+
+	// Deprecated fx: terms already reported (warn once per JVM)
+	private static final Set<String> DEPRECATED_REPORTED = ConcurrentHashMap.newKeySet();
+
+	private static void warnDeprecated(String name) {
+		if (DEPRECATED_REPORTED.add(name)) {
+			logger.warn("fx:{} is deprecated on configuration properties: use fxe:{} (PREFIX fxe: <{}>). "
+					+ "Support for fx:properties and fx: options will be removed in a future release.",
+				name, name, Triplifier.FACADE_X_ENGINE_NAMESPACE_IRI);
+		}
+	}
+
+	static void extractPropertiesFromBGP(Properties properties, OpBGP bgp) throws UnboundVariableException {
+		Properties legacy = new Properties();          // options given as fx:<name>  (deprecated)
+		Set<String> fromEngineNs = new HashSet<>();     // options given as fxe:<name>
+		for (Triple t : bgp.getPattern().getList()) {
+			if (!Utils.isPropertyOp(t.getSubject()) || !t.getPredicate().isURI()) continue;
+			if (t.getSubject().getURI().equals(Triplifier.FACADE_X_TYPE_PROPERTIES)) {
+				warnDeprecated("properties");
+			}
+			String value;
+			if (t.getObject().isURI()) {
+				value = t.getObject().getURI();
+			} else if (t.getObject().isLiteral()) {
+				value = t.getObject().getLiteral().getValue().toString();
+			} else if (t.getObject().isVariable()) {
+				throw new UnboundVariableException(t.getObject().getName(), bgp);
+			} else {
+				continue;
+			}
+			String predicate = t.getPredicate().getURI();
+			if (predicate.startsWith(Triplifier.FACADE_X_ENGINE_NAMESPACE_IRI)) {
+				String name = predicate.substring(Triplifier.FACADE_X_ENGINE_NAMESPACE_IRI.length());
+				properties.put(name, value);
+				fromEngineNs.add(name);
+			} else if (predicate.startsWith(Triplifier.FACADE_X_CONST_NAMESPACE_IRI)) {
+				String name = predicate.substring(Triplifier.FACADE_X_CONST_NAMESPACE_IRI.length());
+				warnDeprecated(name);
+				legacy.put(name, value);
+			} else {
+				properties.put(predicate, value); // unchanged behaviour for non-Façade-X predicates
+			}
+		}
+		// Precedence: fxe:<name> > fx:<name> > option in the SERVICE IRI
+		for (String name : legacy.stringPropertyNames()) {
+			if (fromEngineNs.contains(name)) {
+				logger.warn("Option given as both fxe:{} and fx:{}; using fxe:{}", name, name, name);
+			} else {
+				properties.put(name, legacy.getProperty(name));
+			}
+		}
+	}
+
+//	static void extractPropertiesFromOp(Op op, Properties properties) throws UnboundVariableException {
+//		if (op instanceof OpBGP) {
+//			extractPropertiesFromBGP(properties, (OpBGP) op);
+//		} else if (op instanceof OpService) {
+//			OpService opService = (OpService) op;
+//			String url = opService.getService().getURI();
+//			// Parse IRI only if contains properties
+//			if (!url.equals(FacadeIRIParser.SPARQL_ANYTHING_URI_SCHEMA)) {
+//				FacadeIRIParser p = new FacadeIRIParser(url);
+//				properties.putAll(p.getProperties());
+//			}
+//
+//			// Setting defaults
+//			if (!properties.containsKey(IRIArgument.NAMESPACE.toString())) {
+//				logger.trace("Setting default value for namespace: {}", Triplifier.XYZ_NS);
+//				properties.setProperty(IRIArgument.NAMESPACE.toString(), Triplifier.XYZ_NS);
+//			}
+//			// Setting silent
+//			if (opService.getSilent()) {
+//				// we can only see if silent was specified at the OpService so we need to stash
+//				// a boolean
+//				// at this point so we can use it when we triplify further down the Op tree
+//				properties.setProperty(IRIArgument.OP_SERVICE_SILENT.toString(), "true");
+//			}
+//
+//			Op next = opService.getSubOp();
+//			FXBGPFinder vis = new FXBGPFinder();
+//			next.visit(vis);
+//			logger.trace("Has Table {}", vis.hasTable());
+//
+//			if (vis.getBGP() != null) {
+//				try {
+//					extractPropertiesFromBGP(properties, vis.getBGP());
+//				} catch (UnboundVariableException e) {
+//					if (vis.hasTable()) {
+//						logger.trace(vis.getOpTable().toString());
+//						logger.trace("BGP {}", vis.getBGP());
+//						logger.trace("Contains variable names {}", vis.getOpTable().getTable().getVarNames().contains(e.getVariableName()));
+//						if (vis.getOpTable().getTable().getVarNames().contains(e.getVariableName())) {
+//							e.setOpTable(vis.getOpTable());
+//						}
+//					}
+//
+//					if (vis.getOpExtend() != null) {
+//						logger.trace("OpExtend {}", vis.getOpExtend());
+//						for (Var var : vis.getOpExtend().getVarExprList().getVars()) {
+//							if (var.getName().equals(e.getVariableName())) {
+//								e.setOpExtend(vis.getOpExtend());
+//							}
+//						}
+//					}
+//
+//					throw e;
+//				}
+//				logger.trace("Number of properties {}: {}", properties.size(), properties.toString());
+//			} else {
+//				logger.trace("Couldn't find OpGraph");
+//			}
+//		}
+//
+//	}
+
+
+	public static void extractPropertiesFromExecutionContext(ExecutionContext execCxt, Properties p) {
+		execCxt.getContext().keys().forEach(symbol -> {
+			if (symbol instanceof FXSymbol) {
+				p.setProperty(symbol.getSymbol(), execCxt.getContext().get(symbol));
+			}
+		});
+	}
+}

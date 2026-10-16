@@ -1,0 +1,2309 @@
+import os
+import re
+import datetime
+import sys
+import xml.etree.ElementTree as ET
+import urllib
+import math
+import rdflib
+import xml.etree.ElementTree as ET
+import csv
+from datetime import datetime
+from uuid import uuid4
+from jsonpath_ng import jsonpath, parse
+import base64
+
+def is_bool(string):
+    try:
+    	if "1" == string or "0" == string or string.lower() == "false" or string.lower() == "true":
+        	bool(string)
+        	return True
+    	else:
+    		return False
+    except ValueError:
+        return False
+
+def is_datetime(string):
+    try:
+        string = string.replace(" T", "T")
+        datetime.fromisoformat(string)
+        return True
+    except ValueError:
+        return False
+
+def is_date(string, format="%Y-%m-%d"):
+    try:
+        datetime.strptime(string, format)
+        return True
+    except ValueError:
+        return False
+
+def valid_source(file):
+	with open(file, newline='') as f:
+		reader = csv.reader(f)
+		header = next(reader)
+		expected_cols = len(header)
+
+		for i, row in enumerate(reader, start=2):  # Line 2 because header is line 1
+			if len(row) != expected_cols:
+				return False
+		return True
+
+def is_convertible_to_double(s):
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+def is_convertible_to_int(s):
+    try:
+        int(s)
+        return True
+    except ValueError:
+        return False
+
+def generate_rdfjson(graph):
+	json_data = {}
+	for subj, pred, obj in graph:
+		if subj not in json_data:
+			json_data[subj] = {pred:[{"value":obj}]}
+		else:
+			if pred not in json_data[subj]:
+				json_data[subj][pred] = [{"value":obj}]
+			else:
+				json_data[subj][pred].append({"value":obj})
+	return json_data
+
+
+def extract_prefixes_from_ttl(ttl_file):
+	g = rdflib.Graph()
+	g.parse(ttl_file, format="ttl")
+	
+	prefixes = {}
+	for prefix, uri in g.namespaces():
+		prefixes[prefix] = uri
+	
+	return prefixes
+
+def is_repeat_output(current_output,output_list):
+	for source in output_list:
+		if current_output != output_list:
+			if output_list[source] == output_list[current_output]:
+				keys = list(output_list.keys())
+				if keys.index(source) < keys.index(current_output):
+					return source
+				else:
+					return ""
+	return ""
+
+def is_current_output_valid(triples_map_id,po_map,current_output,output_list):
+	if current_output == "":
+		if triples_map_id in output_list:
+			for possible_output in output_list[triples_map_id]:
+				if output_list[triples_map_id][possible_output] == "subject":
+					return False
+				elif po_map.object_map.datatype != None:
+					if po_map.object_map.value + "_" + po_map.object_map.datatype in output_list[triples_map_id][possible_output]:
+						return False
+				elif po_map.object_map.datatype_map != None:
+					if po_map.object_map.value + "_" + po_map.object_map.datatype_map in output_list[triples_map_id][possible_output]:
+						return False
+				elif po_map.object_map.language != None:
+					if po_map.object_map.value + "_" + po_map.object_map.language in output_list[triples_map_id][possible_output]:
+						return False
+				elif po_map.object_map.language_map != None:
+					if po_map.object_map.value + "_" + po_map.object_map.language_map in output_list[triples_map_id][possible_output]:
+						return False
+				elif po_map.predicate_map.value in output_list[triples_map_id][possible_output]:
+					return False
+				elif po_map.object_map.value in output_list[triples_map_id][possible_output]:
+					return False
+			return True
+		else:
+			return True
+	else:
+		if triples_map_id in output_list:
+			if current_output in output_list[triples_map_id]:
+				if output_list[triples_map_id][current_output] == "subject":
+					return True
+				elif po_map.object_map.datatype != None:
+					if po_map.object_map.value + "_" + po_map.object_map.datatype in output_list[triples_map_id][current_output]:
+						return True
+					else:
+						return False
+				elif po_map.object_map.datatype_map != None:
+					if po_map.object_map.value + "_" + po_map.object_map.datatype_map in output_list[triples_map_id][current_output]:
+						return True
+					else:
+						return False
+				elif po_map.object_map.language != None:
+					if po_map.object_map.value + "_" + po_map.object_map.language in output_list[triples_map_id][current_output]:
+						return True
+					else:
+						return False
+				elif po_map.object_map.language_map != None:
+					if po_map.object_map.value + "_" + po_map.object_map.language_map in output_list[triples_map_id][current_output]:
+						return True
+					else:
+						return False
+				elif po_map.predicate_map.value in output_list[triples_map_id][current_output]:
+					return True
+				elif po_map.object_map.value in  output_list[triples_map_id][current_output]:
+					return True
+				else:
+					return False
+			else:
+				return True
+		else:
+			return True
+
+def is_valid_url_syntax(url):
+	try:
+		result = urllib.parse.urlparse(url)
+		return all([result.scheme, result.netloc])
+	except ValueError:
+		return False
+
+def extract_subject_values(row,attr_list,format, parent_map = None):
+	subject_attr = ""
+	if format == "JSONPath":
+		for attr in attr_list:
+			if "/" in attr:
+				temp = row
+				for att in attr.split("/"):
+					if att in temp:
+						temp = temp[att]
+					else:
+						return None
+				subject_attr += temp + "_"
+			else:
+				if attr in row:
+					subject_attr += row[attr] + "_"
+				else:
+					return None
+	elif format == "XML":
+		for attr in attr_list:
+			if "@" in attr:
+				match,level = attr.split("@")[1],attr.split("@")[0]
+				if "" == level:
+					if row.attrib[match] is not None:
+						subject_attr += row.attrib[match] + "_"
+					else:
+						return None
+				else:
+					if ".." == level[:-1]:
+						new_level = parent_map[row]
+					else:
+						new_level = row.find(level[:-1])
+					if new_level.attrib[match] is not None:
+						subject_attr += new_level.attrib[match] + "_"
+					else:
+						return None
+			else:
+				if row.find(match) is not None:
+					subject_attr += row.find(match).text.strip()+ "_"
+				else:
+					return None
+	return subject_attr[:-1]
+
+def translate_sql(triples_map):
+
+	query_list = []
+	proyections = []
+  
+	if "{" in triples_map.subject_map.value:
+		subject = triples_map.subject_map.value
+		count = count_characters(subject)
+		if (count == 1) and (subject.split("{")[1].split("}")[0] not in proyections):
+			subject = subject.split("{")[1].split("}")[0]
+			if "[" in subject:
+				subject = subject.split("[")[0]
+			proyections.append(subject)
+		elif count > 1:
+			subject_list = subject.split("{")
+			for s in subject_list:
+				if "}" in s:
+					subject = s.split("}")[0]
+					if "[" in subject:
+						subject = subject.split("[")
+					if subject not in proyections:
+						proyections.append(subject)
+	else:
+		if triples_map.subject_map.value not in proyections:
+			proyections.append(triples_map.subject_map.value)
+
+	for po in triples_map.predicate_object_maps_list:
+		if po.object_map.mapping_type != "constant":
+			if "{" in po.object_map.value:
+				count = count_characters(po.object_map.value)
+				if 0 < count <= 1 :
+					predicate = po.object_map.value.split("{")[1].split("}")[0]
+					if "[" in predicate:
+						predicate = predicate.split("[")[0]
+					if predicate not in proyections:
+						proyections.append(predicate)
+
+				elif 1 < count:
+					predicate = po.object_map.value.split("{")
+					for po_e in predicate:
+						if "}" in po_e:
+							pre = po_e.split("}")[0]
+							if "[" in pre:
+								pre = pre.split("[")
+							if pre not in proyections:
+								proyections.append(pre)
+			elif "#" in po.object_map.value:
+				pass
+			elif "/" in po.object_map.value:
+				pass
+			else:
+				predicate = po.object_map.value 
+				if "[" in predicate:
+					predicate = predicate.split("[")[0]
+				if predicate not in proyections:
+					proyections.append(predicate)
+			if po.object_map.child != None:
+				for c in po.object_map.child:
+					if c not in proyections:
+						proyections.append(c)
+
+	temp_query = "SELECT DISTINCT "
+	for p in proyections:
+		if type(p) == str:
+			if p != "None":
+				temp_query += "`" + p + "`, "
+		elif type(p) == list:
+			for pr in p:
+				temp_query += "`" + pr + "`, " 
+	temp_query = temp_query[:-2] 
+	if triples_map.tablename != "None":
+		temp_query = temp_query + " FROM " + triples_map.tablename 
+	else:
+		temp_query = temp_query + " FROM " + triples_map.iterator
+	temp_query += ";"
+	query_list.append(temp_query)
+
+	return triples_map.iterator, query_list
+
+
+def translate_postgressql(triples_map):
+
+	query_list = []
+	
+	
+	proyections = []
+
+		
+	if "{" in triples_map.subject_map.value:
+		subject = triples_map.subject_map.value
+		count = count_characters(subject)
+		if (count == 1) and (subject.split("{")[1].split("}")[0] not in proyections):
+			subject = subject.split("{")[1].split("}")[0]
+			if "[" in subject:
+				subject = subject.split("[")[0]
+			proyections.append(subject)
+		elif count > 1:
+			subject_list = subject.split("{")
+			for s in subject_list:
+				if "}" in s:
+					subject = s.split("}")[0]
+					if "[" in subject:
+						subject = subject.split("[")
+					if subject not in proyections:
+						proyections.append(subject)
+
+	for po in triples_map.predicate_object_maps_list:
+		if "{" in po.object_map.value:
+			count = count_characters(po.object_map.value)
+			if 0 < count <= 1 :
+				predicate = po.object_map.value.split("{")[1].split("}")[0]
+				if "[" in predicate:
+					predicate = predicate.split("[")[0]
+				if predicate not in proyections:
+					proyections.append(predicate)
+
+			elif 1 < count:
+				predicate = po.object_map.value.split("{")
+				for po_e in predicate:
+					if "}" in po_e:
+						pre = po_e.split("}")[0]
+						if "[" in pre:
+							pre = pre.split("[")
+						if pre not in proyections:
+							proyections.append(pre)
+		elif "#" in po.object_map.value:
+			pass
+		elif "/" in po.object_map.value:
+			pass
+		else:
+			predicate = po.object_map.value 
+			if "[" in predicate:
+				predicate = predicate.split("[")[0]
+			if predicate not in proyections:
+					proyections.append(predicate)
+		if po.object_map.child != None:
+			for child in po.object_map.child:
+				if child not in proyections:
+					proyections.append(child)
+
+	temp_query = "SELECT "
+	for p in proyections:
+		if p != "None":
+			if p == proyections[len(proyections)-1]:
+				temp_query += "\"" + p + "\""
+			else:
+				temp_query += "\"" + p + "\", " 
+		else:
+			if p == proyections[len(proyections)-1]:
+				temp_query = temp_query[:-2] 
+			else:
+				temp_query = temp_query[:-1] 
+	if triples_map.tablename != "None":
+		temp_query = temp_query + " FROM " + triples_map.tablename 
+	else:
+		temp_query = temp_query + " FROM " + triples_map.iterator
+	
+	temp_query += ";"
+	query_list.append(temp_query)
+	return triples_map.iterator, query_list
+
+def jsonpath_find(element, JSON, path, all_paths):
+	result_path = []
+	if all_paths != []:
+		return all_paths 
+	if element in JSON:
+		path = path + element
+		all_paths.append(path)
+		jsonpath_find(element, {}, path, all_paths)
+	for key in JSON:
+		if isinstance(JSON[key], dict):
+			newpath = jsonpath_find(element, JSON[key],path + key + '.',all_paths)
+			if len(newpath) > 0:
+				if newpath[0] not in result_path:
+					result_path.append(newpath[0])
+		elif isinstance(JSON[key], list):
+			for row in JSON[key]:
+				newpath = jsonpath_find(element,row,path + key + '.',all_paths)
+				if len(newpath) > 0:
+					if newpath[0] not in result_path:
+						result_path.append(newpath[0])
+	return result_path
+
+def turtle_print(subject, predicate, object, object_list, duplicate_type, predicate_object_map, triples_map, output_file_descriptor, generated):
+	if object_list:
+		if predicate_object_map == triples_map.predicate_object_maps_list[len(triples_map.predicate_object_maps_list)-1]:
+			if triples_map.subject_map.rdf_class == [None]:
+				if len(triples_map.predicate_object_maps_list) > 1:
+					if generated == 0:
+						output_file_descriptor.write(subject + " " + predicate + " " + object)
+					else:
+						output_file_descriptor.write("		" + predicate + " " + object)
+				else:
+					output_file_descriptor.write(subject + " " + predicate + " " + object)
+				if object == list(object_list.keys())[0] and len(object_list) == 1:
+					if duplicate_type:
+						output_file_descriptor.write(".\n")
+						return "."
+					else:
+						output_file_descriptor.write(".\n\n")
+						return "."
+				elif object == list(object_list.keys())[0] and len(object_list) > 1:
+					if duplicate_type:
+						output_file_descriptor.write(",\n")
+						return ","
+					else:
+						output_file_descriptor.write(",\n")
+						return ","
+				elif object == list(object_list.keys())[len(object_list) - 1]:
+					if len(object_list) == 1:
+						output_file_descriptor.write(".\n\n")
+						return "."
+					else:
+						output_file_descriptor.write(".\n\n")
+						return "."
+				else:
+					output_file_descriptor.write(",\n")
+					return ","
+			else:
+				if object == list(object_list.keys())[0] and len(object_list) == 1:
+					if duplicate_type:
+						output_file_descriptor.write(subject + " " + predicate + " " + object + ".\n")
+						return "."
+					else:
+						output_file_descriptor.write("		" + predicate + " " + object + ".\n\n")
+						return "."
+				elif object == list(object_list.keys())[0] and len(object_list) > 1:
+					if duplicate_type:
+						output_file_descriptor.write(subject + " " + predicate + " " + object+ ",\n")
+						return ","
+					else:
+						output_file_descriptor.write("		" + predicate + " " + object + ",\n")
+						return ","
+				elif object == list(object_list.keys())[len(object_list) - 1]:
+					if len(object_list) == 1:
+						output_file_descriptor.write(subject + " " + predicate + " " + object + ".\n\n")
+						return "."
+					else:
+						output_file_descriptor.write("			" + object + ".\n\n")
+						return "."
+				else:
+					output_file_descriptor.write("			" + object + ",\n")
+					return ","
+		elif predicate_object_map != triples_map.predicate_object_maps_list[0]:
+			if object == list(object_list.keys())[len(object_list) - 1]:
+				if len(object_list) == 1:
+					output_file_descriptor.write("		" + predicate + " " + object)
+					return ";"
+				else:
+					output_file_descriptor.write("			" + object)
+					return ";"
+			elif object == list(object_list.keys())[0] and len(object_list) > 1:
+				output_file_descriptor.write("		" + predicate + " " + object + ",\n")
+				return ","
+			else:
+				output_file_descriptor.write("			" + object + ",\n")
+				return ";"
+
+		elif predicate_object_map == triples_map.predicate_object_maps_list[0]:
+			if triples_map.subject_map.rdf_class == [None]:
+				if len(object_list) == 1:
+					if duplicate_type:
+						output_file_descriptor.write(subject + " " + predicate + " " + object)
+						return ";"
+					else:
+						output_file_descriptor.write("		" + predicate + " " + object)
+						return ";"
+				else:
+					output_file_descriptor.write("			" + object + ";\n")
+			elif object == list(object_list.keys())[len(object_list) - 1]:
+				if len(object_list) == 1:
+					if duplicate_type:
+						output_file_descriptor.write(subject + " " + predicate + " " + object)
+						return ";"
+					else:
+						output_file_descriptor.write("		" + predicate + " " + object)
+						return ";"
+				else:
+					output_file_descriptor.write("			" + object + ";\n")
+			elif object == list(object_list.keys())[0]:
+				if duplicate_type:
+					output_file_descriptor.write(subject + " " + predicate + " " + object + ",\n")
+					return ","
+				else:
+					output_file_descriptor.write("		" + predicate + " " + object + ",\n")
+					return ","
+			else:
+				output_file_descriptor.write("			" + object + ",\n")
+				return ","
+		else:
+			if object == list(object_list.keys())[len(object_list) - 1]:
+				if len(object_list) == 1:
+					output_file_descriptor.write(subject + " " + predicate + " " + object + ".\n")
+					return "."
+				else:
+					output_file_descriptor.write("			" + object + ".\n\n")
+					return "."
+			elif object == object_list[0]:
+				output_file_descriptor.write(subject + " " + predicate + " " + object + ",\n")
+				return ","
+			else:
+				output_file_descriptor.write("			" + object + ",\n")
+				return ","
+	else:
+		if predicate_object_map == triples_map.predicate_object_maps_list[len(triples_map.predicate_object_maps_list)-1]:
+			if triples_map.subject_map.rdf_class == [None]:
+				if len(triples_map.predicate_object_maps_list) > 1:
+					if generated == 0:
+						output_file_descriptor.write(subject + " " + predicate + " " + object + ".\n\n")
+						return "."
+					else:
+						output_file_descriptor.write("		" + predicate + " " + object + ".\n\n")
+						return "."
+				else:
+					output_file_descriptor.write(subject + " " + predicate + " " + object + ".\n\n")
+				return "."
+			if len(triples_map.predicate_object_maps_list) > 1:
+				if generated == 0:
+					output_file_descriptor.write(subject + " " + predicate + " " + object + ".\n\n")
+					return "."
+				else:
+					output_file_descriptor.write("		" + predicate + " " + object + ".\n\n")
+					return "."
+			else:
+				if duplicate_type:
+					output_file_descriptor.write(subject + " " + predicate + " " + object + ".\n\n")
+					return "."
+				else:
+					output_file_descriptor.write("		" + predicate + " " + object + ".\n\n")
+					return "."
+		elif predicate_object_map != triples_map.predicate_object_maps_list[0]:
+			if duplicate_type:
+				if generated == 0:
+					output_file_descriptor.write(subject + " " + predicate + " " + object)
+					return ";"
+				else:
+					output_file_descriptor.write("		" + predicate + " " + object)
+					return ";"
+			else:
+				if generated == 0:
+					output_file_descriptor.write(subject + " " + predicate + " " + object)
+					return ";"
+				else:
+					output_file_descriptor.write("		" + predicate + " " + object)
+					return ";"
+		elif predicate_object_map == triples_map.predicate_object_maps_list[0]:
+			if triples_map.subject_map.rdf_class == [None]:
+				output_file_descriptor.write(subject + " " + predicate + " " + object)
+				return ";"
+			if duplicate_type:
+				output_file_descriptor.write(subject + " " + predicate + " " + object)
+				return ";"
+			else:
+				output_file_descriptor.write("		" + predicate + " " + object)
+				return ";"
+		else:
+			output_file_descriptor.write(subject + " " + predicate + " " + object + ".\n\n")
+			return "."
+
+def extract_base(file):
+	base = ""
+	f = open(file,"r")
+	file_lines = f.readlines()
+	for line in file_lines:
+		if "@base" in line:
+			base = line.replace(" ","")
+			base = base.replace("@base","")[1:-3]
+			return base
+
+def encode_char(string):
+	encoded = urllib.parse.quote(string, safe='_-.~:@=+%',encoding='utf-8')
+	return encoded
+
+def combine_sublist(sublists, full_list):
+	if sublists:
+		i = 100000
+		sl = []
+		aux = []
+		for sublist in sublists:
+			if len(sublist) < i:
+				i = len(sublist)
+				sl = sublist
+			else:
+				aux.append(sublist)
+		for sublist in sublists:
+			if sublist not in aux and sublist != sl:
+				aux.append(sublist)
+		for source in sl:
+			full_list[source] = ""
+		return combine_sublist(aux, full_list)
+	else:
+		return full_list
+
+def fully_sorted(source_list, sorted_list):
+	for source in source_list:
+		if source not in sorted_list:
+			return True
+	return False
+
+def extract_min_tm(source_list,sorted_list):
+	i = 1000
+	min_key = ""
+	for source in source_list:
+		if len(source_list[source]) < i and source not in sorted_list:
+			i = len(source_list[source])
+			min_key = source
+	return min_key, source_list[min_key]
+
+def tm_interception(source1, source2):
+	interception = 0
+	for predicate in source1:
+		if predicate in source2:
+			interception += 1
+	return interception
+
+def source_sort(source_list, sorted_list, sublists):
+	sublist = []
+	if fully_sorted(source_list, sorted_list):
+		min_key, min_value = extract_min_tm(source_list,sorted_list)
+		sorted_list[min_key] = ""
+		sublist.append(min_key)
+		for source in source_list:
+			interception = tm_interception(min_value, source_list[source])
+			if 0 < interception:
+				sorted_list[source] = ""
+				sublist.append(source)
+		sublists.append(sublist)	
+		return source_sort(source_list, sorted_list, sublists)
+	else:
+		return combine_sublist(sublists, {})
+
+def files_sort(triples_map_list, ordered, config):
+	predicate_list = {}
+	sorted_list = {}
+	order_list = {}
+	source_predicate = {}
+	general_predicates = {"http://www.w3.org/2000/01/rdf-schema#subClassOf":"",
+						"http://www.w3.org/2002/07/owl#sameAs":"",
+						"http://www.w3.org/2000/01/rdf-schema#seeAlso":"",
+						"http://www.w3.org/2000/01/rdf-schema#subPropertyOf":""}
+	for tp in triples_map_list:
+		if str(tp.file_format).lower() == "csv":
+			if "csv" not in sorted_list:
+				sorted_list["csv"] = {str(tp.data_source) : {tp.triples_map_id : tp}}
+			else:
+				if str(tp.data_source) in sorted_list["csv"]:
+					sorted_list["csv"][str(tp.data_source)][tp.triples_map_id] = tp
+				else:
+					sorted_list["csv"][str(tp.data_source)] = {tp.triples_map_id : tp}
+			for po in tp.predicate_object_maps_list:
+				if po.predicate_map.value in general_predicates:
+					predicate = po.predicate_map.value + "_" + po.object_map.value
+					if predicate in predicate_list:
+						predicate_list[predicate] += 1
+					else:
+						predicate_list[predicate] = 1
+				else:
+					if po.predicate_map.value in predicate_list:
+						predicate_list[po.predicate_map.value] += 1
+					else:
+						predicate_list[po.predicate_map.value] = 1
+				if "csv" not in source_predicate:
+					if po.predicate_map.value in general_predicates:
+						predicate = po.predicate_map.value + "_" + po.object_map.value
+						source_predicate["csv"] = {str(tp.data_source) : {predicate : ""}}
+					else:
+						source_predicate["csv"] = {str(tp.data_source) : {po.predicate_map.value : ""}}
+				else:
+					if str(tp.data_source) in source_predicate["csv"]:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate["csv"][str(tp.data_source)][predicate] = ""
+						else:
+							source_predicate["csv"][str(tp.data_source)][po.predicate_map.value] = ""
+					else:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate["csv"][str(tp.data_source)] = {predicate : ""}
+						else:
+							source_predicate["csv"][str(tp.data_source)] = {po.predicate_map.value : ""} 
+		elif tp.file_format == "JSONPath":
+			if "JSONPath" not in sorted_list:
+				sorted_list["JSONPath"] = {str(tp.data_source) : {tp.triples_map_id : tp}}
+			else:
+				if str(tp.data_source) in sorted_list["JSONPath"]:
+					sorted_list["JSONPath"][str(tp.data_source)][tp.triples_map_id] = tp
+				else:
+					sorted_list["JSONPath"][str(tp.data_source)] = {tp.triples_map_id : tp}
+			for po in tp.predicate_object_maps_list:
+				if po.predicate_map.value in general_predicates:
+					predicate = po.predicate_map.value + "_" + po.object_map.value
+					if predicate in predicate_list:
+						predicate_list[predicate] += 1
+					else:
+						predicate_list[predicate] = 1
+				else:
+					if po.predicate_map.value in predicate_list:
+						predicate_list[po.predicate_map.value] += 1
+					else:
+						predicate_list[po.predicate_map.value] = 1
+				if "JSONPath" not in source_predicate:
+					if po.predicate_map.value in general_predicates:
+						predicate = po.predicate_map.value + "_" + po.object_map.value
+						source_predicate["JSONPath"] = {str(tp.data_source) : {predicate : ""}}
+					else:
+						source_predicate["JSONPath"] = {str(tp.data_source) : {po.predicate_map.value : ""}}
+				else:
+					if str(tp.data_source) in source_predicate["JSONPath"]:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate["JSONPath"][str(tp.data_source)][predicate] = ""
+						else:
+							source_predicate["JSONPath"][str(tp.data_source)][po.predicate_map.value] = ""
+					else:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate["JSONPath"][str(tp.data_source)] = {predicate : ""}
+						else:
+							source_predicate["JSONPath"][str(tp.data_source)] = {po.predicate_map.value : ""}  
+		elif tp.file_format == "XPath" or "xml" in tp.data_source:
+			if "XPath" not in sorted_list:
+				sorted_list["XPath"] = {str(tp.data_source) : {tp.triples_map_id : tp}}
+			else:
+				if str(tp.data_source) in sorted_list["XPath"]:
+					sorted_list["XPath"][str(tp.data_source)][tp.triples_map_id] = tp
+				else:
+					sorted_list["XPath"][str(tp.data_source)] = {tp.triples_map_id : tp} 
+			for po in tp.predicate_object_maps_list:
+				if po.predicate_map.value in general_predicates:
+					predicate = po.predicate_map.value + "_" + po.object_map.value
+					if predicate in predicate_list:
+						predicate_list[predicate] += 1
+					else:
+						predicate_list[predicate] = 1
+				else:
+					if po.predicate_map.value in predicate_list:
+						predicate_list[po.predicate_map.value] += 1
+					else:
+						predicate_list[po.predicate_map.value] = 1
+				if "XPath" not in source_predicate:
+					if po.predicate_map.value in general_predicates:
+						predicate = po.predicate_map.value + "_" + po.object_map.value
+						source_predicate["XPath"] = {str(tp.data_source) : {predicate : ""}}
+					else:
+						source_predicate["XPath"] = {str(tp.data_source) : {po.predicate_map.value : ""}}
+				else:
+					if str(tp.data_source) in source_predicate["XPath"]:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate["XPath"][str(tp.data_source)][predicate] = ""
+						else:
+							source_predicate["XPath"][str(tp.data_source)][po.predicate_map.value] = ""
+					else:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate["XPath"][str(tp.data_source)] = {predicate : ""}
+						else:
+							source_predicate["XPath"][str(tp.data_source)] = {po.predicate_map.value : ""}
+		elif tp.file_format == "RMLView":
+			if "RMLView" not in sorted_list:
+				sorted_list["RMLView"] = {str(tp.data_source) : {tp.triples_map_id : tp}}
+			else:
+				if str(tp.data_source) in sorted_list["RMLView"]:
+					sorted_list["RMLView"][str(tp.data_source)][tp.triples_map_id] = tp
+				else:
+					sorted_list["RMLView"][str(tp.data_source)] = {tp.triples_map_id : tp} 
+			for po in tp.predicate_object_maps_list:
+				if po.predicate_map.value in general_predicates:
+					predicate = po.predicate_map.value + "_" + po.object_map.value
+					if predicate in predicate_list:
+						predicate_list[predicate] += 1
+					else:
+						predicate_list[predicate] = 1
+				else:
+					if po.predicate_map.value in predicate_list:
+						predicate_list[po.predicate_map.value] += 1
+					else:
+						predicate_list[po.predicate_map.value] = 1
+				if "RMLView" not in source_predicate:
+					if po.predicate_map.value in general_predicates:
+						predicate = po.predicate_map.value + "_" + po.object_map.value
+						source_predicate["RMLView"] = {str(tp.data_source) : {predicate : ""}}
+					else:
+						source_predicate["RMLView"] = {str(tp.data_source) : {po.predicate_map.value : ""}}
+				else:
+					if str(tp.data_source) in source_predicate["RMLView"]:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate["RMLView"][str(tp.data_source)][predicate] = ""
+						else:
+							source_predicate["RMLView"][str(tp.data_source)][po.predicate_map.value] = ""
+					else:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate["RMLView"][str(tp.data_source)] = {predicate : ""}
+						else:
+							source_predicate["RMLView"][str(tp.data_source)] = {po.predicate_map.value : ""}
+		else:
+			if tp.file_format != None:
+				if "SPARQL" in tp.file_format:
+					if "csv" not in sorted_list:
+						if ".nt" in str(tp.data_source):
+							sorted_list["csv"] = {str(tp.data_source) : {tp.triples_map_id : tp}}
+						else:
+							sorted_list["csv"] = {"endpoint:" + str(tp.data_source) : {tp.triples_map_id : tp}}
+					else:
+						if ".nt" in str(tp.data_source):
+							if str(tp.data_source) in sorted_list["csv"]:
+								sorted_list["csv"][str(tp.data_source)][tp.triples_map_id] = tp
+							else:
+								sorted_list["csv"][str(tp.data_source)] = {tp.triples_map_id : tp}
+						else:
+							if "endpoint:" + str(tp.data_source) in sorted_list["csv"]:
+								sorted_list["csv"]["endpoint:" + str(tp.data_source)][tp.triples_map_id] = tp
+							else:
+								sorted_list["csv"]["endpoint:" + str(tp.data_source)] = {tp.triples_map_id : tp}
+					for po in tp.predicate_object_maps_list:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							if predicate in predicate_list:
+								predicate_list[predicate] += 1
+							else:
+								predicate_list[predicate] = 1
+						else:
+							if po.predicate_map.value in predicate_list:
+								predicate_list[po.predicate_map.value] += 1
+							else:
+								predicate_list[po.predicate_map.value] = 1
+						if "csv" not in source_predicate:
+							if po.predicate_map.value in general_predicates:
+								predicate = po.predicate_map.value + "_" + po.object_map.value
+								if ".nt" in str(tp.data_source):
+									source_predicate["csv"] = {str(tp.data_source) : {predicate : ""}}
+								else:
+									source_predicate["csv"] = {"endpoint:" + str(tp.data_source) : {predicate : ""}}
+							else:
+								if ".nt" in str(tp.data_source):
+									source_predicate["csv"] = {str(tp.data_source) : {po.predicate_map.value : ""}}
+								else:
+									source_predicate["csv"] = {"endpoint:" + str(tp.data_source) : {po.predicate_map.value : ""}}
+						else:
+							if str(tp.data_source) in source_predicate["csv"]:
+								if po.predicate_map.value in general_predicates:
+									predicate = po.predicate_map.value + "_" + po.object_map.value
+									if ".nt" in str(tp.data_source):
+										source_predicate["csv"][str(tp.data_source)][predicate] = ""
+									else:
+										source_predicate["csv"]["endpoint:" + str(tp.data_source)][predicate] = ""
+								else:
+									if ".nt" in str(tp.data_source):
+										source_predicate["csv"][str(tp.data_source)][po.predicate_map.value] = ""
+									else:
+										source_predicate["csv"]["endpoint:" + str(tp.data_source)][po.predicate_map.value] = ""
+							else:
+								if po.predicate_map.value in general_predicates:
+									predicate = po.predicate_map.value + "_" + po.object_map.value
+									if ".nt" in str(tp.data_source):
+										source_predicate["csv"][str(tp.data_source)] = {predicate : ""}
+									else:
+										source_predicate["csv"]["endpoint:" + str(tp.data_source)] = {predicate : ""}
+								else:
+									if ".nt" in str(tp.data_source):
+										source_predicate["csv"][str(tp.data_source)] = {po.predicate_map.value : ""}
+									else:
+										source_predicate["csv"]["endpoint:" + str(tp.data_source)] = {po.predicate_map.value : ""}
+				else:
+					if tp.query == "None":
+						if tp.iterator == "None":
+							if config["datasets"]["dbType"] == "mysql" or config["datasets"]["dbType"] == "sqlserver":
+								database, query_list = translate_sql(tp)
+							elif config["datasets"]["dbType"] == "postgres":
+								database, query_list = translate_postgressql(tp)
+							if config["datasets"]["dbType"] == "sqlserver":
+								query = query_list[0].replace("`","")
+							else:
+								query = query_list[0]
+						else:
+							if "select" in tp.iterator.lower():
+								query = tp.iterator
+							else:
+								if config["datasets"]["dbType"] == "mysql" or config["datasets"]["dbType"] == "sqlserver":
+									database, query_list = translate_sql(tp)
+								elif config["datasets"]["dbType"] == "postgres":
+									database, query_list = translate_postgressql(tp)
+								if config["datasets"]["dbType"] == "sqlserver":
+									query = query_list[0].replace("`","")
+								else:
+									query = query_list[0]
+					else:
+						query = tp.query
+					if config["datasets"]["dbType"] not in sorted_list:
+						sorted_list[config["datasets"]["dbType"]] = {query: {tp.triples_map_id : tp}}
+					else:
+						if query in sorted_list[config["datasets"]["dbType"]]:
+							sorted_list[config["datasets"]["dbType"]][query][tp.triples_map_id] = tp
+						else:
+							sorted_list[config["datasets"]["dbType"]][query] = {tp.triples_map_id : tp}
+					for po in tp.predicate_object_maps_list:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							if predicate in predicate_list:
+								predicate_list[predicate] += 1
+							else:
+								predicate_list[predicate] = 1
+						else:
+							if po.predicate_map.value in predicate_list:
+								predicate_list[po.predicate_map.value] += 1
+							else:
+								predicate_list[po.predicate_map.value] = 1
+						if config["datasets"]["dbType"] not in source_predicate:
+							if po.predicate_map.value in general_predicates:
+								predicate = po.predicate_map.value + "_" + po.object_map.value
+								source_predicate[config["datasets"]["dbType"]] = {query : {predicate : ""}}
+							else:
+								source_predicate[config["datasets"]["dbType"]] = {query : {po.predicate_map.value : ""}}
+						else:
+							if query in source_predicate[config["datasets"]["dbType"]]:
+								if po.predicate_map.value in general_predicates:
+									predicate = po.predicate_map.value + "_" + po.object_map.value
+									source_predicate[config["datasets"]["dbType"]][query][predicate] = ""
+								else:
+									source_predicate[config["datasets"]["dbType"]][query][po.predicate_map.value] = ""
+							else:
+								if po.predicate_map.value in general_predicates:
+									predicate = po.predicate_map.value + "_" + po.object_map.value
+									source_predicate[config["datasets"]["dbType"]][query] = {predicate : ""}
+								else:
+									source_predicate[config["datasets"]["dbType"]][query] = {po.predicate_map.value : ""}
+			else:
+				if tp.query == "None":
+					if tp.iterator == "None":
+						if config["datasets"]["dbType"] == "mysql" or config["datasets"]["dbType"] == "sqlserver":
+							database, query_list = translate_sql(tp)
+						elif config["datasets"]["dbType"] == "postgres":
+							database, query_list = translate_postgressql(tp)
+						query = query_list[0]
+					else:
+						if "select" in tp.iterator.lower():
+							query = tp.iterator
+						else:
+							if config["datasets"]["dbType"] == "mysql" or config["datasets"]["dbType"] == "sqlserver":
+								database, query_list = translate_sql(tp)
+							elif config["datasets"]["dbType"] == "postgres":
+								database, query_list = translate_postgressql(tp)
+							query = query_list[0]
+				else:
+					query = tp.query
+				if config["datasets"]["dbType"] not in sorted_list:
+					sorted_list[config["datasets"]["dbType"]] = {query: {tp.triples_map_id : tp}}
+				else:
+					if query in sorted_list[config["datasets"]["dbType"]]:
+						sorted_list[config["datasets"]["dbType"]][query][tp.triples_map_id] = tp
+					else:
+						sorted_list[config["datasets"]["dbType"]][query] = {tp.triples_map_id : tp}
+				for po in tp.predicate_object_maps_list:
+					if po.predicate_map.value in general_predicates:
+						predicate = po.predicate_map.value + "_" + po.object_map.value
+						if predicate in predicate_list:
+							predicate_list[predicate] += 1
+						else:
+							predicate_list[predicate] = 1
+					else:
+						if po.predicate_map.value in predicate_list:
+							predicate_list[po.predicate_map.value] += 1
+						else:
+							predicate_list[po.predicate_map.value] = 1
+					if config["datasets"]["dbType"] not in source_predicate:
+						if po.predicate_map.value in general_predicates:
+							predicate = po.predicate_map.value + "_" + po.object_map.value
+							source_predicate[config["datasets"]["dbType"]] = {query : {predicate : ""}}
+						else:
+							source_predicate[config["datasets"]["dbType"]] = {query : {po.predicate_map.value : ""}}
+					else:
+						if query in source_predicate[config["datasets"]["dbType"]]:
+							if po.predicate_map.value in general_predicates:
+								predicate = po.predicate_map.value + "_" + po.object_map.value
+								source_predicate[config["datasets"]["dbType"]][query][predicate] = ""
+							else:
+								source_predicate[config["datasets"]["dbType"]][query][po.predicate_map.value] = ""
+						else:
+							if po.predicate_map.value in general_predicates:
+								predicate = po.predicate_map.value + "_" + po.object_map.value
+								source_predicate[config["datasets"]["dbType"]][query] = {predicate : ""}
+							else:
+								source_predicate[config["datasets"]["dbType"]][query] = {po.predicate_map.value : ""}
+		if tp.subject_map.rdf_class is not None:
+			for rdf_type in tp.subject_map.rdf_class:
+				if rdf_type != None and rdf_type != "None":
+					predicate = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" + "_" + "<{}>".format(rdf_type)
+					if predicate in predicate_list:
+						predicate_list[predicate] += 1
+					else:
+						predicate_list[predicate] = 1
+	if ordered.lower() == "yes":
+		for source in sorted_list:
+			order_list[source] = source_sort(source_predicate[source], {}, [])
+	return sorted_list, predicate_list, order_list
+
+def base36encode(number, alphabet='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'):
+	"""Converts an integer to a base36 string."""
+	
+
+	base36 = ''
+	sign = ''
+
+	if number < 0:
+		sign = '-'
+		number = -number
+
+	if 0 <= number < len(alphabet):
+		return sign + alphabet[number]
+
+	while number != 0:
+		number, i = divmod(number, len(alphabet))
+		base36 = alphabet[i] + base36
+
+	return sign + base36
+
+def sublist(part_list, full_list):
+	for part in part_list:
+		if isinstance(part,dict):
+			if part["type"] == "template":
+				template_references = re.finditer("{(.+?)}", part["value"])
+				for reference_match in template_references:
+					if "$." in reference_match.group(1):
+						if reference_match.group(1)[2:].split(".")[0] not in full_list:
+							return False 
+					else:
+						if reference_match.group(1) not in full_list:
+							return False 
+		else:
+			if "$." in part:
+				if part[2:] not in full_list:
+					return False
+			else:
+				if part not in full_list:
+					return False
+	return True
+
+def child_list(childs):
+	value = ""
+	for child in childs:
+		if isinstance(child,dict):
+			if child["value"] not in value:
+				value += child["value"] + "_"
+		else:
+			if child not in value:
+				value += child + "_"
+	return value[:-1]
+
+def child_list_value(childs,row):
+	value = ""
+	v = []
+	for child in childs:
+		if child not in v:
+			if isinstance(child,dict):
+				if child["type"] == "template":
+					if "$." in child["value"]:
+						inter_value = string_substitution_json(child["value"], "{(.+?)}",row, "object", "yes", "")
+					else:
+						inter_value = string_substitution(child["value"], "{(.+?)}",row, "object", "yes", "")
+					if inter_value != None:
+						value += inter_value + "_"
+						v.append(child["value"])
+				else:
+					value += child["value"] + "_"
+					v.append(child["value"])
+			else:
+				if "$." in child:
+					inter_value = string_substitution_json(child, ".+",row, "object", "yes", "")
+					if inter_value != None:
+						value += inter_value[1:-1] + "_"
+						v.append(child[2:])
+				else:
+					if row[child] != None:
+						value += str(row[child]) + "_"
+						v.append(child)
+	return value[:-1]
+
+def child_list_value_array(childs,row,row_headers):
+	value = ""
+	v = []
+	for child in childs:
+		if child not in v:
+			if row[row_headers.index(child)] != None:
+				value += row[row_headers.index(child)] + "_"
+				v.append(child)
+	return value[:-1]
+
+
+def string_substitution_json(string, pattern, row, term, ignore, iterator):
+	template_references = re.finditer(pattern, string)
+	new_string = string
+	offset_current_substitution = 0
+	if iterator != "None" and "" != iterator:
+		if iterator != "$.[*]":
+			temp_keys = iterator.split(".")
+			for tp in temp_keys:
+				if "$" != tp:
+					if "[*]" in tp:
+						row = row[tp.split("[*]")[0]]
+					else:
+						row = row[tp]
+				elif tp == "":
+					if len(row.keys()) == 1:
+						row = row[list(row.keys())[0]]
+	for reference_match in template_references:
+		start, end = reference_match.span()[0], reference_match.span()[1]
+
+		if pattern == "{(.+?)}":
+			if "[*]" not in reference_match.group(1):
+				if "$." == reference_match.group(1)[:2]:
+					if "[" in reference_match.group(1)[2:]:
+						temp_match = reference_match.group(1)[2:] 
+						match = temp_match[2:-2]
+					else:
+						match = reference_match.group(1)[2:]
+				elif "$" == reference_match.group(1)[:1]:
+					if "['\\{" in reference_match.group(1) or "[\"\\{" in reference_match.group(1):
+						match = reference_match.group(1).split("[")[1]
+						match = match.split("]")[0]
+						match = match.replace("\\","")
+						match = match.replace("{","")
+						match = match.replace("}","")
+						match = match.replace("'","")
+						match = match.replace("\"","")
+						match = "{" + match + "}"
+					elif "[" in reference_match.group(1)[1:]:
+						match = reference_match.group(1)[3:-2]
+					else:
+						match = reference_match.group(1)[2:]
+				elif "\\{" in reference_match.group(1):
+					if "['\\{" in reference_match.group(1) or "[\"\\{" in reference_match.group(1):
+						match = reference_match.group(1).split("[")[1]
+						match = match.split("]")[0]
+						match = match.replace("\\","")
+						match = match.replace("{","")
+						match = match.replace("}","")
+						match = match.replace("'","")
+						match = match.replace("\"","")
+						match = "{" + match + "}"
+					else:
+						match = reference_match.group(1).replace("\\{","").replace("\\}","")
+						match = match.replace("{","").replace("}","")
+						if match[0] == " ":
+							match = match[1:]
+						if "$." == match[:2]:
+							if "[" in match[1:]:
+								match = match[3:-2]
+							else:
+								match = match[2:]
+						elif "$" == match[:1]:
+							if "[" in match[1:]:
+								match = match[3:-2]
+							else:
+								match = match[2:]
+				else:
+					match = reference_match.group(1)
+			else:
+				if "$." == reference_match.group(1)[:2]:
+					if "[" in reference_match.group(1)[2:]:
+						match = reference_match.group(1)[2:]
+					else:
+						match = reference_match.group(1)[2:]
+				elif "$" == reference_match.group(1)[:1]:
+					if "[" in reference_match.group(1)[2:]:
+						match = reference_match.group(1)[2:]
+					else:
+						match = reference_match.group(1)[2:]
+				elif "." not in reference_match.group(1) and "[*]" not in reference_match.group(1):
+					match = reference_match.group(1).split("[")[0]
+				else:
+					match = reference_match.group(1)
+			if match[:2] == "$.":
+				match = match[2:]
+			if "\\" in match:
+				temp = match.split("{")
+				match = temp[len(temp)-1]
+				if "$." == match[:2]:
+					if "[" in match[2:]:
+						temp_match = match[2:] 
+						match = temp_match[2:-2]
+					else:
+						match = reference_match.group(1)[2:]
+				if match in row.keys():
+					value = row[match]
+				else:
+					print('The attribute ' + match + ' is missing.')
+					if ignore == "yes":
+						return None
+					print('Aborting...')
+					sys.exit(1)
+			elif "." in match:
+				if "[*]" in match:
+					if match.split("[*]")[0] in row:
+						child_list = row[match.split("[*]")[0]]
+						object_list = []
+						for child in child_list:
+							if "." in match:
+								if "[*]" in match.replace(match.split(".")[0]+".",""):
+									if ".*" in match.split(".")[0]+".":
+										jsonpath_expr = parse(match.replace(match.split(".")[0]+".","").replace(".*",".[*]"))
+									else:
+										jsonpath_expr = parse(match.replace(match.split(".")[0]+".",""))
+									matches = [match.value for match in jsonpath_expr.find(child)]
+									for value in matches:
+										if value is not None:
+											if (type(value).__name__) != "str":
+												if (type(value).__name__) != "float":
+													value = str(value)
+												else:
+													value = str(math.ceil(value))
+											else:
+												if re.match(r'^-?\d+(?:\.\d+)$', value) is not None:
+													value = str(math.ceil(float(value))) 
+											if re.search("^[\s|\t]*$", value) is None:
+												if "http" not in value:
+													value = encode_char(value)
+												new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+												offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+												if "\\" in new_string:
+													new_string = new_string.replace("\\", "")
+													count = new_string.count("}")
+													i = 0
+													new_string = " " + new_string
+													while i < count:
+														new_string = "{" + new_string
+														i += 1
+												object_list.append(new_string)
+												new_string = string
+												offset_current_substitution = 0
+								else:
+									match = match.split(".")[1:]
+									if len(match) > 1:
+										value = child[match[0]]
+										for element in match:
+											if element in value:
+												value = value[element]
+									else:
+										if match[0] in child:
+											value = child[match[0]]
+										else:
+											value = None
+									if value is not None:
+										if (type(value).__name__) != "str":
+											if (type(value).__name__) != "float":
+												value = str(value)
+											else:
+												value = str(math.ceil(value))
+										else:
+											if re.match(r'^-?\d+(?:\.\d+)$', value) is not None:
+												value = str(math.ceil(float(value))) 
+										if re.search("^[\s|\t]*$", value) is None:
+											if "http" not in value:
+												value = encode_char(value)
+											new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+											offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+											if "\\" in new_string:
+												new_string = new_string.replace("\\", "")
+												count = new_string.count("}")
+												i = 0
+												new_string = " " + new_string
+												while i < count:
+													new_string = "{" + new_string
+													i += 1
+											object_list.append(new_string)
+											new_string = string
+											offset_current_substitution = 0
+							else:
+								if match[0] in child:
+									value = child[match[0]]
+								else:
+									value = None
+								if value is not None:
+									if (type(value).__name__) != "str":
+										if (type(value).__name__) != "float":
+											value = str(value)
+										else:
+											value = str(math.ceil(value))
+									else:
+										if re.match(r'^-?\d+(?:\.\d+)$', value) is not None:
+											value = str(math.ceil(float(value))) 
+									if re.search("^[\s|\t]*$", value) is None:
+										if "http" not in value:
+											value = encode_char(value)
+										new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+										offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+										if "\\" in new_string:
+											new_string = new_string.replace("\\", "")
+											count = new_string.count("}")
+											i = 0
+											new_string = " " + new_string
+											while i < count:
+												new_string = "{" + new_string
+												i += 1
+										object_list.append(new_string)
+										new_string = string
+										offset_current_substitution = 0
+						return object_list
+						
+					else:
+						value = None
+
+				else:
+					temp = match.split(".")
+					if temp[0] in row:
+						value = row[temp[0]]
+						for element in temp[1:]:
+							if value != None:
+								if element in value:
+									value = value[element]
+								else:
+									return None
+							else:
+								return None
+					else:
+						return None						
+			else:
+				if match in row:
+					if not isinstance(row[match],list):
+						value = row[match]
+					else:
+						object_list = []
+						for value in row[match]:
+							if value is not None:
+								if (type(value).__name__) != "str":
+									if (type(value).__name__) != "float":
+										value = str(value)
+									else:
+										value = str(math.ceil(value))
+								else:
+									if re.match(r'^-?\d+(?:\.\d+)$', value) is not None:
+										value = str(math.ceil(float(value))) 
+								if re.search("^[\s|\t]*$", value) is None:
+									if "http" not in value:
+										value = encode_char(value)
+									new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+									offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+									if "\\" in new_string:
+										new_string = new_string.replace("\\", "")
+										count = new_string.count("}")
+										i = 0
+										new_string = " " + new_string
+										while i < count:
+											new_string = "{" + new_string
+											i += 1
+									object_list.append(new_string)
+									new_string = string
+									offset_current_substitution = 0
+						return object_list	
+				else:
+					if "[*]" in match:
+						if match.split("[*]")[0] in row:
+							object_list = []
+							child_list = row[match.split("[*]")[0]]
+							for value in child_list:
+								if value is not None:
+									if (type(value).__name__) != "str":
+										if (type(value).__name__) != "float":
+											value = str(value)
+										else:
+											value = str(math.ceil(value))
+									else:
+										if re.match(r'^-?\d+(?:\.\d+)$', value) is not None:
+											value = str(math.ceil(float(value))) 
+									if re.search("^[\s|\t]*$", value) is None:
+										if "http" not in value:
+											value = encode_char(value)
+										new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+										offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+										if "\\" in new_string:
+											new_string = new_string.replace("\\", "")
+											count = new_string.count("}")
+											i = 0
+											new_string = " " + new_string
+											while i < count:
+												new_string = "{" + new_string
+												i += 1
+										object_list.append(new_string)
+										new_string = string
+										offset_current_substitution = 0
+							return object_list
+						else:
+							return None
+					else:
+						return None
+
+			if value is not None:
+				if (type(value).__name__) != "str":
+					if (type(value).__name__) != "float":
+						value = str(value)
+					else:
+						value = str(math.ceil(value))
+				else:
+					if re.match(r'^-?\d+(?:\.\d+)$', value) is not None:
+						value = str(math.ceil(float(value))) 
+				if re.search("^[\s|\t]*$", value) is None:
+					if "http" not in value:
+						value = encode_char(value)
+					new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+					offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+					if "\\" in new_string:
+						new_string = new_string.replace("\\", "")
+						count = new_string.count("}")
+						i = 0
+						new_string = " " + new_string
+						while i < count:
+							new_string = "{" + new_string
+							i += 1
+						#new_string = new_string.replace(" ", "")
+
+				else:
+					return None
+			else:
+				return None
+
+		elif pattern == ".+":
+			match = reference_match.group(0)
+			if "[*]" in match:
+				#if match[:2] == "$.":
+				#	match = match[2:]
+				if ".*" in iterator:
+					jsonpath_expr = parse(match.replace(".*",".[*]"))
+				else:
+					jsonpath_expr = parse(match)
+				value = [v.value for v in jsonpath_expr.find(row)]
+				if match is not None:
+					if (type(value).__name__) == "int":
+							value = str(value)
+					elif (type(value).__name__) == "float":
+							value = str(value)
+					if isinstance(value, dict):
+						if value:
+							print("Index needed")
+							return None
+						else:
+							return None
+					elif isinstance(value, list):
+						return value
+					else:		
+						if value is not None:
+							if re.search("^[\s|\t]*$", value) is None:
+								new_string = new_string[:start] + value.strip().replace("\"", "'") + new_string[end:]
+								new_string = "\"" + new_string + "\"" if new_string[0] != "\"" and new_string[-1] != "\"" else new_string
+								object_list.append(new_string)
+								new_string = string
+				return object_list
+			else:
+				if match[:2] == "$.":
+					match = match[2:]
+				if "." in match:
+					if match in row:
+						value = row[match]
+					else:
+						temp = match.split(".")
+						if temp[0] in row:
+							value = row[temp[0]]
+							for element in temp[1:]:
+								if value != None:
+									if element != "*":
+										if element in value:
+											value = value[element]
+										else:
+											return None
+									else:
+										return value
+								else:
+									return None
+						else:
+							return None
+				else:
+					if match in row:
+						value = row[match]
+					else:
+						return None
+						
+				if value is not None:
+					if (type(value).__name__) == "int":
+							value = str(value)
+					if (type(value).__name__) == "float":
+							value = str(value)
+					if isinstance(value, dict):
+						if value:
+							print("Index needed")
+							return None
+						else:
+							return None
+					elif isinstance(value, list):
+						return value
+					else:	
+						if value is not None:
+							if re.search("^[\s|\t]*$", value) is None:
+								new_string = new_string[:start] + value.strip().replace("\"", "'") + new_string[end:]
+								new_string = "\"" + new_string + "\"" if new_string[0] != "\"" and new_string[-1] != "\"" else new_string
+							else:
+								return None
+				else:
+					return None
+		else:
+			print("Invalid pattern")
+			if ignore == "yes":
+				return None
+			print("Aborting...")
+			sys.exit(1)
+
+	return new_string
+
+def string_substitution_xml(string, pattern, row, term, iterator, parent_map, namespace):
+	template_references = re.finditer(pattern, string)
+	new_string = string
+	offset_current_substitution = 0
+	temp_list = []
+	for reference_match in template_references:
+		start, end = reference_match.span()[0], reference_match.span()[1]
+		if pattern == "{(.+?)}":
+			if term == "subject":
+				match = reference_match.group(1).split("[")[0]
+				if "@" in match:
+					match,level = match.split("@")[1],match.split("@")[0]
+					if "" == level:
+						if match in row.attrib:
+							if row.attrib[match] is not None:
+								if re.search("^[\s|\t]*$", row.attrib[match]) is None:
+									new_string = new_string[:start + offset_current_substitution] + encode_char(row.attrib[match].strip()) + new_string[end + offset_current_substitution:]
+									offset_current_substitution = offset_current_substitution + len(encode_char(row.attrib[match].strip())) - (end - start)
+
+								else:
+									return None
+						else:
+							return None
+					else:
+						new_level = None
+						for temp_level in level.split("/"):
+							if "" != temp_level:
+								if ".." == temp_level:
+									if new_level == None:
+										new_level = parent_map[row]
+									else:
+										new_level = parent_map[new_level]
+								else:
+									new_level = row.find(temp_level)
+						if new_level.attrib[match] is not None:
+							if re.search("^[\s|\t]*$", new_level.attrib[match]) is None:
+								new_string = new_string[:start + offset_current_substitution] + encode_char(new_level.attrib[match].strip()) + new_string[ end + offset_current_substitution:]
+								offset_current_substitution = offset_current_substitution + len(encode_char(new_level.attrib[match].strip())) - (end - start)
+
+							else:
+								return None
+				else:
+					if row.find(match) is not None:
+						if re.search("^[\s|\t]*$", row.find(match).text) is None:
+							new_string = new_string[:start + offset_current_substitution] + encode_char(row.find(match).text.strip()) + new_string[ end + offset_current_substitution:]
+							offset_current_substitution = offset_current_substitution + len(encode_char(row.find(match).text.strip())) - (end - start)
+
+						else:
+							return None
+					elif namespace != {}:
+						if row.find("{"+namespace[""]+"}"+match) is not None:
+							if re.search("^[\s|\t]*$", row.find("{"+namespace[""]+"}"+match).text) is None:
+								new_string = new_string[:start + offset_current_substitution] + encode_char(row.find("{"+namespace[""]+"}"+match).text.strip()) + new_string[ end + offset_current_substitution:]
+								offset_current_substitution = offset_current_substitution + len(encode_char(row.find("{"+namespace[""]+"}"+match).text.strip())) - (end - start)
+
+							else:
+								return None
+						else:
+							if match in row.attrib:
+								if row.attrib[match] is not None:
+									if re.search("^[\s|\t]*$", row.attrib[match]) is None:
+										new_string = new_string[:start + offset_current_substitution] + encode_char(row.attrib[match].strip()) + new_string[end + offset_current_substitution:]
+										offset_current_substitution = offset_current_substitution + len(encode_char(row.attrib[match].strip())) - (end - start)
+									else:
+										return None
+							else:
+								return None
+					else:
+						if match in row.attrib:
+							if row.attrib[match] is not None:
+								if re.search("^[\s|\t]*$", row.attrib[match]) is None:
+									new_string = new_string[:start + offset_current_substitution] + encode_char(row.attrib[match].strip()) + new_string[end + offset_current_substitution:]
+									offset_current_substitution = offset_current_substitution + len(encode_char(row.attrib[match].strip())) - (end - start)
+								else:
+									return None
+						else:
+							return None
+			else:
+				if temp_list:
+					match = reference_match.group(1).split("[")[0]
+					if "@" in match:
+						match,level = match.split("@")[1],match.split("@")[0]
+						if "" == level:
+							if match in row.attrib:
+								if row.attrib[match] is not None:
+									if re.search("^[\s|\t]*$", row.attrib[match]) is None:
+										new_string = new_string[:start + offset_current_substitution] + encode_char(row.attrib[match].strip()) + new_string[ end + offset_current_substitution:]
+										offset_current_substitution = offset_current_substitution + len(row.attrib[match]) - (end - start)
+
+									else:
+										return None
+							else:
+								return None
+						else:
+							i = 0
+							if match in iterator:
+								if match in row.attrib:
+									if row.attrib[match] is not None:
+										if re.search("^[\s|\t]*$", child.attrib[match]) is None:
+											new_string = temp_list[i]["string"][:start + temp_list[i]["offset_current_substitution"]] + encode_char(row.attrib[match].strip()) + temp_list[i]["string"][ end + temp_list[i]["offset_current_substitution"]:]
+											offset_current_substitution = temp_list[i]["offset_current_substitution"] + len(row.attrib[match]) - (end - start)
+											temp_list[i] = {"string":new_string,"offset_current_substitution":offset_current_substitution}
+											i += 1
+								else:
+									return None
+							else:
+								if ".." == level[:-1]:
+									new_level = parent_map[row]
+								else:
+									new_level = row.findall(level[:-1], namespace)
+								for child in new_level:
+									if child.attrib[match] is not None:
+										if re.search("^[\s|\t]*$", child.attrib[match]) is None:
+											new_string = temp_list[i]["string"][:start + temp_list[i]["offset_current_substitution"]] + encode_char(child.attrib[match].strip()) + temp_list[i]["string"][ end + temp_list[i]["offset_current_substitution"]:]
+											offset_current_substitution = temp_list[i]["offset_current_substitution"] + len(child.attrib[match]) - (end - start)
+											temp_list[i] = {"string":new_string,"offset_current_substitution":offset_current_substitution}
+											i += 1
+
+					else:
+						i = 0
+						if match in iterator:
+							if re.search("^[\s|\t]*$", row.text) is None:
+								new_string = temp_list[i]["string"][:start + temp_list[i]["offset_current_substitution"]] + encode_char(row.text.strip()) + temp_list[i]["string"][ end + temp_list[i]["offset_current_substitution"]:]
+								offset_current_substitution = temp_list[i]["offset_current_substitution"] + len(encode_char(row.text.strip())) - (end - start)
+								temp_list[i] = {"string":new_string,"offset_current_substitution":offset_current_substitution}
+								i += 1
+						else:
+							if namespace != {}:
+								for child in row.findall("{"+namespace[""]+"}"+match, namespace):
+									if re.search("^[\s|\t]*$", child.text) is None:
+										new_string = temp_list[i]["string"][:start + temp_list[i]["offset_current_substitution"]] + encode_char(child.text.strip()) + temp_list[i]["string"][ end + temp_list[i]["offset_current_substitution"]:]
+										offset_current_substitution = temp_list[i]["offset_current_substitution"] + len(encode_char(child.text.strip())) - (end - start)
+										temp_list[i] = {"string":new_string,"offset_current_substitution":offset_current_substitution}
+										i += 1
+							else:
+								for child in row.findall(match, namespace):
+									if re.search("^[\s|\t]*$", child.text) is None:
+										new_string = temp_list[i]["string"][:start + temp_list[i]["offset_current_substitution"]] + encode_char(child.text.strip()) + temp_list[i]["string"][ end + temp_list[i]["offset_current_substitution"]:]
+										offset_current_substitution = temp_list[i]["offset_current_substitution"] + len(encode_char(child.text.strip())) - (end - start)
+										temp_list[i] = {"string":new_string,"offset_current_substitution":offset_current_substitution}
+										i += 1
+				else:
+					match = reference_match.group(1).split("[")[0]
+					if "@" in match:
+						match,level = match.split("@")[1],match.split("@")[0]
+						if "" == level:
+							if match in row.attrib:
+								if row.attrib[match] is not None:
+									if re.search("^[\s|\t]*$", row.attrib[match]) is None:
+										new_string = new_string[:start + offset_current_substitution] + encode_char(row.attrib[match].strip()) + new_string[ end + offset_current_substitution:]
+										offset_current_substitution = offset_current_substitution + len(row.attrib[match]) - (end - start)
+										temp_list.append({"string":new_string,"offset_current_substitution":offset_current_substitution})
+							else:
+								return None
+						else:
+							if match in iterator:
+								if child.attrib[match] is not None:
+									if re.search("^[\s|\t]*$", row.attrib[match]) is None:
+										new_string = new_string[:start + offset_current_substitution] + encode_char(row.attrib[match].strip()) + new_string[ end + offset_current_substitution:]
+										offset_current_substitution = offset_current_substitution + len(encode_char(row.attrib[match])) - (end - start)
+										temp_list.append({"string":new_string,"offset_current_substitution":offset_current_substitution})
+							else:
+								if ".." == level[:-1]:
+									new_level = parent_map[row]
+									offset_current_substitution = 0
+									new_string = string
+									if new_level.attrib[match] is not None:
+										if re.search("^[\s|\t]*$", new_level.attrib[match]) is None:
+											new_string = new_string[:start + offset_current_substitution] + encode_char(new_level.attrib[match].strip()) + new_string[ end + offset_current_substitution:]
+											offset_current_substitution = offset_current_substitution + len(encode_char(new_level.attrib[match])) - (end - start)
+											temp_list.append({"string":new_string,"offset_current_substitution":offset_current_substitution})
+								else:
+									for child in row.findall(level[:-1], namespace):
+										offset_current_substitution = 0
+										new_string = string
+										if child.attrib[match] is not None:
+											if re.search("^[\s|\t]*$", child.attrib[match]) is None:
+												new_string = new_string[:start + offset_current_substitution] + encode_char(child.attrib[match].strip()) + new_string[ end + offset_current_substitution:]
+												offset_current_substitution = offset_current_substitution + len(encode_char(child.attrib[match])) - (end - start)
+												temp_list.append({"string":new_string,"offset_current_substitution":offset_current_substitution})
+
+					else:
+						if match in iterator:
+							if re.search("^[\s|\t]*$", row.text) is None:
+								new_string = new_string[:start + offset_current_substitution] + encode_char(row.text.strip()) + new_string[ end + offset_current_substitution:]
+								offset_current_substitution = offset_current_substitution + len(encode_char(row.text.strip())) - (end - start)
+								temp_list.append({"string":new_string,"offset_current_substitution":offset_current_substitution})
+						else:
+							if "{" in match:
+								match = match.replace("{","")
+								match = match.replace("\\","")
+								match = match.replace(" ","")
+							for child in row.findall(match, namespace):
+								offset_current_substitution = 0
+								new_string = string
+								if re.search("^[\s|\t]*$", child.text) is None:
+									new_string = new_string[:start + offset_current_substitution] + encode_char(child.text.strip()) + new_string[ end + offset_current_substitution:]
+									offset_current_substitution = offset_current_substitution + len(encode_char(child.text.strip())) - (end - start)
+									if "\\" in new_string:
+										new_string = new_string.replace("\\", "")
+										count = new_string.count("}")
+										i = 0
+										new_string = " " + new_string
+										while i < count:
+											new_string = "{" + new_string
+											i += 1
+									temp_list.append({"string":new_string,"offset_current_substitution":offset_current_substitution})
+
+				new_string = new_string.replace("\\","")
+		elif pattern == ".+":
+			match = reference_match.group(0)
+			string_list = []
+			if "@" in match:
+				match,level = match.split("@")[1],match.split("@")[0]
+				if match in iterator:
+					if row.attrib:
+						if row.attrib[match] is not None:
+							if re.search("^[\s|\t]*$", row.attrib[match]) is None:
+								new_string = new_string[:start + offset_current_substitution] + "\"" + row.attrib[match].strip() + "\"" + new_string[ end + offset_current_substitution:]
+								offset_current_substitution = offset_current_substitution + len(row.attrib[match]) - (end - start)
+								string_list.append(new_string)
+				else:
+					if ".." == level[:-1]:
+						new_level = parent_map[row]
+						offset_current_substitution = 0
+						new_string = string
+						if new_level.attrib:
+							if new_level.attrib[match] is not None:
+								if re.search("^[\s|\t]*$", new_level.attrib[match]) is None:
+									new_string = new_string[:start + offset_current_substitution] + "\"" + new_level.attrib[match].strip() + "\"" + new_string[ end + offset_current_substitution:]
+									offset_current_substitution = offset_current_substitution + len(new_level.attrib[match]) - (end - start)
+									string_list.append(new_string)
+					else:
+						if level == "":
+							if match in row.attrib:
+								if row.attrib[match] is not None:
+									if re.search("^[\s|\t]*$", row.attrib[match]) is None:
+										new_string = new_string[:start + offset_current_substitution] + "\"" + row.attrib[match].strip() + "\"" + new_string[ end + offset_current_substitution:]
+										offset_current_substitution = offset_current_substitution + len(row.attrib[match].strip()) - (end - start)
+										string_list.append(new_string)
+									else:
+										return None
+							else:
+								return None
+						else:
+							for child in row.findall(level[:-1], namespace):
+								offset_current_substitution = 0
+								new_string = string
+								if child.attrib:
+									if match in child.attrib:
+										if child.attrib[match] is not None:
+											if re.search("^[\s|\t]*$", child.attrib[match]) is None:
+												new_string = new_string[:start + offset_current_substitution] + "\"" + child.attrib[match].strip() + "\"" + new_string[ end + offset_current_substitution:]
+												offset_current_substitution = offset_current_substitution + len(child.attrib[match]) - (end - start)
+												string_list.append(new_string)
+			else:
+				if "/text()" in match:
+					match = match.replace("/text()","")
+				if match in iterator:
+					if re.search("^[\s|\t]*$", row.text) is None:
+						new_string = new_string[:start + offset_current_substitution] + "\"" + row.text.strip() + "\"" + new_string[ end + offset_current_substitution:]
+						offset_current_substitution = offset_current_substitution + len(row.text.strip()) - (end - start)
+						string_list.append(new_string)
+				else:
+					for child in row.findall(match, namespace):
+						offset_current_substitution = 0
+						new_string = string
+						if re.search("^[\s|\t]*$", child.text) is None:
+							new_string = new_string[:start + offset_current_substitution] + "\"" + child.text.strip() + "\"" + new_string[ end + offset_current_substitution:]
+							offset_current_substitution = offset_current_substitution + len(child.text.strip()) - (end - start)
+							string_list.append(new_string)
+			return string_list
+		else:
+			print("Invalid pattern")
+			print("Aborting...")
+			sys.exit(1)
+
+	string_list = []
+	if temp_list:
+		for row in temp_list:
+			string_list.append(row["string"])
+	if string_list:
+		return string_list
+
+	return new_string
+
+def string_substitution(string, pattern, row, term, ignore, iterator):
+
+	"""
+	(Private function, not accessible from outside this package)
+
+	Takes a string and a pattern, matches the pattern against the string and perform the substitution
+	in the string from the respective value in the row.
+
+	Parameters
+	----------
+	string : string
+		String to be matched
+	triples_map_list : string
+		Pattern containing a regular expression to match
+	row : dictionary
+		Dictionary with JSON headers as keys and fields of the row as values
+
+	Returns
+	-------
+	A string with the respective substitution if the element to be subtitued is not invalid
+	(i.e.: empty string, string with just spaces, just tabs or a combination of both), otherwise
+	returns None
+	"""
+	template_references = re.finditer(pattern, string)
+	new_string = string
+	offset_current_substitution = 0
+	if iterator != "None":
+		if iterator != "$.[*]":
+			temp_keys = iterator.split(".")
+			for tp in temp_keys:
+				if "$" != tp and tp in row:
+					if "[*]" in tp:
+						row = row[tp.split("[*]")[0]]
+					else:
+						row = row[tp]
+				elif  tp == "":
+					if len(row.keys()) == 1:
+						while list(row.keys())[0] not in temp_keys:
+							row = row[list(row.keys())[0]]
+							if isinstance(row,list):
+								break
+	for reference_match in template_references:
+		start, end = reference_match.span()[0], reference_match.span()[1]
+		if pattern == "{(.+?)}":
+			no_match = True
+			if "]." in reference_match.group(1):
+				temp = reference_match.group(1).split("].")
+				match = temp[1]
+				condition = temp[0].split("[")
+				temp_value = row[condition[0]]
+				if "==" in condition[1]:
+					temp_condition = condition[1][2:-1].split("==")
+					iterators = temp_condition[0].split(".")
+					if isinstance(temp_value,list):
+						for tv in temp_value:
+							t_v = tv
+							for cond in iterators[:-1]:
+								if cond != "@":
+									t_v = t_v[cond]
+							if temp_condition[1][1:-1] == t_v[iterators[-1]]:
+								row = t_v
+								no_match = False
+					else:
+						for cond in iterators[-1]:
+							if cond != "@":
+								temp_value = temp_value[cond]
+						if temp_condition[1][1:-1] == temp_value[iterators[-1]]:
+							row = temp_value
+							no_match = False
+				elif "!=" in condition[1]:
+					temp_condition = condition[1][2:-1].split("!=")
+					iterators = temp_condition[0].split(".")
+					match = iterators[-1]
+					if isinstance(temp_value,list):
+						for tv in temp_value:
+							for cond in iterators[-1]:
+								if cond != "@":
+									temp_value = temp_value[cond]
+							if temp_condition[1][1:-1] != temp_value[iterators[-1]]:
+								row = t_v
+								no_match = False
+					else:
+						for cond in iterators[-1]:
+							if cond != "@":
+								temp_value = temp_value[cond]
+						if temp_condition[1][1:-1] != temp_value[iterators[-1]]:
+							row = temp_value
+							no_match = False
+				if no_match:
+					return None
+			else:
+				match = reference_match.group(1).split("[")[0]
+			if "\\" in match:
+				temp = match.split("{")
+				match = temp[len(temp)-1]
+			if "." in match:
+				if match not in row.keys():
+					temp_keys = match.split(".")
+					match = temp_keys[len(temp_keys) - 1]
+					for tp in temp_keys[:-1]:
+						if tp in row:
+							row = row[tp]
+						else:
+							return None
+			if row == None:
+				return None
+			if match in row.keys():
+				if row[match] != None and row[match] != "nan" and row[match] != "N/A" and row[match] != "None" and row[match] != "NULL":
+					if (type(row[match]).__name__) != "str" and row[match] != None:
+						if (type(row[match]).__name__) == "float":
+							row[match] = repr(row[match])
+						else:
+							row[match] = str(row[match])
+					else:
+						if re.match(r'^-?\d+(?:\.\d+)$', row[match]) is not None:
+							row[match] = repr(float(row[match]))
+					if isinstance(row[match],dict):
+						print("The key " + match + " has a Json structure as a value.\n")
+						print("The index needs to be indicated.\n")
+						return None
+					else:
+						if re.search("^[\s|\t]*$", row[match]) is None:
+							value = row[match]
+							if "http" not in value and "http" in new_string[:start + offset_current_substitution]:
+								value = encode_char(value)
+							new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+							offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+							if "\\" in new_string:
+								new_string = new_string.replace("\\", "")
+								count = new_string.count("}")
+								i = 0
+								while i < count:
+									new_string = "{" + new_string
+									i += 1
+								new_string = new_string.replace(" ", "")
+
+						else:
+							return None
+				else:
+					return None
+			else:
+				print('The attribute ' + match + ' is missing.')
+				if ignore == "yes":
+					return None
+				print('Aborting...')
+				sys.exit(1)
+		elif pattern == ".+":
+			match = reference_match.group(0)
+			if "." in match:
+				if match not in row.keys():
+					temp_keys = match.split(".")
+					match = temp_keys[len(temp_keys) - 1]
+					for tp in temp_keys[:-1]:
+						if tp in row:
+							row = row[tp]
+						else:
+							return None
+			if row == None:
+				return None
+			if match in row.keys():
+				if (type(row[match]).__name__) != "str" and row[match] != None:
+					if (type(row[match]).__name__) == "float":
+						row[match] = repr(row[match])
+					else:
+						row[match] = str(row[match])
+				if isinstance(row[match],dict):
+					print("The key " + match + " has a Json structure as a value.\n")
+					print("The index needs to be indicated.\n")
+					return None
+				else:
+					if row[match] != None and row[match] != "nan" and row[match] != "N/A" and row[match] != "None" and row[match] != "NULL":
+						if re.search("^[\s|\t]*$", row[match]) is None:
+							new_string = new_string[:start] + row[match].strip().replace("\"", "'") + new_string[end:]
+							new_string = "\"" + new_string + "\"" if new_string[0] != "\"" and new_string[-1] != "\"" else new_string
+						else:
+							return None
+					else:
+						return None
+			else:
+				print('The attribute ' + match + ' is missing.')
+				if ignore == "yes":
+					return None
+				print('Aborting...')
+				sys.exit(1)
+		else:
+			print("Invalid pattern")
+			if ignore == "yes":
+				return None
+			print("Aborting...")
+			sys.exit(1)
+	return new_string
+
+def string_substitution_array(string, pattern, row, row_headers, term, ignore):
+
+	"""
+	(Private function, not accessible from outside this package)
+	Takes a string and a pattern, matches the pattern against the string and perform the substitution
+	in the string from the respective value in the row.
+	Parameters
+	----------
+	string : string
+		String to be matched
+	triples_map_list : string
+		Pattern containing a regular expression to match
+	row : dictionary
+		Dictionary with CSV headers as keys and fields of the row as values
+	Returns
+	-------
+	A string with the respective substitution if the element to be subtitued is not invalid
+	(i.e.: empty string, string with just spaces, just tabs or a combination of both), otherwise
+	returns None
+	"""
+
+	template_references = re.finditer(pattern, string)
+	new_string = string
+	offset_current_substitution = 0
+	for reference_match in template_references:
+		start, end = reference_match.span()[0], reference_match.span()[1]
+		if pattern == "{(.+?)}":
+			match = reference_match.group(1).split("[")[0]
+			if "\\" in match:
+				temp = match.split("{")
+				match = temp[len(temp)-1]
+			if match in row_headers:
+				bytes_values = ""
+				if row[row_headers.index(match)] != None:
+					value = row[row_headers.index(match)]
+					if (type(value).__name__) != "str":
+						if (type(value).__name__) != "float":
+							if (type(value).__name__) == "bytes":
+								bytes_values = "yes"
+							value = str(value)
+						else:
+							value = str(math.ceil(value))
+					else:
+						if re.match(r'^-?\d+(?:\.\d+)$', value) is not None:
+							value = str(math.ceil(float(value)))
+					if "b\'" == value[0:2] and "\'" == value[len(value)-1]:
+						value = value.replace("b\'","")
+						value = value.replace("\'","")
+					if re.search("^[\s|\t]*$", value) is None:
+						if value == "-":
+							value = "UnKnown"
+						if "http" not in value and bytes_values == "":
+							value = encode_char(value)
+						new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+						offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+						if "\\" in new_string:
+							new_string = new_string.replace("\\", "")
+							count = new_string.count("}")
+							i = 0
+							new_string = " " + new_string
+							while i < count:
+								new_string = "{" + new_string
+								i += 1
+
+					else:
+						return None
+				else:
+						return None
+			else:
+				print('The attribute ' + match + ' is missing.')
+				if ignore == "yes":
+					return None
+				print('Aborting...')
+				sys.exit(1)
+				return
+		elif pattern == ".+":
+			match = reference_match.group(0)
+			if match in row_headers:
+				if row[row_headers.index(match)] is not None:
+					value = row[row_headers.index(match)]
+					if type(value).__name__ == "date":
+						value = value.strftime("%Y-%m-%d")
+					elif type(value).__name__ == "datetime":
+						value = value.strftime("%Y-%m-%d T%H:%M:%S")
+					elif type(value).__name__ != "str":
+						value = str(value)
+					elif type(value).__name__ != "boolean":
+						value = str(value)
+					if "b\'" == value[0:2] and "\'" == value[len(value)-1]:
+						value = value.replace("b\'","")
+						value = value.replace("\'","")
+					if re.search("^[\s|\t]*$", str(value)) is None:
+						new_string = new_string[:start] + str(value).strip().replace("\"", "'") + new_string[end:]
+						new_string = "\"" + new_string + "\"" if new_string[0] != "\"" and new_string[-1] != "\"" else new_string
+					else:
+						return None
+				else:
+					return None
+			else:
+				print('The attribute ' + match + ' is missing.')
+				if ignore == "yes":
+					return None
+				print('Aborting...')
+				sys.exit(1)
+				return
+		else:
+			print("Invalid pattern")
+			if ignore == "yes":
+				return None
+			print("Aborting...")
+			sys.exit(1)
+
+	return new_string
+
+
+def string_substitution_postgres(string, pattern, row, row_headers, term, ignore):
+
+	"""
+	(Private function, not accessible from outside this package)
+	Takes a string and a pattern, matches the pattern against the string and perform the substitution
+	in the string from the respective value in the row.
+	Parameters
+	----------
+	string : string
+		String to be matched
+	triples_map_list : string
+		Pattern containing a regular expression to match
+	row : dictionary
+		Dictionary with CSV headers as keys and fields of the row as values
+	Returns
+	-------
+	A string with the respective substitution if the element to be subtitued is not invalid
+	(i.e.: empty string, string with just spaces, just tabs or a combination of both), otherwise
+	returns None
+	"""
+
+	template_references = re.finditer(pattern, string)
+	new_string = string
+	offset_current_substitution = 0
+	for reference_match in template_references:
+		start, end = reference_match.span()[0], reference_match.span()[1]
+		if pattern == "{(.+?)}":
+			match = reference_match.group(1).split("[")[0]
+			match = match.lower()
+			if match in row_headers:
+				if row[row_headers.index(match)] != None:
+					value = row[row_headers.index(match)]
+					if (type(value).__name__) != "str":
+						if (type(value).__name__) != "float":
+							value = str(value)
+						else:
+							value = str(math.ceil(value))
+					else:
+						if re.match(r'^-?\d+(?:\.\d+)$', value) is not None:
+							value = str(math.ceil(float(value)))
+					if re.search("^[\s|\t]*$", value) is None:
+						if "http" not in value:
+							value = encode_char(value)
+						new_string = new_string[:start + offset_current_substitution] + value.strip() + new_string[ end + offset_current_substitution:]
+						offset_current_substitution = offset_current_substitution + len(value) - (end - start)
+					else:
+						return None
+				else:
+					return None
+			else:
+				print('The attribute ' + match + ' is missing.')
+				if ignore == "yes":
+					return None
+				print('Aborting...')
+				sys.exit(1)
+				return
+		elif pattern == ".+":
+			match = reference_match.group(0)
+			if match in row_headers:
+				if row[row_headers.index(match)] is not None:
+					value = row[row_headers.index(match)]
+					if type(value) is int or ((type(value).__name__) == "float"):
+						value = str(value)
+					elif type(value).__name__ == "date":
+						value = value.strftime("%Y-%m-%d")
+					elif type(value).__name__ == "datetime":
+						value = value.strftime("%Y-%m-%d T%H:%M:%S")
+					else:
+						value = str(value)
+
+					if re.search("^[\s|\t]*$", value) is None:
+						new_string = new_string[:start] + value.strip().replace("\"", "'") + new_string[end:]
+						new_string = "\"" + new_string + "\"" if new_string[0] != "\"" and new_string[-1] != "\"" else new_string
+					else:
+						return None
+				else:
+					return None
+			else:
+				print('The attribute ' + match + ' is missing.')
+				if ignore == "yes":
+					return None
+				print('Aborting...')
+				sys.exit(1)
+				return
+		else:
+			print("Invalid pattern")
+			if ignore == "yes":
+				return None
+			print("Aborting...")
+			sys.exit(1)
+
+	return new_string
+
+def shared_items(dic1, dic2):
+	i = 0
+	for key in dic1.keys():
+		if dic2[key] is not None:
+			if dic1[key] == dic2[key]:
+				i += 1
+	return i
+
+
+def dictionary_maker_array(row, row_headers):
+	dic = {}
+	for key in row_headers:
+		dic[key] = row[row_headers.index(key)]
+	return dic
+
+
+def dictionary_maker_xml(row):
+	dic = {}
+	for child in row:
+		if len(child) != 0:
+			for c in child:
+				for attr in c:
+					if attr in dic:
+						dic[attr].append(child.attrib[attr])
+					else:	
+						dic[attr] = [child.attrib[attr]]
+		else:
+			if child in dic:
+				dic[child].append(child.text)
+			else:	
+				dic[child] = [child.text]
+	return dic
+
+def dictionary_maker(row):
+	dic = {}
+	for key, value in row.items():
+		dic[key] = value
+	return dic
+
+def extract_name(string):
+	name = ""
+	i = len(string)
+	while 0 < i:
+		name = string[i-1] + name
+		i -= 1
+		if string[i-1] == "/":
+			break
+	name = name.split(".")[0]
+	return name
+
+def count_characters(string):
+	count = 0
+	for s in string:
+		if s == "{":
+			count += 1
+	return count
+
+def clean_URL_suffix(URL_suffix):
+	cleaned_URL=""
+	if "http" in URL_suffix:
+		return URL_suffix
+
+	for c in URL_suffix:
+		if c.isalpha() or c.isnumeric() or c =='_' or c=='-' or c == '(' or c == ')':
+			cleaned_URL= cleaned_URL+c
+		if c == "/" or c == "\\":
+			cleaned_URL = cleaned_URL+"-"
+
+	return cleaned_URL
+
+def string_separetion(string):
+	if "\\{" in string:
+		return "", ""
+	elif ("{" in string) and ("[" in string):
+		prefix = string.split("{")[0]
+		condition = string.split("{")[1].split("}")[0]
+		postfix = string.split("{")[1].split("}")[1]
+		field = prefix + "*" + postfix
+	elif "[" in string:
+		return string, string
+	else:
+		return string, ""
+	return string, condition
+
+def condition_separetor(string):
+	condition_field = string.split("[")
+	field = condition_field[1][:len(condition_field[1])-1].split("=")[0]
+	value = condition_field[1][:len(condition_field[1])-1].split("=")[1]
+	return field, value
+
+def remove_duplicate_po(po_list):
+	unique_list = []
+	for po in po_list:
+		if unique_list == []:
+			unique_list.append(po)
+		else:
+			for po_unique in unique_list:
+				if po.predicate_map.value == po_unique.predicate_map.value and po.object_map.value == po_unique.object_map.value:
+					if  po.object_map.language != po_unique.object_map.language or po.object_map.language_map != po_unique.object_map.language_map:
+						unique_list.append(po)
+					elif  po.object_map.datatype != po_unique.object_map.datatype or po.object_map.datatype_map != po_unique.object_map.datatype_map:
+						unique_list.append(po)
+					else:
+						break
+			else:
+				unique_list.append(po)
+	return unique_list

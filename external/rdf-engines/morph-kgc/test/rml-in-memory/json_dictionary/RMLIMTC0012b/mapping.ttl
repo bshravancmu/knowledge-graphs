@@ -1,0 +1,72 @@
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix ex: <http://example.com/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix rml: <http://w3id.org/rml/> .
+@prefix sd: <https://w3id.org/okn/o/sd#>.
+@prefix kg4di: <https://w3id.org/kg4di/definedBy>.
+@base <http://example.com/base/> .
+
+<TriplesMap1>
+  a rml:TriplesMap;
+
+  rml:logicalSource [
+    rml:source [
+			a sd:DatasetSpecification;
+			sd:name "variable2";
+			sd:hasDataTransformation [
+				sd:hasSourceCode [
+					sd:programmingLanguage "Python3.9";
+				];
+			];
+		];
+		rml:referenceFormulation rml:Dictionary;
+    rml:iterator "$.persons[*]"
+  ];
+
+  rml:subjectMap [
+    rml:template "{fname}{lname}";
+    rml:termType rml:BlankNode ;
+  ];
+
+  rml:predicateObjectMap [
+    rml:predicate foaf:name ;
+    rml:objectMap [
+      rml:template "{fname} {lname}";
+      rml:termType rml:Literal ;
+    ]
+  ];
+  .
+
+<TriplesMap2>
+  a rml:TriplesMap;
+
+  rml:logicalSource [
+    rml:source [
+			a sd:DatasetSpecification;
+			sd:name "variable1";
+			sd:hasDataTransformation [
+				sd:hasSourceCode [
+					sd:programmingLanguage "Python3.9";
+				];
+			];
+		];
+		rml:referenceFormulation rml:Dictionary;
+    rml:iterator "$.lives[*]"
+];
+
+  rml:subjectMap [
+    rml:template "{fname}{lname}";
+    rml:termType rml:BlankNode;
+  ];
+
+  rml:predicateObjectMap
+  [
+    rml:predicate	ex:city ;
+    rml:objectMap    [
+      rml:reference "city";
+    ]
+];
+.
+
+rml:Dictionary a rml:ReferenceFormulation;
+	kg4di:definedBy "Python".
