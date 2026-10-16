@@ -10,7 +10,3 @@
 	path = external/orchestration/dagster
 	url = https://github.com/dagster-io/dagster.git
 	branch = master
-[submodule "external/profiling/ydata-profiling"]
-	path = external/profiling/ydata-profiling
-	url = https://github.com/ydataai/ydata-profiling.git
-	branch = develop
