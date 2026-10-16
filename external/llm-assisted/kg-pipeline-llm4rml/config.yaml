@@ -1,0 +1,74 @@
+#
+# config.yaml for kg-pipeline
+#
+
+# openai (gpt) specific config
+openai:
+  api-key: # or ENV('OPENAI_API_KEY') 
+
+# anthropic (claude) specific config
+anthropic:
+  api-key: # or ENV('ANTHROPIC_API_KEY')
+
+# google (gemini) specific config
+gcloud:
+  api-key: # or ENV('GOOGLE_API_KEY')
+  project-id: shining-lamp-416315
+  project-location: us-central1
+
+directories:
+  snippets: target/data_snippets/
+  ontology: kg_tests/resources/llm4rml/target_ontology.ttl
+
+# configuration of external tools
+bindings:
+  - id: rml-mapper-java
+    description: Java RMLMapper
+    command: 'java -jar ./tools/rmlmapper.jar'
+  - id: limes
+    description: LIMES
+    command: 'java -jar ./tools/limes.jar'
+
+# TODO position llm_models and llm_tasks under llm
+# association of LLM models and implementations
+llm_models:
+  - id: gpt-3.5-turbo
+    class: OpenAIModel
+  - id: gpt-3.5-turbo-instruct
+    class: OpenAIModel
+  - id: gpt-4
+    class: OpenAIModel
+  - id: gpt-4-0125-preview
+    class: OpenAIModel
+  - id: claude-2.1
+    class: AnthropicModel
+  - id: claude-2.0
+    class: AnthropicModel
+  - id: claude-3-opus-20240229
+    class: AnthropicModel
+  - id: gemini-pro
+    class: GoogleModel
+  - id: gemini-ultra
+    class: GoogleModel
+  - id: test-rml
+    class: TestModel
+
+# LLM specific task config
+llm_tasks:
+  - id: rml-generation
+    binding: rml-mapper-java # the binding defined above
+    prompts: kg_tests/resources/llm4rml/prompts-rml.yaml
+    prompt_data:
+      - id: TGT-ONTO
+        file: kg_tests/resources/llm4rml/target_ontology_parsed.ttl
+      - id: RML-ONTO
+        file: kg_tests/resources/llm4rml/rml-ontology_parsed.ttl
+      - id: RDFLIB_ERROR_MESSAGE
+        function: TODO
+
+# logging and metadata store
+journal:
+  db:
+    url: mongodb://localhost:10000/db
+
+# NOTES: List of OEPNAI AI parameter

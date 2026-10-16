@@ -1,0 +1,163 @@
+column,mean_similarity,LLM,method
+CSV Column,0.0564854415262537,mixtral,bert
+Datatype,0.0684343434343434,mixtral,bert
+Entity Class,0.2191759446693657,mixtral,bert
+Function Name,0.0037037037037037,mixtral,bert
+Function Output,0.0008381689232753,mixtral,bert
+Join Condition,0.0056864324306184,mixtral,bert
+Ontology Property,0.1769548117431645,mixtral,bert
+Rel. Entity Class,0.1053073084323084,mixtral,bert
+Subject Generation,0.0872496493329336,mixtral,bert
+CSV Column,0.1721939046867191,mixtral,bert_lexical
+Datatype,0.1553256804567007,mixtral,bert_lexical
+Entity Class,0.2402097171948601,mixtral,bert_lexical
+Function Name,0.0661168007800976,mixtral,bert_lexical
+Function Output,0.1109968016544977,mixtral,bert_lexical
+Join Condition,0.1520234785974026,mixtral,bert_lexical
+Ontology Property,0.164908471579353,mixtral,bert_lexical
+Rel. Entity Class,0.1312007953723271,mixtral,bert_lexical
+Subject Generation,0.206549218421181,mixtral,bert_lexical
+CSV Column,0.1721939046867191,mixtral,levenshtein
+Datatype,0.1553256804567007,mixtral,levenshtein
+Entity Class,0.2402097171948601,mixtral,levenshtein
+Function Name,0.0661168007800976,mixtral,levenshtein
+Function Output,0.1109968016544977,mixtral,levenshtein
+Join Condition,0.1520234785974026,mixtral,levenshtein
+Ontology Property,0.164908471579353,mixtral,levenshtein
+Rel. Entity Class,0.1312007953723271,mixtral,levenshtein
+Subject Generation,0.206549218421181,mixtral,levenshtein
+CSV Column,0.2684009115522106,gemini,levenshtein
+Datatype,0.2414202045718276,gemini,levenshtein
+Entity Class,0.307812744875749,gemini,levenshtein
+Function Name,0.0773087330162525,gemini,levenshtein
+Function Output,0.1765078218584811,gemini,levenshtein
+Join Condition,0.1489695657527557,gemini,levenshtein
+Ontology Property,0.2882120998576283,gemini,levenshtein
+Rel. Entity Class,0.2395402261809933,gemini,levenshtein
+Subject Generation,0.2339712639649709,gemini,levenshtein
+CSV Column,0.184203434901751,gemini,bert
+Datatype,0.1949074074074074,gemini,bert
+Entity Class,0.3301934322986954,gemini,bert
+Function Name,0.0222222222222222,gemini,bert
+Function Output,0.0092771688516369,gemini,bert
+Join Condition,0.0206171881838683,gemini,bert
+Ontology Property,0.2841595020384921,gemini,bert
+Rel. Entity Class,0.1244796869796869,gemini,bert
+Subject Generation,0.1384820088777295,gemini,bert
+CSV Column,0.2684009115522106,gemini,bert_lexical
+Datatype,0.2414202045718276,gemini,bert_lexical
+Entity Class,0.307812744875749,gemini,bert_lexical
+Function Name,0.0773087330162525,gemini,bert_lexical
+Function Output,0.1765078218584811,gemini,bert_lexical
+Join Condition,0.1489695657527557,gemini,bert_lexical
+Ontology Property,0.2882120998576283,gemini,bert_lexical
+Rel. Entity Class,0.2395402261809933,gemini,bert_lexical
+Subject Generation,0.2339712639649709,gemini,bert_lexical
+CSV Column,0.2869988944381476,o3,bert_lexical
+Datatype,0.3008013654189805,o3,bert_lexical
+Entity Class,0.2663402390976747,o3,bert_lexical
+Function Name,0.1320527814880565,o3,bert_lexical
+Function Output,0.116406394727528,o3,bert_lexical
+Join Condition,0.1869405730228338,o3,bert_lexical
+Ontology Property,0.3107859640071789,o3,bert_lexical
+Rel. Entity Class,0.1922440219980975,o3,bert_lexical
+Subject Generation,0.1737887173891067,o3,bert_lexical
+CSV Column,0.2869988944381476,o3,levenshtein
+Datatype,0.3008013654189805,o3,levenshtein
+Entity Class,0.2663402390976747,o3,levenshtein
+Function Name,0.1320527814880565,o3,levenshtein
+Function Output,0.116406394727528,o3,levenshtein
+Join Condition,0.1869405730228338,o3,levenshtein
+Ontology Property,0.3107859640071789,o3,levenshtein
+Rel. Entity Class,0.1922440219980975,o3,levenshtein
+Subject Generation,0.1737887173891067,o3,levenshtein
+CSV Column,0.1225193879794527,o3,bert
+Datatype,0.2296296296296296,o3,bert
+Entity Class,0.2618787201217541,o3,bert
+Function Name,0.0106172839506172,o3,bert
+Function Output,0.0019019987105093,o3,bert
+Join Condition,0.0307289883751652,o3,bert
+Ontology Property,0.2775478077196877,o3,bert
+Rel. Entity Class,0.1383884248467581,o3,bert
+Subject Generation,0.1129547200310653,o3,bert
+CSV Column,0.2655896042784055,deepseek,bert_lexical
+Datatype,0.652000752765508,deepseek,bert_lexical
+Entity Class,0.3053214301665624,deepseek,bert_lexical
+Function Name,0.0393062947938839,deepseek,bert_lexical
+Function Output,0.1302483039908111,deepseek,bert_lexical
+Join Condition,0.2298126360697168,deepseek,bert_lexical
+Ontology Property,0.3182216842348377,deepseek,bert_lexical
+Rel. Entity Class,0.1446278135602673,deepseek,bert_lexical
+Subject Generation,0.271107401450475,deepseek,bert_lexical
+CSV Column,0.1521701545042073,deepseek,bert
+Datatype,0.6507936507936508,deepseek,bert
+Entity Class,0.2406437008410692,deepseek,bert
+Function Name,0.0111111111111111,deepseek,bert
+Function Output,0.0043520309477756,deepseek,bert
+Join Condition,0.0431074481550869,deepseek,bert
+Ontology Property,0.2778422589197116,deepseek,bert
+Rel. Entity Class,0.1046245421245421,deepseek,bert
+Subject Generation,0.1287957658029915,deepseek,bert
+CSV Column,0.2655896042784055,deepseek,levenshtein
+Datatype,0.652000752765508,deepseek,levenshtein
+Entity Class,0.3053214301665624,deepseek,levenshtein
+Function Name,0.0393062947938839,deepseek,levenshtein
+Function Output,0.1302483039908111,deepseek,levenshtein
+Join Condition,0.2298126360697168,deepseek,levenshtein
+Ontology Property,0.3182216842348377,deepseek,levenshtein
+Rel. Entity Class,0.1446278135602673,deepseek,levenshtein
+Subject Generation,0.271107401450475,deepseek,levenshtein
+CSV Column,0.3573950158343428,gpt4o,levenshtein
+Datatype,0.3064752444408085,gpt4o,levenshtein
+Entity Class,0.289182620746867,gpt4o,levenshtein
+Function Name,0.0723418661289744,gpt4o,levenshtein
+Function Output,0.0937817263934347,gpt4o,levenshtein
+Join Condition,0.1924712656893663,gpt4o,levenshtein
+Ontology Property,0.2797065583742642,gpt4o,levenshtein
+Rel. Entity Class,0.1377919340764896,gpt4o,levenshtein
+Subject Generation,0.1728410344432901,gpt4o,levenshtein
+CSV Column,0.261002172869715,gpt4o,bert
+Datatype,0.2333333333333333,gpt4o,bert
+Entity Class,0.3037510234513158,gpt4o,bert
+Function Name,0.0044444444444444,gpt4o,bert
+Function Output,0.0002578981302385,gpt4o,bert
+Join Condition,0.0256074968235271,gpt4o,bert
+Ontology Property,0.2756441188236701,gpt4o,bert
+Rel. Entity Class,0.1092015423911975,gpt4o,bert
+Subject Generation,0.0967919684067771,gpt4o,bert
+CSV Column,0.3573950158343428,gpt4o,bert_lexical
+Datatype,0.3064752444408085,gpt4o,bert_lexical
+Entity Class,0.289182620746867,gpt4o,bert_lexical
+Function Name,0.0723418661289744,gpt4o,bert_lexical
+Function Output,0.0937817263934347,gpt4o,bert_lexical
+Join Condition,0.1924712656893663,gpt4o,bert_lexical
+Ontology Property,0.2797065583742642,gpt4o,bert_lexical
+Rel. Entity Class,0.1377919340764896,gpt4o,bert_lexical
+Subject Generation,0.1728410344432901,gpt4o,bert_lexical
+CSV Column,0.0880795906537946,llama,bert
+Datatype,0.0729437229437229,llama,bert
+Entity Class,0.21972099681078,llama,bert
+Function Name,0.0045454545454545,llama,bert
+Function Output,0.0027401676337846,llama,bert
+Join Condition,0.0432381490817879,llama,bert
+Ontology Property,0.251159121946327,llama,bert
+Rel. Entity Class,0.1337828103701119,llama,bert
+Subject Generation,0.2222429603328332,llama,bert
+CSV Column,0.202651152263085,llama,bert_lexical
+Datatype,0.1718805206318696,llama,bert_lexical
+Entity Class,0.2694251385827859,llama,bert_lexical
+Function Name,0.0404443298776944,llama,bert_lexical
+Function Output,0.1585023031880458,llama,bert_lexical
+Join Condition,0.1642751765471917,llama,bert_lexical
+Ontology Property,0.269241443897287,llama,bert_lexical
+Rel. Entity Class,0.211039884508681,llama,bert_lexical
+Subject Generation,0.272135866060853,llama,bert_lexical
+CSV Column,0.202651152263085,llama,levenshtein
+Datatype,0.1718805206318696,llama,levenshtein
+Entity Class,0.2694251385827859,llama,levenshtein
+Function Name,0.0404443298776944,llama,levenshtein
+Function Output,0.1585023031880458,llama,levenshtein
+Join Condition,0.1642751765471917,llama,levenshtein
+Ontology Property,0.269241443897287,llama,levenshtein
+Rel. Entity Class,0.211039884508681,llama,levenshtein
+Subject Generation,0.272135866060853,llama,levenshtein

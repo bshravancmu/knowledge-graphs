@@ -1,0 +1,12 @@
+| CSV Column           | Ontology Property | Entity Class | Rel. Entity Class | Subject Generation    | Join | Datatype | Function Name | Function Output |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| entry/id | :hasID | :Procedure | :Identifier | generate_procurement_uri(entry/id) |  | xsd:anyURI | generate_procurement_uri | http://data.example.org/procurement/561770M |
+| entry/cac-place-ext:ContractFolderStatus/cac-place-ext:LocatedContractingParty/cac:Party/cac:PartyIdentification[cbc:ID@schemeName='NIF']/cbc:ID | :hasID | org:Organization | :Identifier | generate_organization_uri(NIF) |  | xsd:string | generate_organization_uri | http://data.example.org/organization/NIF-P0200000H |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProject/cbc:Name | rdfs:label | :Procedure |  | generate_procurement_uri(entry/id) |  | xsd:string |  |  |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProject/cac:BudgetAmount/cbc:EstimatedOverallContractAmount | schema:estimatedCost | :Procedure |  | generate_procurement_uri(entry/id) |  | xsd:decimal |  |  |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProject/cac:RequiredCommodityClassification/cbc:ItemClassificationCode | schema:category | :Procedure |  | generate_procurement_uri(entry/id) |  | skos:Concept | map_cpv_to_skos | http://publications.europa.eu/resource/authority/cpv/34136000 |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProjectLot/cbc:ID | :hasID | :Lot | :Identifier | generate_lot_uri(lot_id) |  | xsd:string | generate_lot_uri | http://data.example.org/lot/561770M-1 |
+| entry/cac-place-ext:ContractFolderStatus/cac:ProcurementProjectLot/cac:ProcurementProject/cbc:Name | rdfs:label | :Lot |  | generate_lot_uri(lot_id) |  | xsd:string |  |  |
+| entry/cac-place-ext:ContractFolderStatus/cac:TenderResult/cac:AwardedTenderedProject/cbc:ProcurementProjectLotID | :describesLot | :LotAwardOutcome | :Lot | generate_award_outcome_uri(lot_id) | link using lot_id |  | generate_award_outcome_uri | http://data.example.org/award/561770M-1 |
+| entry/cac-place-ext:ContractFolderStatus/cac:TenderResult/cbc:AwardDate | :hasAwardDecisionDate | :LotAwardOutcome |  | generate_award_outcome_uri(lot_id) |  | xsd:date |  |  |
+| entry/cac-place-ext:ContractFolderStatus/cac:TenderResult/cbc:ReceivedTenderQuantity | :hasReceivedTenders | :SubmissionStatisticalInformation |  | generate_stat_info_uri(lot_id) |  | xsd:integer |  |  |

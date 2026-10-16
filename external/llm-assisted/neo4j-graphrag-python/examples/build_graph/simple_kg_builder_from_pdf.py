@@ -1,0 +1,74 @@
+"""This example illustrates how to get started easily with the SimpleKGPipeline
+and ingest PDF into a Neo4j Knowledge Graph.
+
+This example assumes a Neo4j db is up and running. Update the credentials below
+if needed.
+
+OPENAI_API_KEY needs to be in the env vars.
+"""
+
+import asyncio
+from pathlib import Path
+
+import neo4j
+from neo4j_graphrag.embeddings import OpenAIEmbeddings
+from neo4j_graphrag.experimental.pipeline.kg_builder import SimpleKGPipeline
+from neo4j_graphrag.experimental.pipeline.pipeline import PipelineResult
+from neo4j_graphrag.llm import LLMInterface
+from neo4j_graphrag.llm import OpenAILLM
+
+# Neo4j db infos
+URI = "neo4j://localhost:7687"
+AUTH = ("neo4j", "password")
+DATABASE = "neo4j"
+
+
+root_dir = Path(__file__).parents[1]
+file_path = root_dir / "data" / "Harry Potter and the Chamber of Secrets Summary.pdf"
+
+
+# Instantiate NodeType and RelationshipType objects. This defines the
+# entities and relations the LLM will be looking for in the text.
+NODE_TYPES = ["Person", "Organization", "Location"]
+RELATIONSHIP_TYPES = ["SITUATED_AT", "INTERACTS", "LED_BY"]
+PATTERNS = [
+    ("Person", "SITUATED_AT", "Location"),
+    ("Person", "INTERACTS", "Person"),
+    ("Organization", "LED_BY", "Person"),
+]
+
+
+async def define_and_run_pipeline(
+    neo4j_driver: neo4j.Driver,
+    llm: LLMInterface,
+) -> PipelineResult:
+    # Create an instance of the SimpleKGPipeline
+    kg_builder = SimpleKGPipeline(
+        llm=llm,
+        driver=neo4j_driver,
+        embedder=OpenAIEmbeddings(),
+        schema={
+            "node_types": NODE_TYPES,
+            "relationship_types": RELATIONSHIP_TYPES,
+            "patterns": PATTERNS,
+        },
+        neo4j_database=DATABASE,
+    )
+    return await kg_builder.run_async(
+        file_path=str(file_path),
+        # optional, add document metadata, each item will
+        # be saved as a property of the Document node
+        # document_metadata={"author": "J. K. Rowling"},
+    )
+
+
+async def main() -> PipelineResult:
+    with neo4j.GraphDatabase.driver(URI, auth=AUTH) as driver:
+        async with OpenAILLM(model_name="gpt-5") as llm:
+            res = await define_and_run_pipeline(driver, llm)
+    return res
+
+
+if __name__ == "__main__":
+    res = asyncio.run(main())
+    print(res)

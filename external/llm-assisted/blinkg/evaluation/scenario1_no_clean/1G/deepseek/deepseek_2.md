@@ -1,0 +1,7 @@
+| CSV Column            | Ontology Property | Entity Class | Related Entity Class | Subject Generation                        | Join                     | Datatype          | Language Annotations |
+|-----------------------|-------------------|--------------|----------------------|-------------------------------------------|-----------------------------------|-------------------|----------------------|
+| `fname` (persons.csv) | `ex:firstname`    | `ex:Person`  |                      | Concatenate `fname` + `lname` (e.g., `ex:Bob_Smith`) |                                   | `xsd:string`      |                      |
+| `lname` (persons.csv) | `ex:lastname`     | `ex:Person`  |                      | Concatenate `fname` + `lname`             |                                   | `xsd:string`      |                      |
+| `amount` (persons.csv)| `ex:owes`         | `ex:Person`  |                      | Concatenate `fname` + `lname`             |                                   | `xsd:double`      |                      |
+| `city` (lives.csv)    | `ex:cityname`     | `ex:City`    |                      | Generate from `city` value (e.g., `ex:London`) |                                   | `xsd:langString`  | `@en`                |
+| `city` (lives.csv)    | `ex:lives`        | `ex:Person`  | `ex:City`            | Concatenate `fname` + `lname` (Person URI)| Match to `ex:City` URI from `city` | (ObjectProperty)  |                      |

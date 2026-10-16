@@ -1,0 +1,669 @@
+# @neo4j/neo4j-graphrag-python
+
+## Next
+
+### Changed
+
+- `SchemaExtractionTemplate` now tells the model to define each node type once. A node label is global and carries one property and constraint set.
+- Lockfile now uses CPU-only PyTorch wheels by default: the `sentence-transformers` and `examples` extras resolve `torch` from PyTorch's CPU index instead of PyPI (which on linux x86_64 pulls a ~900MB CUDA wheel plus the ~15-package `nvidia-*-cu12` closure the repo never uses). A new `gpu` extra resolves CUDA torch (`cu126`) instead, for `SentenceTransformerEmbeddings` on GPU. `--all-extras` therefore needs `--no-extra gpu` (CI workflows, tox and docs updated).
+
+### Fixed
+
+- Parquet writes no longer fail when a `LIST` property mixes element types across rows or inside one list (for example `["1998"]` and `[1998]`). `Neo4jGraphParquetFormatter._normalize_column_types` stringifies those elements. Uniform lists and int/float lists are left unchanged, so numeric lists still promote to `list<float32>`. Node and relationship files share this path.
+- Experimental: LLM-auto-generated schemas now reconcile duplicate `node_types` (entries sharing the same label) by merging them into a single type that carries the union of their properties, emitting a warning log. Direct `GraphSchema` construction rejects remaining duplicate node labels with a clear error instead of a last-write-wins index that could report an undefined constraint property. This reflects that Neo4j node labels are global per name.
+- LLM-extracted schemas (`SchemaFromTextExtractor` with or without structured output, `GraphSchema.from_extraction_output` and `validate_extraction_dict_to_graph_schema`) no longer fail with `SchemaValidationError` when the model emits an `EXISTENCE` constraint on a property already covered by a `KEY`, or a `UNIQUENESS` constraint on the same properties as a `KEY`. The redundant constraint is dropped with an info log, since a `KEY` already implies existence and uniqueness. Direct `GraphSchema` construction still rejects these combinations.
+
+## 1.22.0
+
+### Changed
+
+- `SchemaExtractionTemplate` prompt now steers the LLM towards schemas that yield connected graphs: every node type should take part in at least one pattern, patterns should link the node types together, and entities that are only attributes of another entity should become properties rather than standalone node types. The prompt explicitly forbids inventing relationships to force connectivity, so genuinely unrelated subjects may still end up in separate groups. The JSON example in the prompt now also lists the `Company` node type referenced by its `WORKS_FOR` pattern.
+- `neo4j_graphrag.llm` and `neo4j_graphrag.embeddings` now resolve their per-provider classes lazily instead of importing every provider module eagerly. Importing either package no longer pulls in the whole provider-SDK closure — `google.cloud.aiplatform` (via `VertexAILLM`/`VertexAIEmbeddings`), `anthropic`, `boto3` (via Bedrock), `google.genai`, `mistralai`, `cohere`, `openai` and `torch` (via `SentenceTransformerEmbeddings`) — which cost seconds of import time and hundreds of MB of memory for consumers that only use the provider-agnostic base classes. The public import surface is unchanged: `from neo4j_graphrag.llm import OpenAILLM` works exactly as before, `dir()` still lists every export, and a `TYPE_CHECKING` mirror keeps static type checking intact.
+
+### Fixed
+
+- Fixed Parquet output describing relationships whose endpoints referenced nodes that no target existed for, in both cases because a label's sanitized filename stem was treated as the label's identity. Labels sharing a stem — most visibly labels with no ASCII characters at all, which all fall back to `unnamed` — silently overwrote each other in `Neo4jGraphParquetFormatter.format_graph`, and `ParquetWriter` named relationship endpoints after the stem rather than the raw label. Colliding stems now receive a `__2`, `__3`, … suffix and endpoints use the raw label; filenames for labels that do not collide are unchanged.
+
+## 1.21.0
+
+## 1.20.0
+
+### Added
+
+- Added `StageObserver` and `LoggingStageObserver` to `neo4j_graphrag.pipeline`: hooks for watching items flow through a pipeline without adding logging, metrics or tracing to the transformation functions themselves. `LocalInterpreter(observers=[...])` wraps every operator's output stream, firing `before`/`after` per item per stage boundary as the stream is consumed. `on_error` is reported once, against the stage the failure came from — whether the stage raised fatally or a `Try*` stage (`map_safe` and friends) captured the exception as an `Err`; a failure is not re-reported by the later stages it passes through. Observing a sink reports each `sink.write`, including one that raises. Stages are named by `Operator.name` — the operator class, its position in the chain and the function it applies, e.g. `Map[1](embed)` — or explicitly via the `label` argument now accepted by every `Pipeline`/`ResultPipeline` operator method. `Pipeline.to_sink` also takes an optional `interpreter`, since it drains its own stream and would otherwise give no way to attach observers to a sink-terminated pipeline.
+
+### Fixed
+
+- Fixed `BaseGeminiLLM`/`GeminiLLM` silently dropping token usage on every call: `invoke`/`ainvoke` (both the string and message-list paths, sync and async) built `LLMResponse` from `response.text` alone, ignoring `response.usage_metadata` entirely. `LLMResponse.usage` is now populated from it, matching `AnthropicLLM`/`OpenAILLM`/`VertexAILLM`.
+- Fixed Parquet writes aborting with `ArrowInvalid` when a node or relationship property was a GraphRAG `GeoPoint`. `Neo4jGraphParquetFormatter` now serializes those values as WKT `POINT Z(longitude latitude height)` before Arrow type inference, and writer file metadata reports `target_type: POINT` (Parquet source type remains `STRING`).
+
+## 1.19.0
+
+### Added
+
+- Added `examples/SETUP.md` and `examples/.env.example`, documenting what the examples need in order to run — extras, API keys and services — and which providers are free or have a local equivalent.
+- The `examples` extra now declares `python-dotenv` and `requests`. Fourteen examples call `load_dotenv()` and `tools_retriever_example.py` calls a web API with `requests`, but neither package was declared, so both resolved only transitively.
+- `AnthropicLLM` now supports structured output via the `response_format` argument, accepting a Pydantic model or an Anthropic `output_config` dict, alongside `OpenAILLM` and `VertexAILLM`.
+- Added `neo4j_graphrag.llm.utils.split_http_client_kwargs`, a shared helper that routes a constructor's `http_client` kwarg to whichever of the sync/async SDK clients it matches. `AnthropicLLM`, `OpenAILLM`, and `AzureOpenAILLM` now all use this single implementation instead of three separately maintained copies of the same logic. Custom subclasses that construct their own SDK clients can call it to get the same behavior; it is exported from `neo4j_graphrag.llm` for that purpose.
+- Added `BaseAnthropicLLM`, a new base class holding all of `AnthropicLLM`'s shared message-building, schema-conversion, and response-parsing logic, mirroring `BaseOpenAILLM`. Both `BaseAnthropicLLM` and `BaseOpenAILLM` are now exported from `neo4j_graphrag.llm` as documented, supported extension points for subclassing to reach custom Anthropic/OpenAI-compatible endpoints.
+- Added an explicit `base_url` keyword parameter to `AnthropicLLM` and `OpenAILLM`, passed through to both the sync and async SDK clients of each.
+- Added an explicit `base_url` keyword parameter to `GeminiLLM`. The `google-genai` SDK has no top-level `base_url` argument, so the value is applied through `http_options`; if `http_options` is also provided, only its `base_url` field is overridden.
+- `BaseGeminiLLM` now implements `aclose()`, closing the underlying `genai.Client` (sync and `aio` surfaces), so `with GeminiLLM(...)` / `async with` actually release resources like the other providers.
+- `split_http_client_kwargs` now emits a `UserWarning` when the provided `http_client` has a `base_url` configured, since the SDKs ignore it — the LLM constructor's `base_url` parameter is the supported way to change the endpoint.
+- Added a new docs page, `docs/source/llm.rst`, describing the `http_client`/`base_url` injection contract shared by `AnthropicLLM` and `OpenAILLM`, with a worked example of subclassing `BaseAnthropicLLM` to reach a custom endpoint.
+- Added `BaseGeminiLLM`, a new base class holding all of `GeminiLLM`'s shared message-building, config/schema-building, and response-parsing logic. `GeminiLLM` is now a thin subclass responsible only for constructing the `genai.Client`. `BaseGeminiLLM` is exported from `neo4j_graphrag.llm` as a documented, supported extension point for subclassing to reach a custom Gemini-compatible endpoint.
+
+### Changed
+
+- (**breaking**) The `mistralai` extra now requires `mistralai>=2.7.1`. Version 2 turned the top-level package into a namespace with no exports, so `MistralAILLM` and `MistralAIEmbeddings` were migrated to the `mistralai.client` layout. Users pinning `mistralai` 1.x must upgrade.
+- (**breaking**) `VertexAILLM`'s default model is now `gemini-2.5-flash`. The previous default, `gemini-1.5-flash-001`, has been retired by Google, so `VertexAILLM()` with no explicit model failed with a 404. Callers relying on the old default will now reach a different model; pass `model_name` explicitly to pin one.
+- (**breaking**) `BedrockLLM`'s default model is now `us.anthropic.claude-haiku-4-5-20251001-v1:0`. The previous default, `us.anthropic.claude-sonnet-4-20250514-v1:0`, is marked Legacy by the provider and Bedrock refuses it, so `BedrockLLM()` with no explicit model failed. Callers relying on the old default will now reach a different model; pass `model_name` explicitly to pin one.
+- (**breaking**) `AnthropicLLM.supports_structured_output` is now `True`. As a result, `SchemaFromTextExtractor` and `LLMEntityRelationExtractor` (and `SimpleKGPipeline`, which enables structured output automatically when the LLM supports it) now use structured output by default with `AnthropicLLM`. This requires a Claude 4.5+ model (e.g. `claude-sonnet-4-5`); using `AnthropicLLM` with an older Claude model in these components will now raise an error where it previously worked. To keep the previous behavior, use a Claude 4.5+ model, or construct `LLMEntityRelationExtractor` / `SchemaFromTextExtractor` directly with `use_structured_output=False`.
+
+- Preparation for 2.0:
+  - All `Components` have been moved out of the `experimental` namespace
+  - Import `from neo4j_graphrag.experimental.components... ` still work but raises a deprecation warning
+  - Import from the experimental namespace will be removed in 2.0
+  - Update to use `from neo4j_graphrag.components... ` instead
+  - Improperly defined components now raise a `ComponentDefinitionError` instead of `PipelineDefinitionError`
+  - `TaskProgressNotifierProtocol` and `RunContext` have been moved to `neo4j_graphrag.components.base`
+  - The `Component` base class has been moved to `neo4j_graphrag.components.base`
+
+### Fixed
+
+- Fixed the examples and user guide snippets that stopped working when their model references moved from `gpt-4o` to `gpt-5`. gpt-5 rejects `max_tokens` (requiring `max_completion_tokens`), accepts only the default `temperature` of 1 — whether set in `model_params` or passed to `invoke()` — and counts reasoning tokens against `max_completion_tokens`, so a budget that is too small returns empty content. Examples that need reproducible output now use a non-reasoning model (`gpt-4.1`/`gpt-4.1-mini`) and keep `temperature=0`; examples generating free-text answers stay on `gpt-5` without `temperature`; extraction pipelines use a larger `max_completion_tokens` together with `reasoning_effort="low"`.
+- Fixed `CohereLLM`, which could not be constructed at all: it read `cohere.core.api_error.ApiError` as an attribute chain, but the top-level `cohere` package resolves attributes lazily and does not expose `core`, raising `AttributeError: No core found in _dynamic_imports`.
+- `CohereEmbeddings` now sends `input_type`, which current Cohere embedding models require; without it every call failed. It is a new keyword-only constructor argument defaulting to `search_document`, what `TextChunkEmbedder` needs when indexing. Cohere's embeddings are asymmetric, and `Embedder.embed_query()` takes no per-call arguments, so a retriever cannot override the value: give the retrieval side its own `CohereEmbeddings(input_type="search_query")` instance.
+- Fixed `MistralAILLM` raising `AttributeError: 'Mistral' object has no attribute 'close'` when used as a context manager. The `mistralai` SDK replaced `close()`/`aclose()` with the context manager protocol.
+- Replaced model references in the Anthropic, Cohere, Gemini, Bedrock and Vertex AI examples that the providers have since retired, each verified against the live API.
+- Fixed a bug in `AnthropicLLM` where an `http_client` passed via kwargs (whether an `httpx.Client` or `httpx.AsyncClient`) was forwarded to both the sync `anthropic.Anthropic` and async `anthropic.AsyncAnthropic` clients, causing a type mismatch. `http_client` is now routed to the matching sync/async client only; other kwargs remain shared. An `http_client` of an unrecognized type now emits a warning and is ignored instead of raising, matching `OpenAILLM`'s existing behavior.
+- Vector and VectorCypher retrievers on Neo4j 2026+: prefix SEARCH queries with `CYPHER 25` and fall back to procedure-based vector search when SEARCH is unsupported or fails.
+- E2E tests: added exponential backoff retry logic with jitter (5 attempts, 5–60 second waits) to embedding model downloads to handle Hugging Face rate limits. Retries only on transient network errors (connection, timeout) and immediately fails on unrecoverable errors (missing packages, permissions), improving test reliability in parallel CI runs.
+
+## 1.18.0
+
+### Changed
+
+- Experimental: `GraphSchema` validation now rejects `KEY` and `EXISTENCE` constraints on the same node or relationship property (including composite KEY members), since KEY already implies mandatory presence. Legacy `PropertyType.required` migration no longer adds redundant EXISTENCE constraints for KEY-covered properties. The schema-from-text extraction prompt includes the same rule.
+- Experimental: the schema-from-text extraction prompt now instructs the LLM to define each relationship type once and reuse it across patterns, using distinct type names only when patterns genuinely need different properties or constraints.
+- Experimental: LLM-auto-generated schemas now reconcile duplicate `relationship_types` (entries sharing the same label) by merging them into a single type that carries the union of their properties, emitting a warning log. This reflects that Neo4j relationship types are global per name.
+- Experimental (**breaking**): `GraphSchema` now raises `SchemaValidationError` when the same label appears more than once in `relationship_types`. Because Neo4j relationship types are global per name (every relationship of a given type shares the same properties and constraints regardless of its endpoints), a label cannot have two conflicting definitions.
+
+## 1.17.0
+
+### Added
+
+- Vector index for all nodes embedding properties in the ParquetWriter result metadata.
+- Added `GeminiEmbedder` and `GeminiLLM` to replace the to be deprecated `VertexAIEmbedder` and `VertexAILLM`.
+
+### Fixed
+
+- Fixed a bug in `FixedSizeSplitter` that was stuck into an infinite loop with texts containing long whitespaces.
+
+
+## 1.16.1
+
+### Added
+
+- Experimental: `EXISTENCE`, `KEY`, and `UNIQUENESS` constraints can now be scoped to relationship types in `GraphSchema`. `ConstraintType` accepts a `relationship_type` field (mutually exclusive with `node_type`); validation rejects schemas where both `UNIQUENESS` and `KEY` target the same relationship type and property set. `ParquetWriter` relationship file entries now include a `constraints` list when the schema defines any for that relationship type.
+- Experimental: `SchemaFromExistingGraphExtractor._extract_graph_constraints_from_metadata` now maps `NODE_PROPERTY_UNIQUENESS` and `RELATIONSHIP_PROPERTY_UNIQUENESS` rows from `SHOW CONSTRAINTS` to the corresponding node-scoped and relationship-scoped `UNIQUENESS` constraints in `GraphSchema`.
+
+### Fixed
+
+- Experimental: `GraphPruning` now drops relationships whose `KEY`- or `EXISTENCE`-constrained properties are null, matching the existing behaviour for nodes. Previously such relationships were logged as pruned but still passed through with empty properties.
+
+## 1.16.0
+
+### Added
+
+- Added `close` and `aclose` methods to `LLMBase` to gracefully close resources.
+- Added GoogleGenAI (via `google-genai` SDK): includes `GeminiLLM` (generation/tool calling), `GeminiEmbedder` (embeddings), and integration examples/docs.
+- Experimental: `ParquetWriter` node file `constraints` metadata now includes `EXISTENCE` constraints from `GraphSchema` (alongside existing `KEY` and `UNIQUENESS` entries).
+
+### Changed
+
+- Make clear in documentation that `upsert_vectors` is not for production.
+- Use typed `GraphSchema` instead of `dict[str, Any]` for improved type safety in `ParquetWriter` and `KGWriter`.
+
+### Fixed
+
+- The `http_client` in `OpenAILLM` and `AzureOpenAILLM` is now properly passed to the `sync` or `async` opena client depending on its type.
+- `Text2CypherRetriever` now runs `EXPLAIN` on the LLM-generated Cypher and refuses to execute anything that is not read-only, raising `Text2CypherRetrievalError`. This prevents prompt-injection attacks from coercing the LLM into running destructive statements such as `MATCH (n) DETACH DELETE n`.
+
+
+## 1.15.0
+
+### Added
+
+- `LLMUsage` model (`request_tokens`, `response_tokens`, `total_tokens`) added to `neo4j_graphrag.llm`; `LLMResponse` now carries an optional `usage: LLMUsage` field populated by all built-in LLM implementations (OpenAI, AzureOpenAI, Anthropic, Bedrock, Cohere, MistralAI, Ollama, VertexAI).
+- Experimental: `GraphSchemaExtractionOutput`, `ExtractedNodeType`, `ExtractedRelationshipType`, and `ExtractedPropertyType` in `neo4j_graphrag.experimental.components.graph_schema_extraction` for schema-from-text LLM structured output; `Neo4jPropertyTypeName` type alias on `PropertyType`; `GraphSchema.from_extraction_output` and `validate_extraction_dict_to_graph_schema`; `make_strict_json_schema_for_structured_output` in `neo4j_graphrag.utils.json_schema_structured_output`.
+- Experimental KG schemas: `GraphConstraintType` (`UNIQUENESS`, `EXISTENCE`) and extended `ConstraintType` so `EXISTENCE` can target a node property or a relationship property; graph pruning and schema visualization respect `EXISTENCE` constraints.
+- Experimental: `GraphConstraintType.KEY` (Neo4j NODE KEY / RELATIONSHIP KEY, single property) on `GraphSchema.constraints`; pruning treats KEY like EXISTENCE for mandatory (non-null) properties. UNIQUENESS and KEY cannot target the same node property. Helpers: `key_property_names_for_node`, `key_property_names_for_relationship`, `uniqueness_property_names_for_node`, `mandatory_property_names_for_node`, `mandatory_property_names_for_relationship`.
+- Experimental: `SchemaFromExistingGraphExtractor` maps Neo4j `NODE_KEY` / `RELATIONSHIP_KEY` metadata to `GraphConstraintType.KEY` (existence-only constraints still map to `EXISTENCE`).
+- Experimental: composite (multi-property) UNIQUENESS and KEY constraints via `ConstraintType.property_names: Tuple[str, ...]`. EXISTENCE remains single-property only. The old `property_name: str` field is deprecated but still accepted and migrated automatically. Parquet metadata now includes a structured `constraints` list preserving composite grouping. LLM extraction prompt uses `property_names` (list) format.
+- `LLMBase`: new abstract base class (`neo4j_graphrag.llm.LLMBase`) that combines `LLMInterface` and `LLMInterfaceV2`. Concrete LLM subclasses can extend `LLMBase` instead of both interfaces to avoid repeating overload boilerplate and to suppress mypy `[no-overload-impl]` / `[no-redef]` errors.
+- MarkdownLoader (experimental): added a Markdown loader to support `.md` and `.markdown` files.
+- Added Amazon Bedrock support: `BedrockLLM` (generation/tool calling) via the boto3 Converse API, and `BedrockEmbeddings` (embeddings) via the boto3 InvokeModel API.
+
+### Fixed
+
+- `NodeType`: a node type defined without a `properties` key (e.g. `{"label": "Person"}` or `{"label": "Person", "description": "..."}`) now automatically gets a default `name: STRING` property and `additional_properties=True`, preventing a `ValidationError` from the `min_length=1` constraint. This matches the existing behaviour for string input. Auto-addition is skipped when `properties` is explicitly provided (including as an empty list) or when `additional_properties` is explicitly set to `False`.
+- Fixed `Neo4jGraphParquetFormatter` uses an explicit PyArrow schema (with embeddings typed as `float32`) derived from the union of all row keys. Integer embedding vectors (e.g. all-zero or one-hot) are now also cast to `float32`. Note: columns where only empty lists were observed are typed as `list<null>`, which may not be supported by all downstream consumers (e.g. DuckDB, Spark).
+
+### Changed
+
+- **Breaking (experimental):** Parquet export ensures every node label has at least one **single-property** `KEY` in `files[].constraints` for node Parquet files: if the schema defines no such KEY (including composite-only `KEY` or no `KEY` at all), a synthetic `KEY` on `__id__` is appended. Composite schema `KEY`s are preserved; the synthetic `__id__` `KEY` is added in addition when needed. Relationship Parquet `from`/`to` cell values and `start_node_primary_keys` / `end_node_primary_keys` now follow the first **single-property** schema `KEY` for that label, or `__id__` (internal node id) when none exists—**UNIQUENESS** is no longer used to pick relationship endpoint values. Helpers: `enrich_key_constraints_for_node_type`, `get_relationship_join_key_property_name`, `flatten_key_constraint_property_names`. `get_primary_key_column_names_for_node_type` now reflects enriched `KEY` columns (including synthetic `__id__` when injected).
+- **Breaking (experimental):** `ParquetWriter` success metadata `files[].columns` entries now include `is_unique` (bool) alongside `is_primary_key`. UNIQUENESS constraints set `is_unique: true` only; KEY constraints set `is_primary_key: true` (and `is_unique: false`). Synthetic `__id__` / relationship `from`/`to` columns keep `is_primary_key: true` where applicable. Consumers that assumed uniqueness constraints mapped to `is_primary_key` must use `is_unique` instead.
+- Experimental Parquet helpers: `get_unique_properties_for_node_type` is deprecated (emits `DeprecationWarning`). It now mirrors `get_primary_key_column_names_for_node_type` (KEY / `__id__`), not UNIQUENESS-only property lists; use `get_uniqueness_property_names_for_node_type` or `get_primary_key_column_names_for_node_type` instead.
+- Schema-from-text structured output (experimental): `SchemaFromTextExtractor` with `use_structured_output=True` now uses `GraphSchemaExtractionOutput` as `response_format` instead of `GraphSchema`, then converts to `GraphSchema` via `GraphSchema.from_extraction_output`. This keeps provider JSON schemas smaller while preserving the same runtime `GraphSchema` behavior.
+- Experimental `GraphSchema`: `PropertyType.required` is deprecated in favor of `EXISTENCE` constraints on `GraphSchema.constraints`; legacy `required` flags are migrated on load. Uniqueness constraints no longer imply property existence—model mandatory properties with `EXISTENCE` explicitly (aligned with Neo4j-style constraint semantics).
+- SimpleKG pipeline (experimental): the `from_pdf` parameter is deprecated in favor of `from_file` (PDF and Markdown inputs). `from_pdf` still works but emits a deprecation warning and will be removed in a future version.
+- Data loaders (experimental): the `PdfDocument` type name is deprecated in favor of `LoadedDocument`; `PdfDocument` remains available as a backward-compatible alias with a deprecation warning.
+
+
+## 1.14.1
+
+### Added
+
+- `NodeType` and `RelationshipType` now reject labels and types that start or end with double underscores (`__`), e.g. `__Person__`. This convention is reserved for internal Neo4j GraphRAG labels. A `ValidationError` is raised on construction.
+- SimpleKG pipeline (experimental): Markdown inputs (`.md` / `.markdown`) are supported alongside PDF via the default extension-based file loader when building from a file path.
+
+### Changed
+
+- `SchemaExtractionTemplate` prompt updated to explicitly instruct the LLM not to use `__` as a prefix or suffix in node labels or relationship types.
+
+### Fixed
+
+- Fixed `ValueError` in `Neo4jGraphParquetFormatter` when nodes of the same label have mixed property types (e.g. `str` and `int` for the same property), which caused `pa.Table.from_pylist()` to fail. Mixed-type columns are now coerced to a consistent type before Parquet table creation.
+- Fixed a bug where the rate limit handler was not being called on the `VertexAILLM` and `MistralAILLM` `__invoke_v2` and `__ainvoke_v2` methods.
+
+## 1.14.0
+
+### Added
+
+- Parquet export (experimental): `ParquetWriter` (extends `KGWriter`), `Neo4jGraphParquetFormatter`, and `FilenameCollisionHandler` for writing knowledge graphs to Parquet (one file per node label and per relationship type).
+
+### Changed
+
+- Updated examples, default values, and documentation to use `gpt-4.1` / `gpt-4.1-mini` instead of deprecated GPT-4* models (e.g. `gpt-4o`, `gpt-4`).
+- **Breaking**: `SimpleKGPipeline` now automatically enables structured output when the `LLMInterface` supports structured output (so far, `OpenAILLM`, `VertexAILLM`). This takes precedence over any `response_format` configured in `model_params` (e.g., `{"type": "json_object"}`), which will be ignored.
+
+## 1.13.1
+
+- Fixed invalid lexical graph relationships causing "Relationship references unknown start node" errors during parquet import when nodes are pruned.
+- Make rate limit handler open to which exceptions it can retry on
+- Fix the initialization of the vertexai LLM class
+
+## 1.13.0
+
+### Added
+
+- Support for structured output in `OpenAILLM` and `VertexAILLM` via `response_format` parameter. Accepts Pydantic models (requires `ConfigDict(extra="forbid")`) or JSON schemas.
+- Added `use_structured_output` parameter to `LLMEntityRelationExtractor` for improved entity extraction reliability with OpenAI/VertexAI LLMs.
+- Added `use_structured_output` parameter to `SchemaFromTextExtractor` for improved schema generation with OpenAI/VertexAI LLMs. Enforces `GraphSchema` structure via Pydantic model validation and includes automatic cleanup of invalid patterns/constraints.
+- Added `supports_structured_output` capability flag to `LLMInterface` for forward-compatible detection of structured output support across LLM implementations.
+- Support for async embeddings in the `Embedder` base class and implementation for `OllamaEmbedding`.
+
+### Changed
+
+- **Breaking**: made `Neo4jNode`, `Neo4jRelationship`, and `Neo4jGraph` stricter: properties field now uses typed `PropertyValue` (Neo4j primitives, temporal values, lists, `GeoPoint`).
+- **Breaking**: `NodeType.properties` now requires at least one property (`min_length=1`). String-based node definitions (e.g., `NodeType("Person")`) automatically receive a default "name" property with `additional_properties=True`.
+- **Breaking**: `RelationshipType` with empty properties and `additional_properties=False` is now auto-corrected to `additional_properties=True` to prevent pruning of LLM-extracted properties.
+- Introduced `Pattern` Pydantic model for internal storage of graph patterns, replacing tuple format. Public APIs maintain backward compatibility by accepting both tuples and `Pattern` objects.
+
+
+## 1.12.0
+
+## Added
+
+- Support for Python 3.14
+- Support for version 6.0.0 of the Neo4j Python driver
+
+### Changed
+
+- Switched project/dependency management from Poetry to uv.
+- Dropped support for Python 3.9 (EOL)
+
+
+## 1.11.0
+
+### Added
+
+- Added an optional `node_label_neo4j` parameter in the external retrievers to speed up the search query in Neo4j.
+- Exposed optional `sample` parameter on `get_schema` and `get_structured_schema` to control APOC sampling for schema discovery.
+- Added an optional `id_property_getter` callable parameter in the Qdrant retriever to allow for custom ID retrieval.
+
+## 1.10.1
+
+### Added
+
+- Added automatic rate limiting with retry logic and exponential backoff for all Embedding providers using tenacity. The `RateLimitHandler` interface allows for custom rate limiting strategies, including the ability to disable rate limiting entirely.
+- JSON response returned to `SchemaFromTextExtractor` is cleansed of any markdown code blocks before being loaded.
+- Tool calling support for OllamaLLM.
+
+## 1.10.0
+
+### Added
+
+- Added a `ToolsRetriever` retriever that uses an LLM to decide on what tools to use to find the relevant data.
+- Added `convert_to_tool` method to the `Retriever` interface to convert a Retriever to a Tool so it can be used within the ToolsRetriever. This is useful when you might want to have both a VectorRetriever and a Text2CypherRetreiver as a fallback.
+- Added `schema_visualization` function to visualize a graph schema using neo4j-viz.
+
+### Fixed
+
+- Fixed an edge case where the LLM can output a property with type 'map', which was causing errors during import as it is not a valid property type in Neo4j.
+
+
+### Added
+
+- Document node is now always created when running SimpleKGPipeline, even if `from_pdf=False`.
+- Document metadata is exposed in SimpleKGPipeline run method.
+
+
+## 1.9.1
+
+### Fixed
+
+- Fixed documentation for PdfLoader
+- Fixed a bug where the `format` argument for `OllamaLLM` was not propagated to the client.
+- Fixed `AttributeError` in `SchemaFromTextExtractor` when filtering out node/relationship types with no labels.
+- Fixed an import error in `VertexAIEmbeddings`.
+
+## 1.9.0
+
+### Fixed
+
+- Fixed a bug where Session nodes were duplicated.
+
+## Added
+
+- Added automatic rate limiting with retry logic and exponential backoff for all LLM providers using tenacity. The `RateLimitHandler` interface allows for custom rate limiting strategies, including the ability to disable rate limiting entirely.
+
+## 1.8.0
+
+### Added
+
+- Support for Python 3.13
+- Added support for automatic schema extraction from text using LLMs. In the `SimpleKGPipeline`, when the user provides no schema, the automatic schema extraction is enabled by default.
+- Added ability to return a user-defined message if context is empty in GraphRAG (which skips the LLM call).
+
+### Fixed
+
+- Fixed a bug where `spacy` and `rapidfuzz` needed to be installed even if not using the relevant entity resolvers.
+- Fixed a bug where `VertexAILLM.(a)invoke_with_tools` called with multiple tools would raise an error.
+
+### Changed
+
+#### Strict mode
+
+- Strict mode in `SimpleKGPipeline`: the `enforce_schema` option is removed and replaced by a schema-driven pruning.
+
+#### Schema definition
+
+- The `SchemaEntity` model has been renamed `NodeType`.
+- The `SchemaRelation` model has been renamed `RelationshipType`.
+- The `SchemaProperty` model has been renamed `PropertyType`.
+- `SchemaConfig` has been removed in favor of `GraphSchema` (used in the `SchemaBuilder` and `EntityRelationExtractor` classes). `entities`, `relations` and `potential_schema` fields have also been renamed `node_types`, `relationship_types` and `patterns` respectively.
+
+#### Other
+
+- The reserved `id` property on `__KGBuilder__` nodes is removed.
+- The `chunk_index` property on `__Entity__` nodes is removed. Use the `FROM_CHUNK` relationship instead.
+- The `__entity__id` index is not used anymore and can be dropped from the database (it has been replaced by `__entity__tmp_internal_id`).
+
+
+## 1.7.0
+
+### Added
+
+- Added tool calling functionality to the LLM base class with OpenAI and VertexAI implementations, enabling structured parameter extraction and function calling.
+- Added support for multi-vector collection in Qdrant driver.
+- Added a `Pipeline.stream` method to stream pipeline progress.
+- Added a new semantic match resolver to the KG Builder for entity resolution based on spaCy embeddings and cosine similarities so that nodes with similar textual properties get merged.
+- Added a new fuzzy match resolver to the KG Builder for entity resolution based on RapiFuzz string fuzzy matching.
+
+### Changed
+
+- Improved log output readability in Retrievers and GraphRAG and added embedded vector to retriever result metadata for debugging.
+- Switched from pygraphviz to neo4j-viz
+    -   Renders interactive graph now on HTML instead of PNG
+    -   Removed `get_pygraphviz_graph` method
+
+### Fixed
+
+- Fixed a bug where the `$nin` operator for metadata pre-filtering in retrievers would create an invalid Cypher query.
+
+
+## 1.6.1
+
+### Added
+
+- Added the `run_with_context` method to `Component`. This method includes a `context_` parameter, which provides information about the pipeline from which the component is executed (e.g., the `run_id`). It also enables the component to send events to the pipeline's callback function.
+
+### Fixed
+
+- Added `enforce_schema` parameter to `SimpleKGPipeline` for optional schema enforcement.
+
+
+## 1.6.0
+
+### Added
+
+- Added optional schema enforcement as a validation layer after entity and relation extraction.
+- Introduced a linear hybrid search ranker for HybridRetriever and HybridCypherRetriever, allowing customizable ranking with an `alpha` parameter.
+- Introduced SearchQueryParseError for handling invalid Lucene query strings in HybridRetriever and HybridCypherRetriever.
+
+### Fixed
+
+- Fixed config loading after module reload (usage in jupyter notebooks)
+
+### Changed
+
+- Qdrant retriever now fallbacks on the point ID if the `external_id_property` is not found in the payload.
+- Updated a few dependencies, mainly `pypdf`, `anthropic` and `cohere`.
+
+
+## 1.5.0
+
+### Added
+
+- Utility functions to retrieve metadata for vector and full-text indexes.
+- Support for effective_search_ratio parameter in vector and hybrid searches.
+- Introduced upsert_vectors utility function for batch upserting embeddings to vector indexes.
+- Introduced `extract_cypher` function to enhance Cypher query extraction and formatting in `Text2CypherRetriever`.
+- Introduced Neo4jMessageHistory and InMemoryMessageHistory classes for managing LLM message histories.
+- Added examples and documentation for using message history with Neo4j and in-memory storage.
+- Updated LLM and GraphRAG classes to support new message history classes.
+
+### Changed
+
+- Refactored index-related functions for improved compatibility and functionality.
+- Added deprecation warnings to upsert_vector, upsert_vector_on_relationship functions in favor of upsert_vectors.
+- Added deprecation warnings to async_upsert_vector, async_upsert_vector_on_relationship functions notifying developers that they will be removed in a future release.
+- Added support for database, timeout, and sanitize arguments in schema functions.
+
+### Fixed
+
+- Resolved an issue with an incorrectly hard coded node alias in the `_handle_field_filter` function.
+
+## 1.4.3
+
+### Added
+
+- Ability to add event listener to get notifications about Pipeline progress.
+- Added py.typed so that mypy knows to use type annotations from the neo4j-graphrag package.
+- Support for creating enhanced schemas with detailed property statistics.
+- New utility functions for schema formatting and value sanitization.
+- Updated unit and integration tests to cover enhanced schema functionality.
+
+### Changed
+
+- Changed the default behaviour of `FixedSizeSplitter` to avoid words cut-off in the chunks whenever it is possible.
+- Refactored schema creation code to reduce duplication and improve maintainability.
+
+### Fixed
+
+- Removed the `uuid` package from dependencies (not needed with Python 3).
+- Fixed a bug in the `AnthropicLLM` class preventing it from being used in `GraphRAG` pipeline.
+
+## 1.4.2
+
+### Fixed
+
+- Fix a bug where the `OllamaEmbedder` would return a `list[list[float]]` instead of the expected `list[float]`.
+
+## 1.4.1
+
+### Fixed
+
+#### Dependencies
+
+- PyYAML dependency was missing and has been added.
+- Weaviate was unintentionally added as a mandatory dependency in previous version, this behavior has been reverted.
+- PyPDF and fsspec are not optional anymore so that SimpleKGPipeline examples can run out of the box (they just require the independent installation of openai python package if using OpenAI).
+
+## 1.4.0
+
+### Added
+- Support for conversations with message history, including a new `message_history` parameter for LLM interactions.
+- Ability to include system instructions in LLM invoke method.
+- Summarization of chat history to enhance query embedding and context handling in GraphRAG.
+
+### Changed
+- Updated LLM implementations to handle message history consistently across providers.
+- The `id_prefix` parameter in the `LexicalGraphConfig` is deprecated.
+
+### Fixed
+- IDs for the Document and Chunk nodes in the lexical graph are now randomly generated and unique across multiple runs, fixing issues in the lexical graph where relationships were created between chunks that were created by different pipeline runs.
+- Improve logging for a better debugging experience: long lists and strings are now truncated. The max length can be controlled using the `LOGGING__MAX_LIST_LENGTH` and `LOGGING__MAX_STRING_LENGTH` env variables.
+
+## 1.3.0
+
+### Added
+- Integrated `json-repair` package to handle and repair invalid JSON generated by LLMs.
+- Introduced `InvalidJSONError` exception for handling cases where JSON repair fails.
+- Ability to create a Pipeline or SimpleKGPipeline from a config file. See [the example](examples/build_graph/from_config_files/simple_kg_pipeline_from_config_file.py).
+- Added `OllamaLLM` and `OllamaEmbeddings` classes to make Ollama support more explicit. Implementations using the `OpenAILLM` and `OpenAIEmbeddings` classes will still work.
+
+### Changed
+- Updated LLM prompt for Entity and Relation extraction to include stricter instructions for generating valid JSON.
+
+### Fixed
+- Added schema functions to the documentation.
+
+## 1.2.1
+
+### Added
+- Introduced optional lexical graph configuration for `SimpleKGPipeline`, enhancing flexibility in customizing node labels and relationship types in the lexical graph.
+- Introduced optional `neo4j_database` parameter for `SimpleKGPipeline`, `Neo4jChunkReader`and `Text2CypherRetriever`.
+- Ability to provide description and list of properties for entities and relations in the `SimpleKGPipeline` constructor.
+
+### Fixed
+- `neo4j_database` parameter is now used for all queries in the `Neo4jWriter`.
+
+### Changed
+- Updated all examples to use `neo4j_database` parameter instead of an undocumented neo4j driver constructor.
+- All `READ` queries are now routed to a reader replica (for clusters). This impacts all retrievers, the `Neo4jChunkReader` and `SinglePropertyExactMatchResolver` components.
+
+
+## 1.2.0
+
+### Added
+- Made `relations` and `potential_schema` optional in `SchemaBuilder`.
+- Added a check to prevent the use of deprecated Cypher syntax for Neo4j versions 5.23.0 and above.
+- Added a `LexicalGraphBuilder` component to enable the import of the lexical graph (document, chunks) without performing entity and relation extraction.
+- Added a `Neo4jChunkReader` component to be able to read chunk text from the database.
+
+### Changed
+- Vector and Hybrid retrievers used with `return_properties` now also return the node labels (`nodeLabels`) and the node's element ID (`id`).
+- `HybridRetriever` now filters out the embedding property index in `self.vector_index_name` from the retriever result by default.
+- Removed support for neo4j.AsyncDriver in the KG creation pipeline, affecting Neo4jWriter and related components.
+- Updated examples and unit tests to reflect the removal of async driver support.
+
+### Fixed
+- Resolved issue with `AzureOpenAIEmbeddings` incorrectly inheriting from `OpenAIEmbeddings`, now inherits from `BaseOpenAIEmbeddings`.
+
+## 1.1.0
+
+### Added
+- Introduced a `fail_if_exist` option to index creation functions to control behavior when an index already exists.
+- Added Qdrant retriever in neo4j_graphrag.retrievers.
+
+### Changed
+- Comprehensive rewrite of the README to improve clarity and provide detailed usage examples.
+
+## 1.0.0
+
+### Fixed
+- Fix a bug where `openai` Python client and `numpy` were required to import any embedder or LLM.
+
+### Changed
+- The value associated to the enum field `OnError.IGNORE` has been changed from "CONTINUE" to "IGNORE" to stick to the convention and match the field name.
+
+### Added
+- Added `SinglePropertyExactMatchResolver` component allowing to merge entities with exact same property (e.g. name)
+- Added the `SimpleKGPipeline` class, a simplified abstraction layer to streamline knowledge graph building processes from text documents.
+
+## 1.0.0a1
+
+## 1.0.0a0
+
+### Added
+- Added `SinglePropertyExactMatchResolver` component allowing to merge entities with exact same property (e.g. name)
+
+## 0.7.0
+
+### Added
+- Added AzureOpenAILLM and AzureOpenAIEmbeddings to support Azure served OpenAI models
+- Added `template` validation in `PromptTemplate` class upon construction.
+- Examples demonstrating the use of Mistral embeddings and LLM in RAG pipelines.
+- Added feature to include kwargs in `Text2CypherRetriever.search()` that will be injected into a custom prompt, if provided.
+- Added validation to `custom_prompt` parameter of `Text2CypherRetriever` to ensure that `query_text` placeholder exists in prompt.
+- Introduced a fixed size text splitter component for splitting text into specified fixed size chunks with overlap. Updated examples and tests to utilize this new component.
+- Introduced Vertex AI LLM class for integrating Vertex AI models.
+- Added unit tests for the Vertex AI LLM class.
+- Added support for Cohere LLM and embeddings - added optional dependency to `cohere`.
+- Added support for Anthropic LLM - added optional dependency to `anthropic`.
+- Added support for MistralAI LLM - added optional dependency to `mistralai`.
+- Added support for Qdrant - added optional dependency to `qdrant-client`.
+
+### Fixed
+- Resolved import issue with the Vertex AI Embeddings class.
+- Fixed bug in `Text2CypherRetriever` using `custom_prompt` arg where the `search` method would not inject the `query_text` content.
+- `custom_prompt` arg is now converted to `Text2CypherTemplate` class within the `Text2CypherRetriever.get_search_results` method.
+- `Text2CypherTemplate` and `RAGTemplate` prompt templates now require `query_text` arg and will error if it is not present. Previous `query_text` aliases may be used, but will warn of deprecation.
+- Resolved issue where Neo4jWriter component would raise an error if the start or end node ID was not defined properly in the input.
+- Resolved issue where relationship types was not escaped in the insert Cypher query.
+- Improved query performance in Neo4jWriter: created nodes now have a generic `__KGBuilder__` label and an index is created on the `__KGBuilder__.id` property. Moreover, insertion queries are now batched. Batch size can be controlled using the `batch_size` parameter in the `Neo4jWriter` component.
+
+### Changed
+- Moved the Embedder class to the neo4j_graphrag.embeddings directory for better organization alongside other custom embedders.
+- Removed query argument from the GraphRAG class' `.search` method; users must now use `query_text`.
+- Neo4jWriter component now runs a single query to merge node and set its embeddings if any.
+- Nodes created by the `Neo4jWriter` now have an extra `__KGBuilder__` label. Nodes from the entity graph also have an `__Entity__` label.
+- Dropped support for Python 3.8 (end of life).
+
+## 0.6.3
+### Changed
+- Updated documentation links in README.
+- Renamed deprecated package references in documentation.
+
+### Added
+- Introduction page to the documentation content tree.
+- Introduced a new Vertex AI embeddings class for generating text embeddings using Vertex AI.
+- Updated documentation to include OpenAI and Vertex AI embeddings classes.
+- Added google-cloud-aiplatform as an optional dependency for Vertex AI embeddings.
+
+### Fixed
+- Make `pygraphviz` an optional dependency - it is now only required when calling `pipeline.draw`.
+
+## 0.6.2
+
+### Fixed
+- Moved pygraphviz to optional dependencies under [tool.poetry.extras] in pyproject.toml to resolve an issue where pip install neo4j-graphrag incorrectly required pygraphviz as a mandatory dependency.
+
+## 0.6.1
+
+### Changed
+- Officially renamed neo4j-genai to neo4j-graphrag. For the final release version of neo4j-genai, please visit https://pypi.org/project/neo4j-genai/.
+
+## 0.6.0
+
+### IMPORTANT NOTICE
+- The `neo4j-genai` package is now deprecated. Users are advised to switch to the new package `neo4j-graphrag`.
+### Added
+- Ability to visualise pipeline with `my_pipeline.draw("pipeline.png")`.
+- `LexicalGraphBuilder` component to create the lexical graph without entity-relation extraction.
+
+### Fixed
+- Pipelines now return correct results when the same pipeline is run in parallel.
+
+### Changed
+- Pipeline run method now return a PipelineResult object.
+- Improved parameter validation for pipelines (#124). Pipeline now raise an error before a run starts if:
+  - the same parameter is mapped twice
+  - or a parameter is defined in the mapping but is not a valid component input
+
+
+## 0.5.0
+
+### Added
+- PDF-to-graph pipeline for knowledge graph construction in experimental mode
+- Introduced support for Component/Pipeline flexible architecture.
+- Added new components for knowledge graph construction, including text splitters, schema builders, entity-relation extractors, and Neo4j writers.
+- Implemented end-to-end tests for the new knowledge graph builder pipeline.
+
+### Changed
+- When saving the lexical graph in a KG creation pipeline, the document is also saved as a specific node, together with relationships between each chunk and the document they were created from.
+
+### Fixed
+- Corrected the hybrid retriever query to ensure proper normalization of scores in vector search results.
+
+## 0.4.0
+
+### Added
+- Add optional custom_prompt arg to the Text2CypherRetriever class.
+
+### Changed
+- `GraphRAG.search` method first parameter has been renamed `query_text` (was `query`) for consistency with the retrievers interface.
+- Made `GraphRAG.search` method backwards compatible with the query parameter, raising warnings to encourage using query_text instead.
+
+## 0.3.1
+
+### Fixed
+-   Corrected initialization to allow specifying the embedding model name.
+-   Removed sentence_transformers from embeddings/__init__.py to avoid ImportError when the package is not installed.
+
+## 0.3.0
+
+### Added
+-   Stopped embeddings from being returned when searching with `VectorRetriever`. Added `nodeLabels` and `id` to the metadata of `VectorRetriever` results.
+-   Added `upsert_vector` utility function for attaching vectors to node properties.
+-   Introduced `Neo4jInsertionError` for handling insertion failures in Neo4j.
+-   Included Pinecone and Weaviate retrievers in neo4j_graphrag.retrievers.
+-   Introduced the GraphRAG object, enabling a full RAG (Retrieval-Augmented Generation) pipeline with context retrieval, prompt formatting, and answer generation.
+-   Added PromptTemplate and RagTemplate for customizable prompt generation.
+-   Added LLMInterface with implementation for OpenAI LLM.
+-   Updated project configuration to support multiple Python versions (3.8 to 3.12) in CI workflows.
+-   Improved developer experience by copying the docstring from the `Retriever.get_search_results` method to the `Retriever.search` method
+-   Support for specifying database names in index handling methods and retrievers.
+-   User Guide in documentation.
+-   Introduced result_formatter argument to all retrievers, allowing custom formatting of retriever results.
+
+### Changed
+-   Refactored import paths for retrievers to neo4j_graphrag.retrievers.
+-   Implemented exception chaining for all re-raised exceptions to improve stack trace readability.
+-   Made error messages in `index.py` more consistent.
+-   Renamed `Retriever._get_search_results` to `Retriever.get_search_results`
+-   Updated retrievers and index handling methods to accept optional database names.
+
+## 0.2.0
+
+### Fixed
+
+-   Removed Pinecone and Weaviate retrievers from **init**.py to prevent ImportError when optional dependencies are not installed.
+-   Moved few-shot examples in `Text2CypherRetriever` to the constructor for better initialization and usage. Updated unit tests and example script accordingly.
+-   Fixed regex warnings in E2E tests for Weaviate and Pinecone retrievers.
+-   Corrected HuggingFaceEmbeddings import in E2E tests.
+
+
+## 0.2.0a5
+
+## 0.2.0a3
+
+### Added
+
+-   Introduced custom exceptions for improved error handling, including `RetrieverInitializationError`, `SearchValidationError`, `FilterValidationError`, `EmbeddingRequiredError`, `RecordCreationError`, `Neo4jIndexError`, and `Neo4jVersionError`.
+-   Retrievers that integrates with a Weaviate vector database: `WeaviateNeo4jRetriever`.
+-   New return types that help with getting retriever results: `RetrieverResult` and `RetrieverResultItem`.
+-   Supported wrapper embedder object for sentence-transformers embeddings: `SentenceTransformerEmbeddings`.
+-   `Text2CypherRetriever` object which allows for the retrieval of records from a Neo4j database using natural language.
+
+### Changed
+
+-   Replaced `ValueError` with custom exceptions across various modules for clearer and more specific error messages.
+
+### Fixed
+
+-   Updated documentation to include new custom exceptions.
+-   Improved the use of Pydantic for input data validation for retriever objects.

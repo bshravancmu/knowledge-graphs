@@ -1,0 +1,21 @@
+| CSV Column           | Ontology Property | Entity Class | Rel. Entity Class | Subject Generation    | Join | Datatype | Function Name | Function Output |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `cbc:ContractFolderID` | `:hasID` | `:Procedure` | - | `:proc_{text()}` | - | - | - | - |
+| `cac:TenderingProcess/cbc:ProcedureCode` | `:hasProcedureType` | `:Procedure` | `skos:Concept` | `:proc_{../cbc:ContractFolderID}` | `skos:inScheme = <http://publications.europa.eu/resource/authority/procurement-procedure-type>` | `xsd:anyURI` | `mapProcedureType` | `http://publications.europa.eu/resource/authority/procurement-procedure-type/{mapped_code}` |
+| `cac:ProcurementProjectLot/cbc:ID` | `:hasID` | `:Lot` | - | `:lot_{../../cbc:ContractFolderID}_{text()}` | - | - | - | - |
+| `cac:ProcurementProjectLot/cac:ProcurementProject/cbc:Name` | `rdfs:label` | `:Lot` | - | `:lot_{../../cbc:ContractFolderID}_{../cbc:ID}` | - | `xsd:string` | - | - |
+| `cac:ProcurementProject/cbc:Name` | `rdfs:label` | `:Procedure` | - | `:proc_{../cbc:ContractFolderID}` | - | `xsd:string` | - | - |
+| `cac:ProcurementProjectLot/cac:ProcurementProject/cac:BudgetAmount/cbc:TotalAmount` | `schema:value` | `:Lot` | - | `:lot_{../../cbc:ContractFolderID}_{../cbc:ID}` | - | `xsd:decimal` | - | - |
+| `cac:Party/cac:PartyIdentification/cbc:ID[@schemeName="NIF"]` | `:hasID` | `org:Organization` | - | `:org_{text()}` | - | - | - | - |
+| `cac:Party/cac:PartyName/cbc:Name` | `foaf:name` | `org:Organization` | - | `:org_{../cac:PartyIdentification/cbc:ID[@schemeName="NIF"]}` | - | `xsd:string` | - | - |
+| `cac:PostalAddress/cac:Country/cbc:IdentificationCode` | `:hasCountryCode` | `org:Organization` | `skos:Concept` | `:org_{../../cac:PartyIdentification/cbc:ID[@schemeName="NIF"]}` | `skos:inScheme = <http://publications.europa.eu/resource/authority/country>` | `xsd:anyURI` | `mapCountryCode` | `http://publications.europa.eu/resource/authority/country/{upper-case(text())}` |
+| `cbc:ContractingPartyTypeCode` | `dcterms:type` | `:Buyer` | `skos:Concept` | `:buyer_{../../cbc:ContractFolderID}` | `skos:inScheme = <http://publications.europa.eu/resource/authority/buyer-legal-type>` | `xsd:anyURI` | `mapBuyerLegalType` | `http://publications.europa.eu/resource/authority/buyer-legal-type/{mapped_code}` |
+| `/entry/updated` | `:hasDispatchDate` | `:ResultNotice` | - | `:notice_{cbc:ContractFolderID}` | - | `xsd:dateTime` | - | - |
+| `cac:TenderResult/cbc:ReceivedTenderQuantity` | `:hasReceivedTenders` | `:SubmissionStatisticalInformation` | - | `:substats_{../cbc:ContractFolderID}_{cac:AwardedTenderedProject/cbc:ProcurementProjectLotID}` | - | `xsd:integer` | - | - |
+| `cac:TenderResult/cbc:AwardDate` | `:hasAwardDecisionDate` | `:LotAwardOutcome` | - | `:award_{../cbc:ContractFolderID}_{cac:AwardedTenderedProject/cbc:ProcurementProjectLotID}` | - | `xsd:date` | - | - |
+| `cac:WinningParty/cac:PartyName/cbc:Name` | `foaf:name` | `org:Organization` | - | `:org_{../cac:PartyIdentification/cbc:ID}` | - | `xsd:string` | - | - |
+| `cac:RequiredCommodityClassification/cbc:ItemClassificationCode` | `cpv:hasCPV` | `:Lot` | `skos:Concept` | `:lot_{../../cbc:ContractFolderID}_{../cbc:ID}` | `skos:inScheme = <http://publications.europa.eu/resource/authority/cpv>` | `xsd:anyURI` | `mapCPV` | `http://publications.europa.eu/resource/authority/cpv/{text()}` |
+| `cac-place-ext:LocatedContractingParty/cac:Party` | `:playedByOrganisation` | `:Buyer` | `org:Organization` | `:buyer_{../cbc:ContractFolderID}` | `JOIN on org:Organization ID` | - | - | - |
+| `cac:ProcurementProjectLot` | `:hasProcurementScopeDividedIntoLot` | `:Procedure` | `:Lot` | `:proc_{cbc:ContractFolderID}` | `:lot_{cbc:ContractFolderID}_{cbc:ID}` | - | - | - |
+| `cac:TenderResult` | `:describesLot` | `:LotAwardOutcome` | `:Lot` | `:award_{cbc:ContractFolderID}_{cac:AwardedTenderedProject/cbc:ProcurementProjectLotID}` | `:lot_{cbc:ContractFolderID}_{cac:AwardedTenderedProject/cbc:ProcurementProjectLotID}` | - | - | - |
+| `cac:TenderResult` | `:concernsSubmissionsForLot` | `:SubmissionStatisticalInformation` | `:Lot` | `:substats_{cbc:ContractFolderID}_{cac:AwardedTenderedProject/cbc:ProcurementProjectLotID}` | `:lot_{cbc:ContractFolderID}_{cac:AwardedTenderedProject/cbc:ProcurementProjectLotID}` | - | - | - |

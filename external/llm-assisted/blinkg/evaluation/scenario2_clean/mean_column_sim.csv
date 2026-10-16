@@ -1,0 +1,55 @@
+column,LLM,mean_similarity
+Data Reference,deepseek_clean,0.835244475959925
+Data Reference,gemini_clean,0.8281319398247685
+Data Reference,gpt4o_clean,0.826949197656468
+Data Reference,llama_clean,0.8690665857547604
+Data Reference,mixtral_clean,0.8641506733329797
+Data Reference,o3_clean,0.7606546125921977
+Datatype,deepseek_clean,0.7936773429774208
+Datatype,gemini_clean,0.8789437193607474
+Datatype,gpt4o_clean,0.8345719530475465
+Datatype,llama_clean,0.7317864506827368
+Datatype,mixtral_clean,0.7028226864636241
+Datatype,o3_clean,0.7309505494766885
+Entity Class,deepseek_clean,0.8457044394755805
+Entity Class,gemini_clean,0.975367124053995
+Entity Class,gpt4o_clean,0.9780493744394995
+Entity Class,llama_clean,0.9252237745657914
+Entity Class,mixtral_clean,0.9086813967814047
+Entity Class,o3_clean,0.8477861069592577
+Function Name,deepseek_clean,0.5089567398296874
+Function Name,gemini_clean,0.4939631667962125
+Function Name,gpt4o_clean,0.5117729626996856
+Function Name,llama_clean,0.5329954890381109
+Function Name,mixtral_clean,0.3410626453010461
+Function Name,o3_clean,0.5099092201813964
+Function Output,deepseek_clean,0.7592607867677208
+Function Output,gemini_clean,0.666021223815455
+Function Output,gpt4o_clean,0.7038198672954996
+Function Output,llama_clean,0.7052289149358317
+Function Output,mixtral_clean,0.5933893517600326
+Function Output,o3_clean,0.6572179936960125
+Join,deepseek_clean,0.5398223187793234
+Join,gemini_clean,0.7243986365644054
+Join,gpt4o_clean,0.6756746860053867
+Join,llama_clean,0.19256210096209703
+Join,mixtral_clean,0.1962844528820815
+Join,o3_clean,0.6045883098126569
+Ontology Property,deepseek_clean,0.9867049117311212
+Ontology Property,gemini_clean,0.9863888731583802
+Ontology Property,gpt4o_clean,0.9928379302498644
+Ontology Property,llama_clean,0.999438832772166
+Ontology Property,mixtral_clean,0.9695289770727129
+Ontology Property,o3_clean,0.9783117917112389
+Related Entity Class,deepseek_clean,0.5994633322622712
+Related Entity Class,gemini_clean,0.9732234552384368
+Related Entity Class,gpt4o_clean,0.9291208088266577
+Related Entity Class,llama_clean,0.31726103024492425
+Related Entity Class,mixtral_clean,0.4641094583873719
+Related Entity Class,o3_clean,0.8463334454070356
+Subject Generation,deepseek_clean,0.5592973884912004
+Subject Generation,gemini_clean,0.6594105822520016
+Subject Generation,gpt4o_clean,0.746477410008003
+Subject Generation,llama_clean,0.6894686411817559
+Subject Generation,mixtral_clean,0.44298530773305783
+Subject Generation,o3_clean,0.7817308895445452

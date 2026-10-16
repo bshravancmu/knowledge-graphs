@@ -1,0 +1,11 @@
+column,TP,FP,FN,precision,recall,f1
+CSV Column,45,0,3,1.0,0.9375,0.967741935483871
+Datatype,31,0,8,1.0,0.7948717948717948,0.8857142857142858
+Entity Class,48,0,0,1.0,1.0,1.0
+Function Name,0,0,2,0.0,0.0,0.0
+Function Output,0,0,9,0.0,0.0,0.0
+Join,2,0,1,1.0,0.6666666666666666,0.8
+Ontology Property,48,0,0,1.0,1.0,1.0
+Rel. Entity Class,0,0,0,0.0,0.0,0.0
+Related Entity Class,0,0,0,0.0,0.0,0.0
+Subject Generation,34,0,14,1.0,0.7083333333333334,0.8292682926829268

@@ -1,0 +1,8 @@
+| XML Path  | Ontology Property | Entity Class | Related Entity Class | Subject Generation    | Join| Datatype | Function Name| Function Output  |
+|--------------------------------------------------------------------------------------------|------------------------------------------|-------------------|-----------------------|------------------------------------------|------------------------------------------|----------|----------------------------|----------------------------------------------------------------------------------|
+| entry/id  | :hasID| :Procedure| :Identifier  | concat('proc-', hash(entry/id))| N/A  |  | |    |
+| cac-place-ext:ContractFolderStatus/cbc:ContractFolderID| :hasID| :Procedure| :Identifier  | concat('proc-', hash(entry/id)) | entry/id maps to contract folder|    | | |
+| cac-place-ext:LocatedContractingParty/cac:Party/cac:PartyIdentification[cbc:ID@schemeName='NIF']/cbc:ID | :hasID| org:Organization  | :Identifier  | concat('org-', value) | ID@schemeName='NIF'    | | | |
+| cac-place-ext:ContractFolderStatus/cac:ProcurementProject/cbc:TypeCode   | :hasProcedureType | :Procedure| skos:Concept | use procedure subject  | code mapped to SKOS URI| | mapProcedureType  | http://publications.europa.eu/resource/authority/procurement-procedure-type/open |
+| cac-place-ext:ContractFolderStatus/cac:ProcurementProjectLot/cbc:ID | :hasProcurementScopeDividedIntoLot | :Procedure| :Lot| concat('lot-', procedureID, '-', ID)    | ProcedureID from entry |    | |   |
+| cac:RealizedLocation/cbc:CountrySubentityCode | :hasCountryCode| locn:Address | skos:Concept | concat('addr-', hash(XML path))| LotID or OrgID|    | mapNUTSRegion| http://publications.europa.eu/resource/authority/country/ESP   |

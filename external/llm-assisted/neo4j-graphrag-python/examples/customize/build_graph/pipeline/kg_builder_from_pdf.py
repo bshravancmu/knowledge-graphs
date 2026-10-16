@@ -1,0 +1,147 @@
+#  Copyright (c) "Neo4j"
+#  Neo4j Sweden AB [https://neo4j.com]
+#  #
+#  Licensed under the Apache License, Version 2.0 (the "License");
+#  you may not use this file except in compliance with the License.
+#  You may obtain a copy of the License at
+#  #
+#      https://www.apache.org/licenses/LICENSE-2.0
+#  #
+#  Unless required by applicable law or agreed to in writing, software
+#  distributed under the License is distributed on an "AS IS" BASIS,
+#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#  See the License for the specific language governing permissions and
+#  limitations under the License.
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from neo4j_graphrag.components.entity_relation_extractor import (
+    LLMEntityRelationExtractor,
+    OnError,
+)
+from neo4j_graphrag.components.kg_writer import Neo4jWriter
+from neo4j_graphrag.components.data_loader import PdfLoader
+from neo4j_graphrag.components.schema import (
+    SchemaBuilder,
+    NodeType,
+    RelationshipType,
+)
+from neo4j_graphrag.components.text_splitters.fixed_size_splitter import (
+    FixedSizeSplitter,
+)
+from neo4j_graphrag.experimental.pipeline.pipeline import PipelineResult
+from neo4j_graphrag.llm import LLMInterface, OpenAILLM
+
+import neo4j
+
+logging.basicConfig(level=logging.INFO)
+
+
+async def define_and_run_pipeline(
+    neo4j_driver: neo4j.Driver, llm: LLMInterface
+) -> PipelineResult:
+    from neo4j_graphrag.experimental.pipeline import Pipeline
+
+    # Instantiate Entity and Relation objects
+    node_types = [
+        NodeType(label="PERSON", description="An individual human being."),
+        NodeType(
+            label="ORGANIZATION",
+            description="A structured group of people with a common purpose.",
+        ),
+        NodeType(label="LOCATION", description="A location or place."),
+        NodeType(
+            label="HORCRUX",
+            description="A magical item in the Harry Potter universe.",
+        ),
+    ]
+    relationship_types = [
+        RelationshipType(
+            label="SITUATED_AT", description="Indicates the location of a person."
+        ),
+        RelationshipType(
+            label="LED_BY",
+            description="Indicates the leader of an organization.",
+        ),
+        RelationshipType(
+            label="OWNS",
+            description="Indicates the ownership of an item such as a Horcrux.",
+        ),
+        RelationshipType(
+            label="INTERACTS", description="The interaction between two people."
+        ),
+    ]
+    patterns = [
+        ("PERSON", "SITUATED_AT", "LOCATION"),
+        ("PERSON", "INTERACTS", "PERSON"),
+        ("PERSON", "OWNS", "HORCRUX"),
+        ("ORGANIZATION", "LED_BY", "PERSON"),
+    ]
+
+    # Set up the pipeline
+    pipe = Pipeline()
+    pipe.add_component(PdfLoader(), "pdf_loader")
+    pipe.add_component(
+        FixedSizeSplitter(chunk_size=4000, chunk_overlap=200, approximate=False),
+        "splitter",
+    )
+    pipe.add_component(SchemaBuilder(), "schema")
+    pipe.add_component(
+        LLMEntityRelationExtractor(
+            llm=llm,
+            on_error=OnError.RAISE,
+            use_structured_output=True,
+        ),
+        "extractor",
+    )
+    pipe.add_component(Neo4jWriter(neo4j_driver), "writer")
+    pipe.connect("pdf_loader", "splitter", input_config={"text": "pdf_loader.text"})
+    pipe.connect("splitter", "extractor", input_config={"chunks": "splitter"})
+    pipe.connect(
+        "schema",
+        "extractor",
+        input_config={
+            "schema": "schema",
+            "document_info": "pdf_loader.document_info",
+        },
+    )
+    pipe.connect(
+        "extractor",
+        "writer",
+        input_config={"graph": "extractor"},
+    )
+
+    pipe_inputs = {
+        "pdf_loader": {
+            "filepath": "examples/data/Harry Potter and the Death Hallows Summary.pdf"
+        },
+        "schema": {
+            "node_types": node_types,
+            "relationship_types": relationship_types,
+            "patterns": patterns,
+        },
+    }
+    return await pipe.run(pipe_inputs)
+
+
+async def main() -> PipelineResult:
+    res = None
+    try:
+        llm = OpenAILLM(
+            model_name="gpt-5",
+        )
+        driver = neo4j.GraphDatabase.driver(
+            "bolt://localhost:7687", auth=("neo4j", "password")
+        )
+        res = await define_and_run_pipeline(driver, llm)
+    finally:
+        driver.close()
+        await llm.aclose()
+    return res
+
+
+if __name__ == "__main__":
+    res = asyncio.run(main())
+    print(res)

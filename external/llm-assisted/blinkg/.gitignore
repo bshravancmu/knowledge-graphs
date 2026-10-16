@@ -1,0 +1,10 @@
+.idea
+.venv
+src/old
+.DS_Store
+__pycache__
+evaluation/*/mean_column_transpose_prf.csv
+evaluation/*/results
+evaluation/*/*.png
+*.egg-info
+build

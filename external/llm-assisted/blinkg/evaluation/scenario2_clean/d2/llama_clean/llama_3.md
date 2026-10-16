@@ -1,0 +1,7 @@
+| CSV Column             | Ontology Property        | Entity Class      | Related Entity Class | Subject Generation                                                              | Join | Datatype               | 
+|------------------------|--------------------------|-------------------|-----------------------|----------------------------------------------------------------------------------|----------------|-------------------------|
+| `shape_id`             | `gtfs:id`                | `gtfs:Shape`      | -                     | `http://vocab.gtfs.org/terms#Shape/${shape_id}`                                 | -              | `xsd:string`            | 
+| `shape_pt_lat`         | `gtfs:latitude`          | `gtfs:ShapePoint` | `gtfs:Shape`          | `http://vocab.gtfs.org/terms#ShapePoint/${shape_id}_${shape_pt_sequence}`       | `shape_id`     | `geo:lat`              | 
+| `shape_pt_lon`         | `gtfs:longitude`         | `gtfs:ShapePoint` | `gtfs:Shape`          | `http://vocab.gtfs.org/terms#ShapePoint/${shape_id}_${shape_pt_sequence}`       | `shape_id`     | `geo:long`              |
+| `shape_pt_sequence`    | `gtfs:pointSequence`     | `gtfs:ShapePoint` | `gtfs:Shape`          | `http://vocab.gtfs.org/terms#ShapePoint/${shape_id}_${shape_pt_sequence}`       | `shape_id`     | `xsd:nonNegativeInteger`| 
+| `shape_dist_traveled`  | `gtfs:distanceTraveled`  | `gtfs:ShapePoint` | `gtfs:Shape`          | `http://vocab.gtfs.org/terms#ShapePoint/${shape_id}_${shape_pt_sequence}`       | `shape_id`     | `gtfs:nonNegativeFloat` |

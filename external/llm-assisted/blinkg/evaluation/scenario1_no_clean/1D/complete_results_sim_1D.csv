@@ -1,0 +1,31 @@
+column,mean_similarity,LLM,method
+Data Reference,1.0,gemini,max_all
+Datatype,1.0,gemini,max_all
+Entity Class,1.0,gemini,max_all
+Ontology Property,1.0,gemini,max_all
+Subject Generation,0.7727272727272728,gemini,max_all
+Data Reference,0.8497810512781143,o3,max_all
+Datatype,0.7872519691785177,o3,max_all
+Entity Class,1.0,o3,max_all
+Ontology Property,0.9564814814814816,o3,max_all
+Subject Generation,0.7073899359722448,o3,max_all
+Data Reference,1.0,deepseek,max_all
+Datatype,1.0,deepseek,max_all
+Entity Class,1.0,deepseek,max_all
+Ontology Property,1.0,deepseek,max_all
+Subject Generation,0.4631530470993755,deepseek,max_all
+Data Reference,1.0,gpt4o,max_all
+Datatype,1.0,gpt4o,max_all
+Entity Class,1.0,gpt4o,max_all
+Ontology Property,1.0,gpt4o,max_all
+Subject Generation,0.8158344427744547,gpt4o,max_all
+Data Reference,1.0,llama,max_all
+Datatype,1.0,llama,max_all
+Entity Class,1.0,llama,max_all
+Ontology Property,1.0,llama,max_all
+Subject Generation,0.8314492702484131,llama,max_all
+Data Reference,1.0,mixtral,max_all
+Datatype,1.0,mixtral,max_all
+Entity Class,1.0,mixtral,max_all
+Ontology Property,1.0,mixtral,max_all
+Subject Generation,0.4511610931820339,mixtral,max_all

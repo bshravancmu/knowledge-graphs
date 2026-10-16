@@ -1,0 +1,55 @@
+column,LLM,mean_similarity
+CSV Column,deepseek,0.29670254880558716
+CSV Column,gemini,0.3771088975450816
+CSV Column,gpt4o,0.4073724319655744
+CSV Column,llama,0.33732776164616507
+CSV Column,mixtral,0.249436270978053
+CSV Column,o3,0.2676565675448724
+Datatype,deepseek,0.1127716672132085
+Datatype,gemini,0.1385962525446368
+Datatype,gpt4o,0.18235795724463685
+Datatype,llama,0.1579280930401391
+Datatype,mixtral,0.16807507869814214
+Datatype,o3,0.15858008731339246
+Entity Class,deepseek,0.5369797728274741
+Entity Class,gemini,0.3909060334678574
+Entity Class,gpt4o,0.42368490683694976
+Entity Class,llama,0.33910654074560875
+Entity Class,mixtral,0.24980220684106125
+Entity Class,o3,0.4122427836340246
+Function Name,deepseek,0.22488595532351635
+Function Name,gemini,0.12988469273241984
+Function Name,gpt4o,0.0952568660371951
+Function Name,llama,0.11972771890399866
+Function Name,mixtral,0.09485779107214415
+Function Name,o3,0.16988712115146776
+Function Output,deepseek,0.24507935299382855
+Function Output,gemini,0.1596523043699562
+Function Output,gpt4o,0.1433499017286868
+Function Output,llama,0.17472959319749276
+Function Output,mixtral,0.16751833528380156
+Function Output,o3,0.14206367050070734
+Join,deepseek,0.14446313531786759
+Join,gemini,0.1388147614039492
+Join,gpt4o,0.14546194670514925
+Join,llama,0.1456029248899135
+Join,mixtral,0.1296385945765001
+Join,o3,0.1767667864179223
+Ontology Property,deepseek,0.38675083779683456
+Ontology Property,gemini,0.33217947450896723
+Ontology Property,gpt4o,0.31278255960530127
+Ontology Property,llama,0.38875214056347074
+Ontology Property,mixtral,0.2628731825699716
+Ontology Property,o3,0.3627911828914239
+Rel. Entity Class,deepseek,0.28991353531763814
+Rel. Entity Class,gemini,0.24479360724704866
+Rel. Entity Class,gpt4o,0.2817436325583492
+Rel. Entity Class,llama,0.1980126862731415
+Rel. Entity Class,mixtral,0.16994597345520296
+Rel. Entity Class,o3,0.31510588656129024
+Subject Generation,deepseek,0.31660124949432933
+Subject Generation,gemini,0.2891119633691527
+Subject Generation,gpt4o,0.23455790726193745
+Subject Generation,llama,0.3345644321953949
+Subject Generation,mixtral,0.24850193876044357
+Subject Generation,o3,0.18888780068308375

@@ -1,0 +1,25 @@
+column,TP,FP,FN,precision,recall,f1,method
+CSV Column,6,0,0,1.0,1.0,1.0,gemini_2.5_0.70_all
+Entity Class,6,0,0,1.0,1.0,1.0,gemini_2.5_0.70_all
+Ontology Property,6,0,0,1.0,1.0,1.0,gemini_2.5_0.70_all
+Subject Generation,2,0,4,1.0,0.3333333333333333,0.5,gemini_2.5_0.70_all
+CSV Column,5,0,4,1.0,0.5555555555555556,0.7142857142857143,o3_0.70_all
+Entity Class,9,0,0,1.0,1.0,1.0,o3_0.70_all
+Ontology Property,6,0,3,1.0,0.6666666666666666,0.8,o3_0.70_all
+Subject Generation,9,0,0,1.0,1.0,1.0,o3_0.70_all
+CSV Column,6,0,0,1.0,1.0,1.0,deepseek_0.70_all
+Entity Class,6,0,0,1.0,1.0,1.0,deepseek_0.70_all
+Ontology Property,6,0,0,1.0,1.0,1.0,deepseek_0.70_all
+Subject Generation,4,0,2,1.0,0.6666666666666666,0.8,deepseek_0.70_all
+CSV Column,6,0,0,1.0,1.0,1.0,gpt4o_0.70_all
+Entity Class,6,0,0,1.0,1.0,1.0,gpt4o_0.70_all
+Ontology Property,6,0,0,1.0,1.0,1.0,gpt4o_0.70_all
+Subject Generation,6,0,0,1.0,1.0,1.0,gpt4o_0.70_all
+CSV Column,6,0,0,1.0,1.0,1.0,llama_hf_0.70_all
+Entity Class,6,0,0,1.0,1.0,1.0,llama_hf_0.70_all
+Ontology Property,6,0,0,1.0,1.0,1.0,llama_hf_0.70_all
+Subject Generation,6,0,0,1.0,1.0,1.0,llama_hf_0.70_all
+CSV Column,6,0,0,1.0,1.0,1.0,mixtral_hf_0.70_all
+Entity Class,6,0,0,1.0,1.0,1.0,mixtral_hf_0.70_all
+Ontology Property,6,0,0,1.0,1.0,1.0,mixtral_hf_0.70_all
+Subject Generation,4,0,2,1.0,0.6666666666666666,0.8,mixtral_hf_0.70_all
