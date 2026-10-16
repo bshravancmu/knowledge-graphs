@@ -78,3 +78,35 @@
 	path = external/llm-assisted/blinkg
 	url = https://github.com/citiususc/blinkg.git
 	branch = main
+[submodule "external/entity-resolution/splink"]
+	path = external/entity-resolution/splink
+	url = https://github.com/moj-analytical-services/splink.git
+	branch = master
+[submodule "external/entity-resolution/dedupe"]
+	path = external/entity-resolution/dedupe
+	url = https://github.com/dedupeio/dedupe.git
+	branch = main
+[submodule "external/validation/pyshacl"]
+	path = external/validation/pyshacl
+	url = https://github.com/RDFLib/pySHACL.git
+	branch = master
+[submodule "external/mapping-tools/linkml"]
+	path = external/mapping-tools/linkml
+	url = https://github.com/linkml/linkml.git
+	branch = main
+[submodule "external/stores/oxigraph"]
+	path = external/stores/oxigraph
+	url = https://github.com/oxigraph/oxigraph.git
+	branch = main
+[submodule "external/stores/qlever"]
+	path = external/stores/qlever
+	url = https://github.com/ad-freiburg/qlever.git
+	branch = master
+[submodule "external/orchestration/dagster"]
+	path = external/orchestration/dagster
+	url = https://github.com/dagster-io/dagster.git
+	branch = master
+[submodule "external/profiling/ydata-profiling"]
+	path = external/profiling/ydata-profiling
+	url = https://github.com/ydataai/ydata-profiling.git
+	branch = develop
