@@ -1,15 +1,3 @@
-[submodule "external/mapping-tools/yarrrml-parser"]
-	path = external/mapping-tools/yarrrml-parser
-	url = https://github.com/RMLio/yarrrml-parser.git
-	branch = development
-[submodule "external/mapping-tools/yatter"]
-	path = external/mapping-tools/yatter
-	url = https://github.com/citiususc/yatter.git
-	branch = main
-[submodule "external/mapping-tools/linkml-map"]
-	path = external/mapping-tools/linkml-map
-	url = https://github.com/linkml/linkml-map.git
-	branch = main
 [submodule "external/mapping-tools/awesome-kgc-tools"]
 	path = external/mapping-tools/awesome-kgc-tools
 	url = https://github.com/kg-construct/awesome-kgc-tools.git
@@ -62,10 +50,6 @@
 	path = external/validation/pyshacl
 	url = https://github.com/RDFLib/pySHACL.git
 	branch = master
-[submodule "external/mapping-tools/linkml"]
-	path = external/mapping-tools/linkml
-	url = https://github.com/linkml/linkml.git
-	branch = main
 [submodule "external/stores/oxigraph"]
 	path = external/stores/oxigraph
 	url = https://github.com/oxigraph/oxigraph.git

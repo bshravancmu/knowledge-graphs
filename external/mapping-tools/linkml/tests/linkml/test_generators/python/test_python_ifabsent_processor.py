@@ -1,0 +1,626 @@
+import pytest
+
+from linkml.generators.python.python_ifabsent_processor import PythonIfAbsentProcessor
+from linkml_runtime import SchemaView
+from linkml_runtime.linkml_model import ClassDefinitionName, SlotDefinitionName
+
+base_schema = """
+id: ifabsent_tests
+name: ifabsent_tests
+
+prefixes:
+  ex: https://example.org/
+default_prefix: ex
+default_range: float
+
+classes:
+  Student:
+    attributes:
+"""
+
+
+@pytest.mark.parametrize("default_value", PythonIfAbsentProcessor.UNIMPLEMENTED_DEFAULT_VALUES)
+def test_unimplemented_default_value(default_value):
+    schema = (
+        base_schema
+        + f"""
+      - name: unimplemented
+        ifabsent: {default_value}
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("unimplemented")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        is None
+    )
+
+
+def test_string_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: studentName
+        range: string
+        ifabsent: string(N/A)
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("studentName")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == '"N/A"'
+    )
+
+
+def test_boolean_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: didHomework
+        range: boolean
+        ifabsent: boolean(True)
+      - name: wasLate
+        range: boolean
+        ifabsent: boolean(False)
+      - name: invalidBoolean
+        range: boolean
+        ifabsent: boolean(invalid)
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("didHomework")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "True"
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("wasLate")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "False"
+    )
+
+    with pytest.raises(ValueError) as e:
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("invalidBoolean")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+
+    assert str(e.value) == (
+        "The ifabsent value `boolean(invalid)` of the `invalidBoolean` slot does not match a valid boolean value"
+    )
+
+
+def test_numeric_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: age
+        range: integer
+        ifabsent: integer(17)
+      - name: averageScore
+        range: float
+        ifabsent: float(13.52)
+      - name: minimalScore
+        range: double
+        ifabsent: double(8.453)
+      - name: maximalScore
+        range: decimal
+        ifabsent: decimal(18.9)
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("age")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "17"
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("averageScore")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "13.52"
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("minimalScore")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "8.453"
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("maximalScore")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "18.9"
+    )
+
+
+def test_time_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: arrivalTime
+        range: time
+        ifabsent: time(08:13:04)
+      - name: departureTime
+        range: time
+        ifabsent: time(17:32:22.5)
+      - name: invalidTime
+        range: time
+        ifabsent: time(invalid)
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("arrivalTime")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "time(8, 13, 4)"
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("departureTime")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "time(17, 32, 22)"
+    )
+
+    with pytest.raises(ValueError) as e:
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("invalidTime")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+
+    assert str(e.value) == (
+        "The ifabsent value `time(invalid)` of the `invalidTime` slot does not match a valid time value"
+    )
+
+
+def test_date_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: lastSickLeave
+        range: date
+        ifabsent: date(2024-06-26)
+      - name: graduationDate
+        range: date_or_datetime
+        ifabsent: date(2026-06-18)
+      - name: invalidDate
+        range: date
+        ifabsent: date(invalid)
+      - name: invalidDateOrDatetime
+        range: date_or_datetime
+        ifabsent: date(invalid)
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("lastSickLeave")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "date(2024, 6, 26)"
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("graduationDate")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "date(2026, 6, 18)"
+    )
+
+    with pytest.raises(ValueError) as e:
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("invalidDate")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+
+    assert str(e.value) == (
+        "The ifabsent value `date(invalid)` of the `invalidDate` slot does not match a valid date value"
+    )
+
+    with pytest.raises(ValueError) as e:
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("invalidDateOrDatetime")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+
+    assert str(e.value) == (
+        "The ifabsent value `date(invalid)` of the `invalidDateOrDatetime` slot does not match a valid date or "
+        "datetime value"
+    )
+
+
+def test_datetime_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: creationTimestamp
+        range: datetime
+        ifabsent: datetime(2024-04-12T11:45:34)
+      - name: modificationTimestamp
+        range: datetime
+        ifabsent: datetime(2024-04-18T09:10:11Z)
+      - name: lastMeetingWithParents
+        range: date_or_datetime
+        ifabsent: datetime(2024-02-09T18:25:44Z)
+      - name: invalidDatetime
+        range: datetime
+        ifabsent: datetime(invalid)
+      - name: invalidDateOrDatetime
+        range: date_or_datetime
+        ifabsent: datetime(invalid)
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("creationTimestamp")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "datetime(2024, 4, 12, 11, 45, 34)"
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("modificationTimestamp")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "datetime(2024, 4, 18, 9, 10, 11)"
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("lastMeetingWithParents")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "datetime(2024, 2, 9, 18, 25, 44)"
+    )
+
+    with pytest.raises(ValueError) as e:
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("invalidDatetime")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+
+    assert str(e.value) == (
+        "The ifabsent value `datetime(invalid)` of the `invalidDatetime` slot does not match a valid datetime value"
+    )
+
+    with pytest.raises(ValueError) as e:
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("invalidDateOrDatetime")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+
+    assert str(e.value) == (
+        "The ifabsent value `datetime(invalid)` of the `invalidDateOrDatetime` slot does not match a valid date or "
+        "datetime value"
+    )
+
+
+def test_uri_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: classUri
+        range: uri
+        ifabsent: uri(https://example.org/class/123)
+      - name: schoolUri
+        range: uri
+        ifabsent: uri(ex:school/321)
+      - name: parentsUri
+        range: uri
+        ifabsent: uri(https://parents.com/456)
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("classUri")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == 'EX["class/123"]'
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("schoolUri")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == 'EX["school/321"]'
+    )
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("parentsUri")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == '"https://parents.com/456"'
+    )
+
+
+def test_enum_no_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: presence
+        range: PresenceEnum
+      - name: invalidPresence
+        range: PresenceEnum
+
+enums:
+  PresenceEnum:
+    permissible_values:
+      Present:
+        description: It's there.
+      Missing:
+        description: It's not there.
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("presence")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        is None
+    )
+
+
+def test_enum_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: presence
+        range: PresenceEnum
+        ifabsent: PresenceEnum(Missing)
+      - name: invalidPresence
+        range: PresenceEnum
+        ifabsent: PresenceEnum(invalid)
+
+enums:
+  PresenceEnum:
+    permissible_values:
+      Present:
+        description: It's there.
+      Missing:
+        description: It's not there.
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("presence")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        == "'Missing'"
+    )
+
+    with pytest.raises(ValueError) as e:
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("invalidPresence")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+
+    assert str(e.value) == (
+        "The ifabsent value `PresenceEnum(invalid)` of the `invalidPresence` slot could not be processed"
+    )
+
+
+@pytest.mark.parametrize("range", ["uri", "curie", "uriorcurie"])
+@pytest.mark.parametrize(
+    "ifabsent,expected",
+    [
+        ["class_uri", '"https://example.org/Student"'],
+        ["slot_uri", '"https://example.org/default_urilike"'],
+        ["class_curie", '"ex:Student"'],
+        ["slot_curie", '"ex:default_urilike"'],
+    ],
+)
+def test_uriorcurie_default_value(ifabsent, expected, range):
+    schema = (
+        base_schema
+        + f"""
+      - name: default_urilike
+        range: {range}
+        ifabsent: {ifabsent}
+        """
+    )
+    sv = SchemaView(schema)
+    cls = sv.all_classes()["Student"]
+    slot = cls.attributes["default_urilike"]
+    processor = PythonIfAbsentProcessor(sv)
+    result = processor.process_slot(slot, cls)
+    if range != "uriorcurie" and ifabsent.split("_")[1] != range:
+        assert result is None
+    else:
+        assert result == expected
+
+
+def test_default_range_default_value():
+    schema = (
+        base_schema
+        + """
+      - name: default_range_slot
+        range: string
+        ifabsent: default_range
+        """
+    )
+    sv = SchemaView(schema)
+    cls = sv.all_classes()["Student"]
+    slot = cls.attributes["default_range_slot"]
+    processor = PythonIfAbsentProcessor(sv)
+    result = processor.process_slot(slot, cls)
+    assert result == '"float"'
+
+
+def test_default_ns_returns_none():
+    """default_ns ifabsent value is handled at runtime in __post_init__,
+    so the ifabsent processor should return None (no static default)."""
+    schema = (
+        base_schema
+        + """
+      - name: default_prefix
+        range: string
+        ifabsent: default_ns
+    """
+    )
+    schema_view = SchemaView(schema)
+
+    processor = PythonIfAbsentProcessor(schema_view)
+
+    assert (
+        processor.process_slot(
+            schema_view.all_slots()[SlotDefinitionName("default_prefix")],
+            schema_view.all_classes()[ClassDefinitionName("Student")],
+        )
+        is None
+    )
+
+
+# Build a metamodel-shaped schema (id == META_URI) so the processor's metamodel
+# special-case fires. Mirrors the meta.yaml entries for these slots: each one is
+# the trigger case that was cross-contaminating user instances in meta.py before
+# the fix (SlotDefinition.range = "string", SlotDefinition.slot_uri = "linkml:slot_uri",
+# ClassDefinition.class_uri = "linkml:ClassDefinition", EnumDefinition.enum_uri = "linkml:EnumDefinition").
+metamodel_schema = """
+id: https://w3id.org/linkml/meta
+name: meta
+prefixes:
+  linkml: https://w3id.org/linkml/
+default_prefix: linkml
+default_range: string
+classes:
+  SlotDefinition:
+    attributes:
+      range:
+        range: string
+        ifabsent: default_range
+      slot_uri:
+        range: uriorcurie
+        ifabsent: slot_curie
+      direct_slot_uri:
+        range: uriorcurie
+        ifabsent: slot_uri
+  ClassDefinition:
+    attributes:
+      class_uri:
+        range: uriorcurie
+        ifabsent: class_curie
+      direct_class_uri:
+        range: uriorcurie
+        ifabsent: class_uri
+  EnumDefinition:
+    attributes:
+      enum_uri:
+        range: uriorcurie
+        ifabsent: class_curie
+types:
+  string:
+    uri: xsd:string
+    base: str
+  uriorcurie:
+    uri: xsd:anyURI
+    base: str
+"""
+
+
+@pytest.mark.parametrize(
+    "cls_name,slot_name",
+    [
+        ("SlotDefinition", "range"),  # ifabsent: default_range
+        ("SlotDefinition", "slot_uri"),  # ifabsent: slot_curie
+        ("SlotDefinition", "direct_slot_uri"),  # ifabsent: slot_uri
+        ("ClassDefinition", "class_uri"),  # ifabsent: class_curie
+        ("ClassDefinition", "direct_class_uri"),  # ifabsent: class_uri
+        ("EnumDefinition", "enum_uri"),  # ifabsent: class_curie
+    ],
+)
+def test_metamodel_runtime_computed_ifabsent_returns_none(cls_name, slot_name):
+    """On the metamodel schema, runtime-computed ifabsent directives must not be
+    baked as static dataclass defaults. SchemaView.induced_slot() resolves these
+    per-instance at load time; baking would cross-contaminate every user-schema
+    slot/class with the metamodel's own URIs/range."""
+    schema_view = SchemaView(metamodel_schema)
+    processor = PythonIfAbsentProcessor(schema_view)
+    cls = schema_view.all_classes()[ClassDefinitionName(cls_name)]
+    slot = cls.attributes[slot_name]
+    assert processor.process_slot(slot, cls) is None
+
+
+def test_runtime_computed_ifabsent_still_bakes_for_user_schemas():
+    """For non-metamodel schemas, the runtime-computed ifabsent directives must
+    still bake as static defaults — this is user-facing behavior (see test_issue_675)."""
+    schema = (
+        base_schema
+        + """
+      - name: my_class_curie
+        range: curie
+        ifabsent: class_curie
+    """
+    )
+    schema_view = SchemaView(schema)
+    processor = PythonIfAbsentProcessor(schema_view)
+    cls = schema_view.all_classes()[ClassDefinitionName("Student")]
+    slot = cls.attributes["my_class_curie"]
+    assert processor.process_slot(slot, cls) == '"ex:Student"'
+
+
+@pytest.mark.parametrize("cls_name", ["Inheritance", "Base"])
+def test_custom_types(cls_name, input_path):
+    """
+    Custom types should have their defaults correctly resolved against
+    their ancestors or bases
+    """
+    schema = input_path("ifabsent_custom_types.yaml")
+    sv = SchemaView(schema)
+
+    cls = sv.induced_class(cls_name)
+    processor = PythonIfAbsentProcessor(sv)
+    for attr_name, attr in cls.attributes.items():
+        default = processor.process_slot(attr, cls)
+        if "value" not in attr.annotations:
+            continue
+        assert default == attr.annotations["value"].value

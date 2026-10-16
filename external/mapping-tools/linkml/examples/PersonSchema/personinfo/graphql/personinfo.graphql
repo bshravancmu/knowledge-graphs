@@ -1,0 +1,246 @@
+# metamodel_version: 1.7.0
+enum DiagnosisType
+  {
+    todo
+  }
+
+enum FamilialRelationshipType
+  {
+    SIBLING_OF
+    PARENT_OF
+    CHILD_OF
+  }
+
+enum GenderType
+  {
+    nonbinary_man
+    nonbinary_woman
+    transgender_woman
+    transgender_man
+    cisgender_man
+    cisgender_woman
+  }
+
+enum NonFamilialRelationshipType
+  {
+    COWORKER_OF
+    ROOMMATE_OF
+    BEST_FRIEND_OF
+    MORTAL_ENEMY_OF
+  }
+
+enum OrganizationType
+  {
+    non_profit
+    for_profit
+    offshore
+    charity
+    shell_company
+    loose_organization
+  }
+
+type Address
+  {
+    street: String
+    city: String
+    postalCode: String
+  }
+
+type CodeSystem
+  {
+    id: Uriorcurie!
+    name: String!
+  }
+
+type Concept
+  {
+    id: Uriorcurie!
+    name: String!
+    description: String
+    depictedBy: ImageURL
+    codeSystem: CodeSystem
+    mappings: [CrossReference]
+  }
+
+type Container
+  {
+    persons: [Person]
+    organizations: [Organization]
+    places: [Place]
+  }
+
+type DiagnosisConcept
+  {
+    id: Uriorcurie!
+    name: String!
+    description: String
+    depictedBy: ImageURL
+    codeSystem: CodeSystem
+    mappings: [CrossReference]
+  }
+
+type EmploymentEvent
+  {
+    startedAtTime: Date
+    endedAtTime: Date
+    duration: Float
+    isCurrent: Boolean
+    employedAt: Organization
+    salary: SalaryType
+  }
+
+type Event
+  {
+    startedAtTime: Date
+    endedAtTime: Date
+    duration: Float
+    isCurrent: Boolean
+  }
+
+type FamilialRelationship
+  {
+    startedAtTime: Date
+    endedAtTime: Date
+    relatedTo: Person
+    type: FamilialRelationshipType!
+    relatedTo: Person!
+  }
+
+interface HasAliases
+  {
+    aliases: [String]
+  }
+
+interface HasNewsEvents
+  {
+    hasNewsEvents: [NewsEvent]
+  }
+
+type ImagingProcedureConcept
+  {
+    id: Uriorcurie!
+    name: String!
+    description: String
+    depictedBy: ImageURL
+    codeSystem: CodeSystem
+    mappings: [CrossReference]
+  }
+
+type IntegerPrimaryKeyObject
+  {
+    intId: Integer!
+  }
+
+type InterPersonalRelationship
+  {
+    startedAtTime: Date
+    endedAtTime: Date
+    relatedTo: Person
+    type: String!
+    relatedTo: Person!
+  }
+
+type MedicalEvent implements WithLocation
+  {
+    startedAtTime: Date
+    endedAtTime: Date
+    duration: Float
+    isCurrent: Boolean
+    diagnosis: DiagnosisConcept
+    procedure: ProcedureConcept
+    inLocation: Place
+  }
+
+type NamedThing
+  {
+    id: Uriorcurie!
+    name: String!
+    description: String
+    depictedBy: ImageURL
+  }
+
+type NewsEvent
+  {
+    startedAtTime: Date
+    endedAtTime: Date
+    duration: Float
+    isCurrent: Boolean
+    headline: String
+  }
+
+type OperationProcedureConcept
+  {
+    id: Uriorcurie!
+    name: String!
+    description: String
+    depictedBy: ImageURL
+    codeSystem: CodeSystem
+    mappings: [CrossReference]
+  }
+
+type Organization implements HasAliases, HasNewsEvents
+  {
+    id: Uriorcurie!
+    name: String!
+    description: String
+    depictedBy: ImageURL
+    missionStatement: String
+    foundingDate: String
+    foundingLocation: Place
+    categories: [OrganizationType]
+    score: Decimal
+    minSalary: SalaryType
+    aliases: [String]
+    hasNewsEvents: [NewsEvent]
+  }
+
+type Person implements HasAliases, HasNewsEvents
+  {
+    id: Uriorcurie!
+    name: String!
+    description: String
+    depictedBy: ImageURL
+    primaryEmail: String
+    birthDate: String
+    age: Integer
+    gender: GenderType
+    currentAddress: Address
+    telephone: String
+    hasEmploymentHistory: [EmploymentEvent]
+    hasFamilialRelationships: [FamilialRelationship]
+    hasInterpersonalRelationships: [InterPersonalRelationship]
+    hasMedicalHistory: [MedicalEvent]
+    aliases: [String]
+    hasNewsEvents: [NewsEvent]
+  }
+
+type Place implements HasAliases
+  {
+    id: Uriorcurie!
+    name: String!
+    depictedBy: ImageURL
+    aliases: [String]
+  }
+
+type ProcedureConcept
+  {
+    id: Uriorcurie!
+    name: String!
+    description: String
+    depictedBy: ImageURL
+    codeSystem: CodeSystem
+    mappings: [CrossReference]
+  }
+
+type Relationship
+  {
+    startedAtTime: Date
+    endedAtTime: Date
+    relatedTo: Person
+    type: String
+  }
+
+interface WithLocation
+  {
+    inLocation: Place
+  }

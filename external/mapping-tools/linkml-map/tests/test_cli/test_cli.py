@@ -1,0 +1,481 @@
+"""Tests all command-line subcommands."""
+
+import json
+import logging
+import re
+from collections.abc import Generator
+from pathlib import Path
+
+import pytest
+import yaml
+from click.testing import CliRunner, Result
+from linkml_runtime import SchemaView
+
+from linkml_map.cli.cli import dump_output, main
+from linkml_map.transformer.errors import TransformationError
+from tests import (
+    DENORM_SPECIFICATION,
+    FLATTENING_DATA,
+    NORM_SCHEMA,
+    PERSONINFO_CONTAINER_DATA,
+    PERSONINFO_CONTAINER_TGT_DATA,
+    PERSONINFO_DERIVED,
+    PERSONINFO_SRC_SCHEMA,
+    PERSONINFO_TR,
+    PERSONINFO_TR_COMPILED_MD,
+    PERSONINFO_TR_COMPILED_PY,
+)
+
+DERIVED_SCHEMA_NAME_LINE = "name: personinfo-derived"
+
+
+@pytest.fixture
+def runner() -> CliRunner:
+    """
+    Command line interface test runner.
+
+    :return: command line interface runner
+    :rtype: CliRunner
+    """
+    return CliRunner()
+
+
+def test_main_help(runner: CliRunner) -> None:
+    """
+    Ensure that the help command contains the appropriate text.
+
+    :param runner: command line interface runner
+    :type runner: CliRunner
+    """
+    result = runner.invoke(main, ["--help"])
+    out = result.stdout
+    assert "derive-schema" in out
+    assert "map-data" in out
+    assert result.exit_code == 0
+
+
+@pytest.fixture
+def restore_root_log_level() -> Generator[None, None, None]:
+    """
+    Restore the root logger level, which the ``main`` group mutates globally.
+
+    :return: nothing; yields control to the test
+    :rtype: Generator[None, None, None]
+    """
+    level = logging.getLogger().level
+    yield
+    logging.getLogger().setLevel(level)
+
+
+@pytest.mark.parametrize("flag", ["-q", "--quiet", "-v", "--verbose"])
+def test_group_log_flag_does_not_consume_the_subcommand(
+    runner: CliRunner, restore_root_log_level: None, flag: str
+) -> None:
+    """
+    Ensure the group-level logging options are flags, not value-taking options.
+
+    ``--quiet`` was declared without ``is_flag=True``, so click treated the
+    following token as its value: ``-q derive-schema`` swallowed the subcommand
+    and printed the group help instead of running anything.
+
+    :param runner: command line interface runner
+    :type runner: CliRunner
+    :param restore_root_log_level: resets the level this mutates
+    :type restore_root_log_level: None
+    :param flag: group-level logging flag under test
+    :type flag: str
+    """
+    cmd = [flag, "derive-schema", "-T", str(PERSONINFO_TR), str(PERSONINFO_SRC_SCHEMA)]
+    result = runner.invoke(main, cmd)
+    assert result.exit_code == 0
+    assert DERIVED_SCHEMA_NAME_LINE in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_level"),
+    [
+        ([], logging.WARNING),
+        (["-q"], logging.ERROR),
+        (["-v"], logging.INFO),
+        (["-vv"], logging.DEBUG),
+    ],
+)
+def test_group_log_flags_set_the_root_level(
+    runner: CliRunner, restore_root_log_level: None, args: list[str], expected_level: int
+) -> None:
+    """
+    Check each logging flag resolves to the level it advertises.
+
+    :param runner: command line interface runner
+    :type runner: CliRunner
+    :param restore_root_log_level: resets the level this mutates
+    :type restore_root_log_level: None
+    :param args: group-level flags preceding the subcommand
+    :type args: list[str]
+    :param expected_level: logging level the flags should produce
+    :type expected_level: int
+    """
+    cmd = [*args, "derive-schema", "-T", str(PERSONINFO_TR), str(PERSONINFO_SRC_SCHEMA)]
+    result = runner.invoke(main, cmd)
+    assert result.exit_code == 0
+    assert logging.getLogger().level == expected_level
+
+
+def check_result(result: Result, expected_file: Path, output_param: str | None = None) -> None:
+    """
+    Check that the result of running a function matches the expected output.
+
+    :param result: result object from the CliRunner
+    :type result: Result
+    :param expected_file: path to the expected result
+    :type expected_file: Path
+    :param output_param: output param supplied to the function, defaults to None
+    :type output_param: Optional[str], optional
+    """
+    if output_param:
+        with output_param.open() as fh:
+            function_output = fh.read()
+    else:
+        function_output = result.stdout
+
+    with expected_file.open() as fh:
+        assert fh.read() == function_output
+
+
+@pytest.mark.parametrize("output", [None, "output.py"])
+@pytest.mark.parametrize("target", [None, "python", "markdown", "klingon"])
+def test_compile(
+    runner: CliRunner,
+    target: str | None,
+    output: str | None,
+    tmp_path: Generator[Path, None, None],
+) -> None:
+    """
+    Basic test of the python compiler functionality.
+
+    :param runner: command line interface runner
+    :type runner: CliRunner
+    :param target: target language for compiled transformer
+    :type target: Optional[str]
+    :param output: output file, optional
+    :type output: Optional[str]
+    :param tmp_path: tmp dir for writing output to (if appropriate)
+    :type tmp_path: Generator[Path, None, None]
+    """
+    cmd = [
+        "compile",
+        "-T",
+        str(PERSONINFO_TR),
+        "-s",
+        str(PERSONINFO_SRC_SCHEMA),
+    ]
+    if target:
+        cmd.extend(["--target", target])
+    if output:
+        output = tmp_path / output
+        cmd.extend(["--output", str(output)])
+
+    result = runner.invoke(main, cmd)
+    if target and target == "klingon":
+        assert result.exit_code != 0
+        assert isinstance(result.exception, NotImplementedError)
+        assert result.exception.args[0] == "Compiler klingon not implemented"
+        return
+
+    assert result.exit_code == 0
+    if target and target == "markdown":
+        check_result(result, PERSONINFO_TR_COMPILED_MD, output)
+    else:
+        check_result(result, PERSONINFO_TR_COMPILED_PY, output)
+
+
+@pytest.mark.parametrize("output", [None, "output.yaml"])
+def test_derive_schema(runner: CliRunner, output: str | None, tmp_path: Generator[Path, None, None]) -> None:
+    """
+    Test schema derivation.
+
+    :param runner: command line interface runner
+    :type runner: CliRunner
+    :param output: output file, optional
+    :type output: Optional[str]
+    :param tmp_path: tmp dir for writing output to (if appropriate)
+    :type tmp_path: Generator[Path, None, None]
+    """
+    cmd = ["derive-schema", "-T", str(PERSONINFO_TR), str(PERSONINFO_SRC_SCHEMA)]
+    if output:
+        output = tmp_path / output
+        cmd.extend(["--output", str(output)])
+    result = runner.invoke(main, cmd)
+    assert result.exit_code == 0
+    check_result(result, PERSONINFO_DERIVED, output)
+    result_schema = result.stdout
+    if output:
+        with output.open() as fh:
+            result_schema = fh.read()
+    assert DERIVED_SCHEMA_NAME_LINE in result_schema
+    sv = SchemaView(result_schema)
+    assert "Agent" in sv.all_classes()
+
+
+def _map_data_cmd(*extra_args: str) -> list[str]:
+    """Build a ``map-data`` invocation for the personinfo_basic example."""
+    return [
+        "map-data",
+        *extra_args,
+        "-T",
+        str(PERSONINFO_TR),
+        "-s",
+        str(PERSONINFO_SRC_SCHEMA),
+        str(PERSONINFO_CONTAINER_DATA),
+    ]
+
+
+def _drop_nulls(obj: object) -> object:
+    """Recursively strip ``None``-valued keys, which the CLI omits from its output."""
+    if isinstance(obj, dict):
+        return {k: _drop_nulls(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, list):
+        return [_drop_nulls(v) for v in obj]
+    return obj
+
+
+def test_map_data(runner: CliRunner) -> None:
+    """``map-data --unrestricted-eval`` reproduces the committed example output."""
+    result = runner.invoke(main, _map_data_cmd("--unrestricted-eval"))
+    assert result.exit_code == 0
+    with PERSONINFO_CONTAINER_TGT_DATA.open() as fh:
+        expected = yaml.safe_load(fh)
+    assert yaml.safe_load(result.stdout) == _drop_nulls(expected)
+
+
+def test_map_data_without_unrestricted_eval_fails(runner: CliRunner) -> None:
+    """The example's ``src.`` expressions need unrestricted eval; safe mode must not
+    silently emit partial data.
+
+    See https://github.com/linkml/linkml-map/issues/270.
+    """
+    result = runner.invoke(main, _map_data_cmd())
+    assert result.exit_code != 0
+    assert isinstance(result.exception, TransformationError)
+    assert "driving_since" in str(result.exception)
+
+
+def _write_typo_spec_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Write a minimal schema + spec (with a typo'd expr) + input row to tmp_path.
+
+    Returns (schema_path, spec_path, input_path).
+    """
+    schema_path = tmp_path / "schema.yaml"
+    schema_path.write_text(
+        "id: https://example.org/typo-source\n"
+        "name: typo_source\n"
+        "prefixes:\n"
+        "  linkml: https://w3id.org/linkml/\n"
+        "imports:\n"
+        "  - linkml:types\n"
+        "default_range: string\n"
+        "classes:\n"
+        "  Person:\n"
+        "    attributes:\n"
+        "      id: {identifier: true}\n"
+        "      score: {range: integer}\n"
+    )
+    spec_path = tmp_path / "spec.yaml"
+    spec_path.write_text(
+        "source_schema:\n"
+        "  name: typo_source\n"
+        "class_derivations:\n"
+        "  Agent:\n"
+        "    populated_from: Person\n"
+        "    slot_derivations:\n"
+        "      name:\n"
+        '        expr: "{scroe}"\n'  # codespell:ignore
+    )
+    input_path = tmp_path / "input.yaml"
+    input_path.write_text("id: p1\nscore: 5\n")
+    return schema_path, spec_path, input_path
+
+
+def test_map_data_strict_flag_surfaces_typo(runner: CliRunner, tmp_path: Path) -> None:
+    """`--strict` makes an expression typo fail the command instead of silent null."""
+    schema_path, spec_path, input_path = _write_typo_spec_fixture(tmp_path)
+    result = runner.invoke(
+        main,
+        [
+            "map-data",
+            "--strict",
+            "-T",
+            str(spec_path),
+            "-s",
+            str(schema_path),
+            "--source-type",
+            "Person",
+            str(input_path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "scroe" in (result.stderr + str(result.exception))  # codespell:ignore
+
+
+def test_map_data_no_strict_default_succeeds(runner: CliRunner, tmp_path: Path) -> None:
+    """Default (non-strict) preserves backward-compat: exits 0, produces empty/null output."""
+    schema_path, spec_path, input_path = _write_typo_spec_fixture(tmp_path)
+    result = runner.invoke(
+        main,
+        [
+            "map-data",
+            "-T",
+            str(spec_path),
+            "-s",
+            str(schema_path),
+            "--source-type",
+            "Person",
+            str(input_path),
+        ],
+    )
+    assert result.exit_code == 0
+    # Null values are omitted by the YAML dumper, so {name: None} round-trips to {}.
+    out = yaml.safe_load(result.stdout) or {}
+    assert out.get("name") is None
+
+
+def test_map_data_norm_denorm(runner: CliRunner) -> None:
+    cmd = [
+        "map-data",
+        "-T",
+        str(DENORM_SPECIFICATION),
+        "-s",
+        str(NORM_SCHEMA),
+        str(FLATTENING_DATA),
+    ]
+    result = runner.invoke(main, cmd)
+    assert result.exit_code == 0
+    out = result.stdout
+    tr_data = yaml.safe_load(out)
+    m = tr_data["mappings"][0]
+    assert m["subject_id"] == "X:1"
+    assert m["subject_name"] == "x1"
+
+
+EXPECTED_OUTPUT = {
+    "dict": {"input": {"that": "this"}, "yaml": "that: this\n"},
+    "list": {
+        "input": ["this", "that", "the other"],
+        "yaml": "- this\n- that\n- the other\n",
+    },
+    "string": {
+        "input": "But how long is it?",
+        "yaml": "But how long is it?\n...\n",  # eh??
+        None: "But how long is it?",
+    },
+}
+
+
+@pytest.mark.parametrize("file_path", [None, "output.txt"])
+@pytest.mark.parametrize("output_format", [None, "yaml"])
+@pytest.mark.parametrize("output_data", EXPECTED_OUTPUT.keys())
+def test_dump_output(
+    capsys: Generator[pytest.CaptureFixture, None, None],
+    tmp_path: Generator[Path, None, None],
+    file_path: str | None,
+    output_format: str | None,
+    output_data: dict | list,
+) -> None:
+    """Ensure that the dump_output function does what it says."""
+    if file_path:
+        file_path = str(tmp_path / file_path)
+
+    # if there is no `output_format` key, this data cannot be dumped
+    if output_format not in EXPECTED_OUTPUT[output_data]:
+        with pytest.raises(TypeError, match=re.escape(f"write() argument must be str, not {output_data}")):
+            dump_output(EXPECTED_OUTPUT[output_data]["input"], output_format, file_path)
+        return
+
+    dump_output(EXPECTED_OUTPUT[output_data]["input"], output_format, file_path)
+    expected_text = EXPECTED_OUTPUT[output_data][output_format]
+    if not file_path:
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == expected_text
+        return
+
+    with Path(file_path).open() as f:
+        assert f.read() == expected_text
+
+
+@pytest.mark.parametrize(
+    ("param", "value", "error", "message"),
+    [
+        ("output_format", "xml", NotImplementedError, "Output format xml is not supported"),
+        ("output_data", None, ValueError, "No output to be printed"),
+        ("file_path", "path/to/a/dir", FileNotFoundError, "No such file or directory"),
+    ],
+)
+def test_dump_output_fail(param: str, value: str | None, error: Exception, message: str) -> None:
+    """
+    Ensure that invalid input causes dump_output to fail.
+    """
+    default_params = {"output_data": {"this": "that"}, "output_format": "yaml", "file_path": None}
+    test_params = {**default_params, param: value}
+    with pytest.raises(error, match=message):
+        dump_output(**test_params)
+
+
+@pytest.mark.parametrize("output_format", ["json", "jsonl", "tsv", "csv"])
+def test_dump_output_supported_formats(
+    capsys: Generator[pytest.CaptureFixture, None, None],
+    output_format: str,
+) -> None:
+    """Test that supported output formats (json, jsonl, tsv, csv) work correctly."""
+    test_data = {"name": "test", "value": 123}
+    dump_output(test_data, output_format, None)
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert len(captured.out) > 0
+
+    # Basic format-specific checks
+    if output_format == "json":
+        assert "{" in captured.out
+        assert '"name"' in captured.out
+    elif output_format == "jsonl":
+        # JSONL: single object should be a single line of JSON
+        lines = captured.out.strip().split("\n")
+        assert len(lines) == 1
+        # Verify it's valid JSON
+        json.loads(lines[0])
+    elif output_format in ("tsv", "csv"):
+        assert "name" in captured.out
+        assert "value" in captured.out
+
+
+@pytest.mark.parametrize("output_format", ["json", "jsonl"])
+def test_dump_output_json_trailing_newline(
+    capsys: Generator[pytest.CaptureFixture, None, None],
+    output_format: str,
+) -> None:
+    """JSON and JSONL output should end with a newline character."""
+    dump_output({"name": "test"}, output_format, None)
+    captured = capsys.readouterr()
+    assert captured.out.endswith("\n")
+
+
+def test_dump_output_json_omits_null_values(
+    capsys: Generator[pytest.CaptureFixture, None, None],
+) -> None:
+    """JSON output should omit keys with None values, matching YAML behavior."""
+    dump_output({"name": "Alice", "email": None}, "json", None)
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data == {"name": "Alice"}
+    assert "email" not in data
+
+
+def test_dump_output_jsonl_omits_null_values(
+    capsys: Generator[pytest.CaptureFixture, None, None],
+) -> None:
+    """JSONL output should omit keys with None values, matching YAML behavior."""
+    dump_output([{"a": 1, "b": None}, {"a": None, "b": 2}], "jsonl", None)
+    captured = capsys.readouterr()
+    lines = [json.loads(line) for line in captured.out.strip().split("\n")]
+    assert lines[0] == {"a": 1}
+    assert lines[1] == {"b": 2}

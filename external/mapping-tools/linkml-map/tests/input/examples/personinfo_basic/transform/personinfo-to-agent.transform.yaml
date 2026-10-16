@@ -1,0 +1,136 @@
+# Run this spec with `linkml-map map-data --unrestricted-eval`. Several Agent
+# derivations use `src.` accessors and comprehensions, which safe mode does not
+# provide; without the flag `src` resolves to None and the derivation fails.
+id: https://w3id.org/linkml/map/example/personinfo-to-agent.transform.yaml
+title: PersonInfo to Agent example transformation
+version: 0.1
+prefixes:
+  foo: foo
+  semapv: https://w3id.org/semapv/vocab/
+description: |
+  This mapping set demonstrates how to transform a person information schema
+  into a different format using LinkML.
+license: https://creativecommons.org/licenses/by/4.0/
+creator:
+  - id: https://orcid.org/0000-0002-7356-1779
+author:
+  - id: https://orcid.org/0000-0002-7356-1779
+publication_date: 2025-08-14
+source_schema:
+  name: ../source/personinfo.yaml
+target_schema:
+  name: ../target/agent.yaml
+mapping_method: semapv:ManualMappingCuration
+class_derivations:
+  Container:
+    populated_from: Container
+    slot_derivations:
+      agents:
+        populated_from: persons
+    #copy_directives:
+    #  "*":
+    #    copy_all: true
+  Entity:
+    description: Abstract base for entity-like target classes
+  Agent:
+    is_a: Entity
+    populated_from: Person
+    slot_derivations:
+      ## implicitly same name in Agent
+      id:
+
+      label:
+        populated_from: name
+
+      age:
+        expr: "str({age_in_years}) + ' years'"
+
+      # YAML interprets this as expr = None
+      # no transformation is performed
+      primary_email:
+        expr: NULL
+
+      # this is the string "NULL", which will set this field to null
+      secondary_email:
+        #expr: "'NULL'"
+        expr: "NULL"
+
+      # FIXME: this should return the type "None", rather than null
+      gender:
+        expr: "None"
+
+      driving_since:
+        expr: |
+          d_test = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == "PASSED_DRIVING_TEST"]
+          if len(d_test):
+              target = d_test[0]
+
+      first_known_event:
+        expr: |
+            if src.has_important_life_events:
+              target = src.has_important_life_events[0].important_event_date
+
+      death_date:
+        expr: |
+            death_dates = [x.important_event_date for x in src.has_important_life_events if str(x.event_name) == "DEATH"]
+            if len(death_dates):
+              target = death_dates[0]
+
+
+      current_address:
+
+      ## expressions
+      #full_name:
+      #  expr: "{first} {last}"
+
+      ## unit conversion
+      #age_in_years:
+      #  expr: "units.convert(age.value, age.unit, units.YEARS)"
+
+      ## nested to flat
+      #friends:
+      #  expr: "[x.id for x in {friends}]"
+
+      ## copy recursively, flat to nested
+      #jobs:
+      #  populated_from: jobs
+
+      ## copy recursively
+      #diagnoses:
+      #  populated_from: diagnoses
+
+      has_familial_relationships:
+        populated_from: has_familial_relationships
+
+  Address:
+    populated_from: Address
+    slot_derivations:
+      address_of:
+        expr: "'foo'"
+        inverse_of:
+          class_name: Agent
+          slot_name: current_address
+      street:
+      city:
+        # expr: "'foo'"
+
+  FamilialRelationship:
+    populated_from: FamilialRelationship
+    slot_derivations:
+      type:
+      related_to:
+      #person_id:
+      #  # inverse of has_familial_relationships
+      #  inverse_of:
+      #    slot_name: has_familial_relationships
+      #    class_name: Person
+
+enum_derivations:
+  FamilialRelationshipType:
+    populated_from: FamilialRelationshipType
+    mirror_source: true
+    permissible_value_derivations:
+      SIBLING_OF:
+        populated_from: SIBLING_OF
+      CHILD_OF:
+        populated_from: CHILD_OF

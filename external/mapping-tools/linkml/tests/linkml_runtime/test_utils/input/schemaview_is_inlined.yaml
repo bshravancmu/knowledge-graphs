@@ -1,0 +1,88 @@
+id: http://example.org/schemaview_is_inlined
+name: schemaview_is_inlined
+description: This schema defines various slots that exercise the SchemaView.is_inlined() method
+prefixes:
+  linkml: https://w3id.org/linkml/
+imports:
+  - linkml:types
+default_range: string
+
+classes:
+  ThingWithId:
+    slots:
+      - id
+      - value
+  ThingWithoutId:
+    slots:
+      - value
+
+slots:
+  id:
+    identifier: true
+  value:
+
+  a_thing_with_id:
+    range: ThingWithId
+
+  inlined_thing_with_id:
+    range: ThingWithId
+    inlined: true
+
+  inlined_as_list_thing_with_id:
+    range: ThingWithId
+    inlined_as_list: true
+
+  a_thing_without_id:
+    range: ThingWithoutId
+
+  inlined_thing_without_id:
+    range: ThingWithoutId
+    inlined: true
+
+  inlined_as_list_thing_without_id:
+    range: ThingWithoutId
+    inlined_as_list: true
+
+  an_integer:
+    range: integer
+
+  # Pathological cases
+  inlined_integer:
+    range: integer
+    inlined: true
+
+  inlined_as_list_integer:
+    range: integer
+    inlined_as_list: true
+
+  # is_a inheritance cases — inlined/inlined_as_list declared only on the parent slot.
+  # A child slot that does not re-declare inlined should still be considered inlined
+  # if its parent slot (via is_a) declares inlined: true.
+  child_of_inlined_thing_with_id:
+    is_a: inlined_thing_with_id       # parent has inlined: true
+    range: ThingWithId
+
+  child_of_inlined_as_list_thing_with_id:
+    is_a: inlined_as_list_thing_with_id  # parent has inlined_as_list: true
+    range: ThingWithId
+
+  # mixin inheritance cases — inlined/inlined_as_list declared only on a mixin slot.
+  # A slot that does not re-declare inlined should still be considered inlined
+  # if a mixin slot declares inlined: true.
+  inlined_mixin:
+    mixin: true
+    inlined: true
+
+  inlined_as_list_mixin:
+    mixin: true
+    inlined_as_list: true
+
+  child_via_inlined_mixin:
+    mixins:
+      - inlined_mixin       # inlined: true inherited via mixin
+    range: ThingWithId
+
+  child_via_inlined_as_list_mixin:
+    mixins:
+      - inlined_as_list_mixin   # inlined_as_list: true inherited via mixin
+    range: ThingWithId

@@ -1,0 +1,52 @@
+##############################
+#                            #
+#       yarrrml-parser       #
+#                            #
+##############################
+#
+# (c) Dylan Van Assche (2022)
+# IDLab - Ghent University - imec
+#
+# CI jobs for the YARRRML parser.
+#
+#
+# CI variables: 
+#    - GITHUB_ACCESS_TOKEN: Access token for accessing Github repositories as variable, example: sdjlsdgfkj;sk
+#    - GITHUB_REPO: Github repo, example: github.com/RMLio/rmlmapper-java
+#    - GITHUB_ARTIFACTS: Artifacts to upload together with th release, example: target/*.jar
+#    - NPM_TOKEN: Access token for accessing NPM repositories, example: sdjlsdgfkj;skf145
+# External scripts:
+#    - ./get-changes.sh: returns the release notes for the Github Release description
+#    - ./build-release.sh: builds a release artifact and stores it in the $GITHUB_ARTIFACTS location
+#
+# Always use protected & masked mode if possible for CI variables!
+# See https://gitlab.ilabt.imec.be/rml/util/ci-templates for a detailed explanation
+stages:
+  - lint
+  - unittests
+  - mirror
+  - release
+  - deploy
+
+include:
+  # Make sure the CHANGELOG is always updated
+  - project: 'rml/util/ci-templates'
+    ref: main
+    file: 'CHANGELOG.gitlab-ci.yml'
+
+# Cancel pipeline if a newer pipeline is running
+default:
+    interruptible: true
+
+# Run unittests
+Unittests:
+  image: alpine:latest
+  stage: unittests
+  before_script:
+    - apk add nodejs npm
+  script:
+    - npm install
+    - npm run test
+  except:
+    - development
+    - master

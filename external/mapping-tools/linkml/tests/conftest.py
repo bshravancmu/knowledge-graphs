@@ -1,0 +1,531 @@
+import difflib
+import os
+import re
+import shutil
+import sys
+import warnings
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from importlib.abc import MetaPathFinder
+from importlib.metadata import version
+from pathlib import Path
+
+import docker
+import pytest
+import requests_cache
+
+import tests
+from linkml.utils.deprecation import EMITTED
+from linkml_runtime.linkml_model.meta import SchemaDefinition
+from tests.linkml.utils.compare_rdf import compare_rdf
+from tests.linkml.utils.dirutils import are_dir_trees_equal
+from tests.offline_network import install as install_offline_network
+
+KITCHEN_SINK_PATH = str(Path(__file__).parent / "linkml" / "test_generators" / "input" / "kitchen_sink.yaml")
+
+# avoid an error from nbconvert -> jupyter_core. remove this after jupyter_core v6
+os.environ["JUPYTER_PLATFORM_DIRS"] = "1"
+
+UNSAFE_PATHS = re.compile(r"[^\w_.-]")
+
+
+def normalize_line_endings(string: str):
+    return string.replace("\r\n", "\n").replace("\r", "\n")
+
+
+class Snapshot(ABC):
+    def __init__(self, path: Path, config: pytest.Config) -> None:
+        self.path = Path(path)
+        self.config = config
+        self.eq_state = ""
+
+    def __eq__(self, other: object) -> bool:
+        __tracebackhide__ = True
+        if self.config.getoption("generate_snapshots"):
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            return self.generate_snapshot(other)
+        else:
+            if not self.path.exists():
+                raise FileNotFoundError(
+                    f"snapshot {self.path} does not exist. To generate snapshot run test with --generate-snapshots"
+                )
+            return self.compare_to_snapshot(other)
+
+    @abstractmethod
+    def generate_snapshot(self, updated: object) -> bool:
+        pass
+
+    @abstractmethod
+    def compare_to_snapshot(self, other: object) -> bool:
+        pass
+
+
+class SnapshotFile(Snapshot):
+    def __init__(self, path: Path, config: pytest.Config, *, rdf_format: str | None = None) -> None:
+        super().__init__(path, config)
+        self.rdf_format: bool | None = rdf_format
+
+    def __repr__(self):
+        with open(self.path, encoding="utf-8") as snapshot_file:
+            return snapshot_file.read()
+
+    def generate_snapshot(self, source: object) -> bool:
+        # if we got a path, copy it into the snapshot directory
+        if isinstance(source, Path):
+            shutil.copy2(source, self.path)
+            return True
+        # if we got a string, use that as the content for the snapshot file
+        if isinstance(source, str):
+            with open(self.path, "w", encoding="utf-8") as dest_file:
+                dest_file.write(source)
+            return True
+        # we got something we don't know how to handle
+        __tracebackhide__ = True
+        raise TypeError(f"cannot generate snapshot from {source}")
+
+    def compare_to_snapshot(self, other: object) -> bool:
+        with open(self.path, encoding="utf-8") as snapshot_file:
+            expected = snapshot_file.read()
+
+        if isinstance(other, Path):
+            with open(other, encoding="utf-8") as compare_file:
+                actual = compare_file.read()
+        elif isinstance(other, str):
+            actual = other
+        else:
+            __tracebackhide__ = True
+            raise TypeError(f"cannot compare snapshot to {other}")
+
+        if self.rdf_format or self.path.suffix in (".ttl", ".owl", ".n3"):
+            self.eq_state = compare_rdf(expected, actual, fmt=self.rdf_format if self.rdf_format else "turtle")
+            return self.eq_state is None
+        else:
+            is_eq = normalize_line_endings(actual) == expected
+            if not is_eq:
+                self.eq_state = "\n".join(
+                    line.rstrip("\r\n")
+                    for line in difflib.ndiff(
+                        expected.splitlines(keepends=True),
+                        normalize_line_endings(actual).splitlines(keepends=True),
+                    )
+                )
+            return is_eq
+
+
+class SnapshotDirectory(Snapshot):
+    def __init__(self, path: Path, config: pytest.Config) -> None:
+        super().__init__(path, config)
+
+    def generate_snapshot(self, source: object) -> bool:
+        # if we got a path, recursively copy the whole directory into the snapshot directory
+        if isinstance(source, Path):
+            shutil.rmtree(self.path, ignore_errors=True)
+            shutil.copytree(source, self.path)
+            return True
+        # we got something we don't know how to handle
+        __tracebackhide__ = True
+        raise TypeError(f"cannot generate snapshot from {source}")
+
+    def compare_to_snapshot(self, other: object) -> bool:
+        if isinstance(other, Path):
+            self.eq_state = are_dir_trees_equal(self.path, other)
+            return self.eq_state is None
+        else:
+            __tracebackhide__ = True
+            raise TypeError(f"cannot compare snapshot to {other}")
+
+
+@pytest.fixture
+def snapshot_path(request) -> Callable[[str | Path], Path]:
+    def get_path(relative_path: str | Path):
+        return request.path.parent / "__snapshots__" / relative_path
+
+    return get_path
+
+
+@pytest.fixture
+def snapshot(snapshot_path, pytestconfig, monkeypatch) -> Callable[[str | Path], Snapshot]:
+    # Patching SchemaDefinition's setter here prevents metadata that can be variable
+    # between systems from entering the snapshot files. This could be part of its own
+    # fixture but it's not clear if it would be useful outside of tests that
+    # compare/produce snapshots
+    locked = {
+        "source_file_date": "2000-01-01T00:00:00",
+        "source_file_size": 1,
+        "generation_date": "2000-01-01T00:00:00",
+    }
+    orig = SchemaDefinition.__setattr__
+
+    def patched(self, name, value):
+        new_value = locked.get(name, value)
+        orig(self, name, new_value)
+
+    monkeypatch.setattr(SchemaDefinition, "__setattr__", patched)
+
+    def get_snapshot(relative_path: str | Path, **kwargs):
+        path = snapshot_path(relative_path)
+        if not path.suffix:
+            return SnapshotDirectory(path, pytestconfig)
+        else:
+            return SnapshotFile(path, pytestconfig, **kwargs)
+
+    return get_snapshot
+
+
+@pytest.fixture(scope="module")
+def input_path(request) -> Callable[[str], Path]:
+    def get_path(filename):
+        return str(request.path.parent / "input" / filename)
+
+    return get_path
+
+
+@pytest.fixture(scope="module", autouse=True)
+def ensure_click_not_monkeypatched(request):
+    """
+    Ensure Click is not monkeypatched for non-linkml_runtime tests.
+
+    The linkml_runtime test suite monkeypatches click.core.Context.exit at import time.
+    This fixture ensures that for test modules outside of linkml_runtime, the original
+    Click behavior is restored before tests run.
+    """
+    # Only restore if we're NOT in a linkml_runtime test module
+    if "linkml_runtime" not in str(request.path):
+        try:
+            import click
+
+            from tests.linkml_runtime.support.test_environment import _original_click_exit
+
+            click.core.Context.exit = _original_click_exit
+        except (ImportError, AttributeError):
+            # Monkeypatch hasn't been applied yet, or original wasn't saved
+            pass
+
+    yield  # Run the tests
+
+
+@pytest.fixture(scope="module", autouse=True)
+def clear_package_schemaview_cache(request):
+    """
+    Clear the package_schemaview LRU cache before each test module.
+
+    The package_schemaview function in linkml_runtime is decorated with @lru_cache.
+    This can cause issues when tests from different modules call it with the same
+    arguments but in different package states, leading to stale cached results.
+
+    This fixture clears the cache before each test module to ensure fresh results.
+    """
+    try:
+        from linkml_runtime.utils.introspection import package_schemaview
+
+        package_schemaview.cache_clear()
+    except (ImportError, AttributeError):
+        # Function not imported yet or doesn't have cache_clear
+        pass
+
+    yield  # Run the tests
+
+
+@pytest.fixture(scope="function")
+def temp_dir(request) -> Path:
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
+    base = Path(request.path.parent) / "temp"
+    if worker_id:
+        base = base / worker_id
+    test_dir = base / UNSAFE_PATHS.sub("_", request.node.name)
+    test_dir.mkdir(exist_ok=True, parents=True)
+    yield test_dir
+    if not request.config.getoption("with_output"):
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--generate-snapshots",
+        action="store_true",
+        help="Generate new files into __snapshot__ directories instead of checking against existing files",
+    )
+    parser.addoption("--with-slow", action="store_true", help="include tests marked slow")
+    parser.addoption(
+        "--with-network",
+        action="store_true",
+        help="run tests marked network against the live network instead of local stubs",
+    )
+    parser.addoption(
+        "--with-upstream",
+        action="store_true",
+        help="include tests marked upstream, which check the real outside world (weekly workflow)",
+    )
+    parser.addoption(
+        "--with-output", action="store_true", help="dump output in compliance test for richer debugging information"
+    )
+    parser.addoption("--without-cache", action="store_true", help="Don't use a sqlite cache for network requests")
+    parser.addoption("--with-biolink", action="store_true", help="Include tests marked as for the biolink model")
+    parser.addoption(
+        "--with-rustgen", action="store_true", help="Include tests marked as rustgen (Rust codegen/maturin)"
+    )
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config, items: list[pytest.Item]):
+    if not config.getoption("--with-slow"):
+        skip_slow = pytest.mark.skip(reason="need --with-slow option to run")
+        for item in items:
+            if item.get_closest_marker("slow"):
+                item.add_marker(skip_slow)
+
+    if not config.getoption("--with-biolink"):
+        skip_biolink = pytest.mark.skip(reason="need --with-biolink option to run")
+        for item in items:
+            if item.get_closest_marker("biolink"):
+                item.add_marker(skip_biolink)
+
+    # Gate rustgen tests behind an explicit flag so they don't run by default
+    if not config.getoption("--with-rustgen"):
+        skip_rustgen = pytest.mark.skip(reason="need --with-rustgen option to run")
+        for item in items:
+            if item.get_closest_marker("rustgen"):
+                item.add_marker(skip_rustgen)
+
+    # Tests marked `network` are NOT skipped: they always run, served from local
+    # stubs by default and live under --with-network. Only `upstream` tests --
+    # whose assertions are about the real outside world -- are gated, because
+    # running them against stubs would be vacuous.
+    if not config.getoption("--with-upstream"):
+        skip_upstream = pytest.mark.skip(reason="need --with-upstream option to run")
+        for item in items:
+            if item.get_closest_marker("upstream"):
+                item.add_marker(skip_upstream)
+
+    # Group compliance tests on a single xdist worker - they share
+    # mutable module-level caches in helper.py that are not safe to split.
+    for item in items:
+        if "test_compliance" in str(item.path):
+            item.add_marker(pytest.mark.xdist_group("compliance"))
+
+    # make sure deprecation test happens at the end
+    test_deps = [i for i in items if i.name == "test_removed_are_removed"]
+    if len(test_deps) == 1:
+        items.remove(test_deps[0])
+        items.append(test_deps[0])
+
+    if version("pydantic").startswith("1"):
+        skip_npd = pytest.mark.skip(reason="Numpydantic is only supported for pydantic>=2")
+        for item in items:
+            if item.get_closest_marker("pydanticgen_npd"):
+                item.add_marker(skip_npd)
+
+    # skip docker tests when docker server not present on the system
+    if not _docker_server_running():
+        skip_docker = pytest.mark.skip(reason="Docker server not running on host machine")
+        for item in items:
+            if item.get_closest_marker("docker"):
+                item.add_marker(skip_docker)
+
+    # the fixture that mocks black import failures should always come all the way last
+    # see: https://github.com/linkml/linkml/pull/2209#issuecomment-2231548078
+    # this causes really hard to diagnose errors, but we can't fail a test run if
+    # it's not found because then we can't run a subset of the tests.
+    # so special care should be taken not to change this test in particular :)
+    test_black = [i for i in items if i.name == "test_template_noblack"]
+    if len(test_black) == 1:
+        items.remove(test_black[0])
+        items.append(test_black[0])
+
+
+def pytest_sessionstart(session: pytest.Session):
+    tests.WITH_OUTPUT = session.config.getoption("--with-output")
+    if session.config.getoption("--generate-snapshots"):
+        tests.DEFAULT_MISMATCH_ACTION = "MismatchAction.Ignore"
+
+    # Clear all warning registries at session start
+    for module in list(sys.modules.values()):
+        if hasattr(module, "__warningregistry__"):
+            del module.__warningregistry__
+
+    warnings.resetwarnings()
+    warnings.simplefilter("always")
+
+
+def pytest_runtest_setup(item):
+    # Clear warning registries before each test
+    for module in list(sys.modules.values()):
+        if hasattr(module, "__warningregistry__"):
+            del module.__warningregistry__
+
+    warnings.simplefilter("always")
+
+
+def pytest_assertrepr_compare(config, op, left, right):
+    if op == "==" and isinstance(right, Snapshot):
+        return [f"value matches snapshot {right.path}"] + right.eq_state.split("\n")
+
+
+@pytest.fixture(autouse=True)
+def network_guard(request):
+    """Enforce the network rules; see :mod:`tests.offline_network` for the design.
+
+    - ``upstream``-marked tests run live; they only run at all under
+      ``--with-upstream`` (enforced at collection time).
+    - ``network``-marked tests are served from local stubs, or run live under
+      ``--with-network``.
+    - Everything else must not touch the network, at any layer.
+    """
+    if request.node.get_closest_marker("upstream"):
+        yield
+        return
+    if request.node.get_closest_marker("network"):
+        if request.config.getoption("--with-network"):
+            yield
+            return
+        uninstall = install_offline_network("stub")
+    else:
+        uninstall = install_offline_network("block")
+    try:
+        yield
+    finally:
+        uninstall()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def patch_requests_cache(pytestconfig):
+    """
+    Cache network requests - for each unique network request, store it in
+    an sqlite cache. only do unique requests once per session.
+    """
+    if pytestconfig.getoption("--without-cache"):
+        yield
+        return
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER", "")
+    cache_name = f"requests-cache-{worker_id}.sqlite" if worker_id else "requests-cache.sqlite"
+    cache_file = Path(__file__).parent / "output" / cache_name
+    requests_cache.install_cache(
+        str(cache_file),
+        backend="sqlite",
+        urls_expire_after={"localhost": requests_cache.DO_NOT_CACHE},
+    )
+    requests_cache.clear()
+    yield
+    # Close the SQLite backend before uninstalling so the file handle is released
+    import requests
+
+    session = requests.Session()
+    if hasattr(session, "cache"):
+        session.cache.close()
+    requests_cache.uninstall_cache()
+    # delete cache file unless we have requested it to persist for inspection
+    if not pytestconfig.getoption("--with-output"):
+        cache_file.unlink(missing_ok=True)
+
+
+class MockImportErrorFinder(MetaPathFinder):
+    """
+    Fake like we don't have a module when we really do.
+
+    see the ``mock_missing_import`` fixture to hide any module, or ``mock_black_import``
+    for a single-purpose example.
+
+    .. note::
+
+        you will also have to reimport any modules that potentially import the module you are removing -
+        see tests/test_generators/test_pydanticgen.py:test_template_noblack for an example
+
+    """
+
+    def __init__(self, module: str, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.module = module
+
+    def find_spec(self, fullname, path, target):
+        if fullname.startswith(self.module):
+            raise ImportError(f"module with name {fullname} could not be found")
+        else:
+            return None
+
+
+@pytest.fixture(scope="function")
+def mock_missing_import():
+    """Pretend an optional dependency is not installed, for any module.
+
+    Yields a callable taking a module name, so a test for one optional
+    dependency does not need a fixture of its own::
+
+        def test_requires_the_extra(mock_missing_import):
+            mock_missing_import("diffable_rdf")
+            with pytest.raises(ImportError, match="linkml-runtime[diff-stable]"):
+                ...
+
+    See :class:`MockImportErrorFinder` for the caveat about reimporting
+    modules that already imported the one being hidden.
+    """
+    removed = {}
+    finders = []
+
+    def hide(module: str) -> None:
+        for name, loaded in list(sys.modules.items()):
+            if name.startswith(module):
+                removed[name] = loaded
+                del sys.modules[name]
+        finder = MockImportErrorFinder(module)
+        finders.append(finder)
+        sys.meta_path.insert(0, finder)
+
+    yield hide
+
+    sys.modules.update(removed)
+    for finder in finders:
+        sys.meta_path.remove(finder)
+
+
+@pytest.fixture(scope="function")
+def mock_black_import():
+    """
+    Pretend like we don't have black even if we do
+    """
+    removed = {}
+    for k, v in sys.modules.items():
+        if k.startswith("black"):
+            removed[k] = v
+    for k in removed.keys():
+        del sys.modules[k]
+    meta_finder = MockImportErrorFinder("black")
+    sys.meta_path.insert(0, meta_finder)
+
+    yield removed
+
+    sys.modules.update(removed)
+    sys.meta_path.remove(meta_finder)
+
+
+@pytest.fixture(autouse=True)
+def reset_warnings():
+    """Reset warnings for each test."""
+    # Pre-test cleanup
+    for module in list(sys.modules.values()):
+        if hasattr(module, "__warningregistry__"):
+            del module.__warningregistry__
+
+    warnings.resetwarnings()
+    warnings.simplefilter("always")
+    EMITTED.clear()
+
+    yield
+
+    # Post-test cleanup
+    for module in list(sys.modules.values()):
+        if hasattr(module, "__warningregistry__"):
+            del module.__warningregistry__
+    EMITTED.clear()
+
+
+# --------------------------------------------------
+# Helper functions ~only~
+# --------------------------------------------------
+
+
+def _docker_server_running() -> bool:
+    try:
+        _ = docker.from_env()
+        return True
+    except docker.errors.DockerException:
+        return False

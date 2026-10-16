@@ -1,0 +1,45 @@
+id: example-biolink-profile
+title: Example Biolink Profile
+prefixes:
+  biolink: https://w3id.org/biolink/vocab/
+source_schema:
+  name: biolink
+target_schema:
+  name: monarch
+
+#slot_names_match: true    # autopopulates slot.populated_from
+#class_names_match: true   # autopopulates class.populated_from
+
+class_derivations:
+  NamedThing:
+    populated_from: named thing
+    slot_derivations:
+      id:
+      name:
+        overrides:
+      category:
+  Gene:
+    populated_from: gene
+    slot_derivations:
+      symbol:
+    overrides:
+      #is_a: NamedThing # would be autopopulated
+  Disease:
+    populated_from: disease
+    overrides:
+      id_prefixes:
+        - MONDO
+  PhenotypicFeature:
+    populated_from: phenotypic feature
+  Association:
+    populated_from: association
+    slot_derivations:
+      subject:
+      predicate:
+      object:
+  GeneToPhenotypicFeatureAssociation:
+    populated_from: gene to phenotypic feature association
+    overrides:
+      slot_usage:
+        predicate:
+          equals_string: RO:1234567

@@ -1,0 +1,108 @@
+[project]
+name = "linkml-map"
+description = "a framework for specifying and executing mappings between data models"
+readme = "README.md"
+authors = [
+    {name = "cmungall", email = "cjm@berkeleybop.org"},
+]
+requires-python = ">=3.10"
+dynamic = [ "version" ]
+
+dependencies = [
+    "asteval>=1.0.5",
+    "click>=8.2",
+    "curies",
+    "duckdb>=1.1.0",
+    "flatten-dict>=0.4.2",
+    "graphviz>=0.20",
+    "inflection>=0.5.1",
+    "jinja2>=3",
+    "jsonschema>=4",
+    "lark>=1",
+    "linkml>=1.11.0",
+    "linkml-runtime>=1.11.0",
+    "more-itertools>=10.0.0",
+    "pint>=0.20",
+    "pydantic>=2,<3",
+    "python-slugify>=8.0.4",
+    "pyyaml",
+    "simpleeval>=1.0.3",
+    "simplejson>=4.2.0",
+    "ucumvert>=0.2",
+]
+
+[dependency-groups]
+dev = [
+    "deepdiff>=6.0",
+    "deptry>=0.23",
+    "jupyter>=1.1",
+    "mkdocs-mermaid2-plugin>=0.6",
+    "mkdocs-windmill",
+    "mkdocstrings[crystal,python]",
+    "mknotebooks>=0.8",
+    "pre-commit>=4.3.0",
+    "pytest>=8",
+    "ruff>=0.11",
+]
+
+[project.scripts]
+linkml-map = "linkml_map.cli.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: tests that need external services or network access",
+]
+
+[tool.deptry]
+known_first_party = ["linkml_map"]
+extend_exclude = ["docs"]
+
+# See https://hatch.pypa.io/latest/config/build/#file-selection for how to
+# explicitly include files other than default into the build distributions.
+[build-system]
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
+
+# Ref.: https://github.com/ninoseki/uv-dynamic-versioning/
+[tool.uv-dynamic-versioning]
+vcs = "git"
+style = "pep440"
+fallback-version = "0.0.0"
+
+
+# Ref: https://github.com/codespell-project/codespell#using-a-config-file
+[tool.codespell]
+skip = '.git,*.pdf,*.svg,go.sum,*.lock'
+check-hidden = true
+ignore-regex = '(^\s*"image/\S+": ".*|\b(KEGG.BRITE|mor.nlm.nih.gov)\b)'
+ignore-words-list = 'infarction,amination,assertIn,brite,ehr,mor,brite,nin,mirgate,NotIn'
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [
+    "docs/",
+    "src/linkml_map/datamodel",
+    "tests/input",
+]
+force-exclude = true
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # Pyflakes
+    "I",  # isort
+    "UP", # pyupgrade
+]
+
+ignore = [
+    # E203: whitespace before ',', ';', or ':'
+    "E203",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["linkml_map"]
