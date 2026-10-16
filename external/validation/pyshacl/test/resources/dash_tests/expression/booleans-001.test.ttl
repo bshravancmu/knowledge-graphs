@@ -1,0 +1,115 @@
+# baseURI: http://datashapes.org/shasf/tests/expression/booleans-001.test
+# imports: http://datashapes.org/dash
+# prefix: ex
+
+@prefix dash: <http://datashapes.org/dash#> .
+@prefix ex: <http://datashapes.org/shasf/tests/expression/booleans-001.test#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<http://datashapes.org/shasf/tests/expression/booleans-001.test>
+  rdf:type owl:Ontology ;
+  rdfs:label "Test of filterShape-001" ;
+  owl:imports <http://datashapes.org/dash> ;
+  owl:versionInfo "Created with TopBraid Composer" ;
+.
+ex:GraphValidationTestCase
+  rdf:type dash:GraphValidationTestCase ;
+  dash:expectedResult [
+      rdf:type sh:ValidationReport ;
+      sh:conforms "false"^^xsd:boolean ;
+      sh:result [
+          rdf:type sh:ValidationResult ;
+          sh:focusNode "false"^^xsd:boolean ;
+          sh:resultSeverity sh:Violation ;
+          sh:sourceConstraint sh:this ;
+          sh:sourceConstraintComponent sh:ExpressionConstraintComponent ;
+          sh:sourceShape ex:TestShape ;
+          sh:value "false"^^xsd:boolean ;
+        ] ;
+    ] ;
+.
+ex:TestShape
+  rdf:type sh:NodeShape ;
+  sh:expression sh:this ;
+  sh:targetNode "false"^^xsd:boolean ;
+  sh:targetNode "true"^^xsd:boolean ;
+.
+
+ex:Kate
+  rdf:type ex:Person ;
+  ex:firstName "Kate" ;
+  ex:lastName "Jones"
+.
+
+ex:concat
+	a sh:SPARQLFunction ;
+	rdfs:comment "Concatenates strings $op1 and $op2." ;
+	sh:parameter [
+		sh:path ex:op1 ;
+		sh:datatype xsd:string ;
+		sh:description "The first string" ;
+	] ;
+	sh:parameter [
+		sh:path ex:op2 ;
+		sh:datatype xsd:string ;
+		sh:description "The second string" ;
+	] ;
+	sh:returnType xsd:string ;
+	sh:select """
+		SELECT ?result
+		WHERE {
+	      BIND(CONCAT(STR(?op1),STR(?op2)) AS ?result) .
+		}
+		""" .
+
+ex:strlen
+	a sh:SPARQLFunction ;
+	rdfs:comment "Returns length of the given string." ;
+	sh:parameter [
+		sh:path ex:op1 ;
+		sh:datatype xsd:string ;
+		sh:description "The string" ;
+	] ;
+	sh:returnType xsd:integer ;
+	sh:select """
+		SELECT ?result
+		WHERE {
+	      BIND(STRLEN(?op1) AS ?result) .
+		}
+		""" .
+
+ex:lessThan
+	a sh:SPARQLFunction ;
+	rdfs:comment "Returns True if op1 < op2." ;
+	sh:parameter [
+		sh:path ex:op1 ;
+		sh:datatype xsd:integer ;
+		sh:description "The first int" ;
+	] ;
+	sh:parameter [
+		sh:path ex:op2 ;
+		sh:datatype xsd:integer ;
+		sh:description "The second int" ;
+	] ;
+	sh:returnType xsd:boolean ;
+	sh:select """
+		SELECT ?result
+		WHERE {
+	      BIND(IF(?op1 < ?op2, true, false) AS ?result) .
+		}
+		""" .
+
+ex:FilterExampleShape
+	a sh:NodeShape ;
+	sh:targetClass ex:Person ;
+	sh:expression [
+		ex:lessThan (
+			[ ex:strlen (
+				[ ex:concat ( [ sh:path ex:firstName] [ sh:path ex:lastName ] ) ] )
+			]
+			30 );
+	] .

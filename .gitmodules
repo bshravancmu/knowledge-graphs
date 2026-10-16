@@ -6,10 +6,6 @@
 	path = external/llm-assisted/llm4vkg
 	url = https://github.com/HomuraT/LLM4VKG.git
 	branch = main
-[submodule "external/validation/pyshacl"]
-	path = external/validation/pyshacl
-	url = https://github.com/RDFLib/pySHACL.git
-	branch = master
 [submodule "external/stores/oxigraph"]
 	path = external/stores/oxigraph
 	url = https://github.com/oxigraph/oxigraph.git

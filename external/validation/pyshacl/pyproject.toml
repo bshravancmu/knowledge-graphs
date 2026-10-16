@@ -1,0 +1,252 @@
+[build-system]
+requires = ["poetry-core<3,>=2.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+name = "pyshacl"
+# Don't forget to change the version number in __init__.py, Dockerfile, and CITATION.cff along with this one
+version = "0.40.1"
+requires-python = ">=3.9"
+description = "Python SHACL Validator"
+license = { file = "LICENSE.txt" }
+authors = [
+    {name = "Ashley Sommer", email = "Ashley.Sommer@csiro.au"}
+]
+readme = "README.md"
+keywords = [
+    "Linked Data",
+    "Semantic Web",
+    "RDF",
+    "Graph",
+    "Python",
+    "SHACL",
+    "Shapes",
+    "Schema",
+    "Validate",
+    "Validator"
+]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Development Status :: 5 - Production/Stable",
+    "Topic :: Utilities",
+    "Intended Audience :: Developers",
+    "Natural Language :: English",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Operating System :: OS Independent"
+]
+dependencies = [
+    "rdflib[html]>=7.3.0,<8.0",
+    "owlrl>=7.6.2,<8",
+    "prettytable>=3.5.0; python_version<'3.12'",
+    "prettytable>=3.7.0; python_version>='3.12'",
+    "packaging>=21.3",
+    "importlib-metadata>6; python_version<'3.12'",
+]
+
+[project.urls]
+homepage = "https://github.com/RDFLib/pySHACL"
+source = "https://github.com/RDFLib/pySHACL"
+issues = "https://github.com/RDFLib/pySHACL/issues"
+download = "https://github.com/RDFLib/pySHACL/releases"
+changelog = "https://github.com/RDFLib/pySHACL/blob/master/CHANGELOG.md"
+
+[project.optional-dependencies]
+# These are equivelent to python package "extras"
+js = [
+    "pyduktape2<1,>=0.4.6; python_version<='3.13'",
+    "pyduktape2<1,>=0.5.0; python_version>='3.13'",
+]
+oxigraph = [
+    "pyoxigraph>=0.5.6"
+]
+http = [
+    "sanic<23,>=22.12",
+    "sanic-ext<23.6,>=23.3",
+    "sanic-cors==2.2.0"
+]
+dev-lint = [
+    "ruff<0.10,>=0.9.3",
+    "platformdirs"
+]
+dev-type-checking = [
+    "mypy>=1.13.0",
+    "types-setuptools",
+    "platformdirs"
+]
+dev-coverage = [
+    "pytest-cov<3,>=2.8.1",
+    "coverage>6,<7,!=6.0.*,!=6.1,!=6.1.1",
+    "platformdirs"
+]
+
+[project.scripts]
+pyshacl = "pyshacl.cli:main"
+pyshacl_rules = "pyshacl.cli_rules:main"
+pyshacl_validate = "pyshacl.cli:main"
+pyshacl_server = "pyshacl.http:cli"
+
+[tool.poetry]
+packages = [
+    { include = "pyshacl" },
+    { include = "examples", format = "sdist" },
+    { include = "benchmarks", format = "sdist" },
+    { include = "test", format = "sdist" }
+]
+
+include = [
+    { path = "pyshacl/assets/*.ttl", format = "sdist" },
+    { path = "pyshacl/assets/*.py", format = "sdist" },
+    { path = "hooks/*", format = "sdist" },
+    { path = "MANIFEST.in", format = "sdist" },
+    { path = "pyproject.toml", format = "sdist" },
+    { path = "poetry.lock", format = "sdist" },
+    { path = "Makefile", format = "sdist" },
+    { path = "*.md" },
+    { path = "*.txt" },
+    { path = "pyshacl/py.typed" },
+    { path = "pyshacl/assets/*.pickle" },
+    { path = "pyshacl/*.spec" }
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.2"
+coverage = {version=">6,<7,!=6.0.*,!=6.1,!=6.1.1", optional=true}
+pytest-cov = {version="^2.8.1", optional=true}
+ruff = {version="<0.10,>=0.9.3", optional=true}
+mypy = {version=">=1.13.0", optional=true}
+types-setuptools = {version="*", optional=true}
+platformdirs = {version="*", optional=true}
+
+[tool.dephell.main]
+from = {format = "poetry", path = "pyproject.toml"}
+to = {format = "setuppy", path = "setup.py"}
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".pytest_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".idea",
+    "htmlcov",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "pyshacl.egg-info",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+line-length = 119
+
+[tool.ruff.format]
+quote-style = "preserve"
+
+[lint]
+# Enable pycodestyle (`E`) and Pyflakes (`F`) codes by default.
+select = ["E", "F"]
+ignore = ["E501"]  # Turn off ruff's too-long-line detection for now, we'll have to enable it again later.
+
+# Allow autofix for all enabled rules (when `--fix`) is provided.
+fixable = ["A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "S", "T", "W", "ANN", "ARG", "BLE", "COM", "DJ", "DTZ", "EM", "ERA", "EXE", "FBT", "ICN", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PT", "PTH", "PYI", "RET", "RSE", "RUF", "SIM", "SLF", "TCH", "TID", "TRY", "UP", "YTT"]
+unfixable = []
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+
+[lint.mccabe]
+# Unlike Flake8, default to a complexity level of 10.
+max-complexity = 10
+
+[lint.pycodestyle]
+ignore-overlong-task-comments = true
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+testpaths = [
+    "test",
+]
+
+[tool.tox]
+legacy_tox_ini = """
+[tox]
+skipsdist = true
+envlist = py39, py310, py311, py312, py313, lint, type-checking
+toxworkdir={env:TOX_WORK_DIR:.tox}
+
+[testenv]
+deps =
+    poetry>=2.1
+passenv =
+    DBUS_SESSION_BUS_ADDRESS
+    PIP_KEYRING_PROVIDER
+    PIP_FORCE_KEYRING
+    PYTHON_KEYRING_BACKEND
+skip_install = true
+allowlist_externals = python3, ls, pwd, env, poetry
+
+commands_pre =
+    py39: poetry run pip3 install -U "pip>=21.0"
+    py310: poetry run pip3 install -U "pip>=21.3"
+    py311: poetry run pip3 install -U "pip>=22.1"
+    poetry install -vv -n --no-root --extras "js dev-coverage"
+
+commands =
+    - poetry show
+    poetry run pytest -v --log-level=INFO --cov=pyshacl test/
+    poetry run pytest -v --log-level=INFO test/issues/
+    - poetry run coverage combine --append
+    poetry run coverage report -m
+    poetry run coverage html -i
+
+[testenv:lint]
+commands_pre =
+    python --version
+    poetry install -vv -n --no-root --extras "dev-lint"
+commands =
+    - poetry show
+    poetry run ruff check ./pyshacl
+    poetry run ruff check --select I ./pyshacl #isort
+    poetry run ruff format --check --no-preview --target-version py39 pyshacl #black
+
+[testenv:type-checking]
+commands_pre =
+    python --version
+    poetry install -vv -n --no-root --extras "dev-type-checking"
+    poetry run pip3 install "mypy>=0.812" "types-setuptools"
+commands =
+    - poetry show
+    poetry run python3 -m mypy --python-version 3.9 --ignore-missing-imports pyshacl
+
+[gh]
+# Don't include lint or type-checking in gh-actions matrix
+python =
+    3.13 = py313
+    3.12 = py312
+    3.11 = py311
+    3.10 = py310
+    3.9 = py39
+
+"""
